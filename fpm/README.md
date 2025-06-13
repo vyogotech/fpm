@@ -40,7 +40,13 @@ fpm --help
 ```
 
 Available commands (this list will grow):
-*   `fpm package`: Package a Frappe application.
+*   `fpm package`: Package a Frappe application into an `.fpm` file.
+    *   `--source <path>`: Path to the Frappe app source directory (default: current directory).
+    *   `--output-path <path>`: Directory where the `.fpm` file will be saved (default: current directory).
+    *   `--version <version>`: The version for the package (e.g., `1.0.0`). This flag is required.
+    *   `--overwrite`: Allows overwriting an existing `.fpm` file if it has the same name and version.
+
+    The command reads package details from an `app_metadata.json` file in the source directory. If this file doesn't exist, a basic one will be generated. You can use a `.fpmignore` file (similar to `.gitignore`) in your app's source directory to specify files and directories to exclude from the package.
 *   `fpm install`: Install a Frappe application package.
 *   `fpm publish`: Publish a Frappe application package to a repository.
 *   `fpm repo add`: Add a new Frappe package repository.
