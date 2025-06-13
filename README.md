@@ -36,3 +36,68 @@ To transform Frappe application deployment from a Git-centric development model 
    - Standardized repository API with multiple implementations
 
 ### Package Structure
+
+app-name-1.0.0.fpm (ZIP archive) 
+   ├── app_metadata.json 
+   ├── app_source/ 
+   │ ├── app_name/ 
+   │ └── ... (app source files) 
+   ├── compiled_assets/ │ 
+   ├── js/ 
+   │ └── css/ 
+   ├── requirements.txt 
+   ├── package.json 
+   └── install_hooks.py
+
+
+### Repository Layout
+
+/{groupId}/{artifactId}/{version}/{artifactId}-{version}.fpm /metadata/{groupId}/{artifactId}/package-metadata.json
+Examples: /frappe/erpnext/13.0.1/erpnext-13.0.1.fpm /company/custom-app/1.0.0/custom-app-1.0.0.fpm
+
+
+## Key Workflows
+
+### Development Workflow
+
+1. Develop Frappe app using traditional Git-based approach
+2. Create package from local development directory
+3. Test package locally or publish to development repository
+4. Iterate on development
+
+```bash
+cd ~/frappe-bench/apps/my-custom-app
+# Make code changes as normal
+fpm package --version 1.2.3
+fpm install ./my-custom-app-1.2.3.fpm --site mysite.local
+```
+Production Deployment Workflow
+1. Create or download versioned packages
+2. Deploy to production using offline packages
+3. Install with dependency resolution
+
+# On build server
+fpm package --source ./erpnext --version 13.0.1
+fpm publish erpnext-13.0.1.fpm --repo corporate
+
+# On production server
+fpm install erpnext==13.0.1 --site production.site
+
+### Multi-Repository Workflow
+
+1. Configure multiple repositories with priorities
+2. Install packages with automatic repository selection
+3. Resolve dependencies across repositories
+
+```bash
+# Configure repositories
+fpm repo add corporate https://nexus.company.com/repository/frappe-packages
+fpm repo add local file://~/.fpm/repository
+
+# Install with automatic repository selection
+fpm install custom-app==1.0.0 --site mysite
+
+# View dependency resolution across repositories
+fpm deps custom-app==1.0.0 --tree
+```
+
