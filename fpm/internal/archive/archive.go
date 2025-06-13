@@ -8,7 +8,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
 	"fpm/internal/metadata" // Import the metadata package
+	"fpm/internal/utils"    // Import for checksum calculation
 
 	"github.com/sabhiram/go-gitignore" // For .fpmignore
 )
@@ -25,6 +27,14 @@ var defaultIgnorePatterns = []string{
 	".idea/",
 	".vscode/",
 	"*.log",
+}
+
+var productionExclusionPatterns = []string{
+	".git",       // Exclude the entire .git directory
+	"__pycache__", // Exclude python bytecode cache
+	"*.pyc",      // Exclude python compiled files
+	"test*",      // Exclude files/dirs starting with test
+	"tests",      // Exclude directories named tests
 }
 
 // CreateFPMArchive creates an .fpm package from the app source.
@@ -69,12 +79,41 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 		ignorer = ignore.CompileIgnoreLines(defaultIgnorePatterns...) // Changed gitignore to ignore
 	}
 
-	// --- Copy app source files ---
-	appSourceStagePath := filepath.Join(stagingDir, "app_source")
-	if err := os.MkdirAll(appSourceStagePath, 0755); err != nil {
-		return fmt.Errorf("failed to create app_source in staging: %w", err)
+	// If package type is "prod", add production exclusions
+	var currentRules []string
+	// Try to get lines from existing ignorer (which could be from .fpmignore or defaults)
+	if ignorer != nil {
+		currentRules = ignorer.Lines()
+	} else {
+		// This case should ideally not be hit if ignorer is always initialized
+		currentRules = defaultIgnorePatterns
 	}
 
+	if meta.PackageType == "prod" {
+		combinedRules := currentRules
+		for _, prodPattern := range productionExclusionPatterns {
+			alreadyExists := false
+			for _, existingPattern := range combinedRules {
+				if prodPattern == existingPattern {
+					alreadyExists = true
+					break
+				}
+			}
+			if !alreadyExists {
+				combinedRules = append(combinedRules, prodPattern)
+			}
+		}
+		ignorer = ignore.CompileIgnoreLines(combinedRules...)
+	}
+
+
+	// --- Copy app source files ---
+// appSourceStagePath := filepath.Join(stagingDir, "app_source") // No longer using app_source intermediate dir
+// if err := os.MkdirAll(appSourceStagePath, 0755); err != nil { // Not needed anymore
+// 	return fmt.Errorf("failed to create app_source in staging: %w", err)
+// }
+
+	// This is the main WalkDir for copying app source files
 	err = filepath.WalkDir(absAppSourcePath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -104,15 +143,22 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 
 		// Check against ignorer (relative to appSourcePath)
 		// go-gitignore expects paths relative to the .fpmignore file's location (absAppSourcePath)
-		if ignorer.MatchesPath(relPath) {
+		if ignorer.MatchesPath(relPath) { // This ignorer now includes prod patterns if applicable
 			if d.IsDir() {
 				return filepath.SkipDir // Skip ignored directories
 			}
 			return nil // Skip ignored files
 		}
 
-		targetPath := filepath.Join(appSourceStagePath, relPath)
+		// Determine target path based on new structure
+		// If relPath is part of the app module (e.g., meta.AppName/somefile.py), it goes to stagingDir/meta.AppName/somefile.py
+		// If relPath is a root file/dir (e.g., assets/icon.png), it goes to stagingDir/assets/icon.png
+		targetPath := filepath.Join(stagingDir, relPath) // All files/dirs are now relative to stagingDir root
+
 		if d.IsDir() {
+			// Special handling for the app module directory itself (meta.AppName)
+			// It should be created directly in stagingDir.
+			// Other directories are also created directly in stagingDir.
 			return os.MkdirAll(targetPath, 0755) // Use fixed permissions for staging directories
 		}
 
@@ -123,9 +169,18 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 	}
 
 
+	// --- Calculate checksum before saving metadata ---
+	// meta.PackageVersion is expected to be set by the caller (e.g., cmd/package.go)
+	// and should be present in the 'meta' object passed to this function.
+	checksum, checksumErr := utils.CalculateDirectoryChecksum(stagingDir, "app_metadata.json")
+	if checksumErr != nil {
+		return fmt.Errorf("failed to calculate content checksum for stagingDir '%s': %w", stagingDir, checksumErr)
+	}
+	meta.ContentChecksum = checksum
+
 	// --- Save app_metadata.json ---
-	// Ensure version in metadata is the one passed to this function
-	meta.PackageVersion = version
+	// The 'meta' object now includes PackageName, PackageVersion, potentially AppName, Org,
+	// SourceControlURL, PackageType, and the newly added ContentChecksum.
 	if err := metadata.SaveAppMetadata(stagingDir, meta); err != nil { // Save at the root of staging
 		return fmt.Errorf("failed to save app_metadata.json: %w", err)
 	}
@@ -144,7 +199,8 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 	// --- Handle compiled_assets ---
 	compiledAssetsPath := filepath.Join(absAppSourcePath, "compiled_assets")
 	if _, err := os.Stat(compiledAssetsPath); err == nil { // if dir exists
-		stagedCompiledAssetsPath := filepath.Join(stagingDir, "compiled_assets")
+		stagedCompiledAssetsPath := filepath.Join(stagingDir, "compiled_assets") // Directly into stagingDir
+		// The ignorer passed to copyDir should be the potentially combined one
 		if err := copyDir(compiledAssetsPath, stagedCompiledAssetsPath, ignorer, absAppSourcePath); err != nil {
 			return fmt.Errorf("failed to copy compiled_assets: %w", err)
 		}

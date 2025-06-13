@@ -429,3 +429,406 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 		assert.Equal(t, "flag-appname", meta.AppName)
 	})
 }
+
+// testAppParams holds parameters for creating a test Frappe app for new tests
+// Re-evaluating if this struct is needed or if existing helpers are enough.
+// The existing tests use direct setup. Let's try to adapt.
+// For simplicity, I'll define a focused helper for the new tests if needed,
+// or structure them similar to TestPackageCmd_DerivationAndOverrides.
+
+// Helper to run package command and return metadata
+// This simplifies running the command and then immediately getting metadata.
+func runPackageAndGetMeta(t *testing.T, sourceDir string, appName string, version string, pkgType string, extraArgs ...string) (*metadata.AppMetadata, string) {
+	t.Helper()
+	resetPackageCmdFlags() // Ensure flags are clean for each run
+	outputDir := t.TempDir()
+
+	cmdArgs := []string{"package", "--version", version, "--output-path", outputDir}
+	if appName != "" {
+		cmdArgs = append(cmdArgs, "--app-name", appName)
+	}
+	if pkgType != "" {
+		cmdArgs = append(cmdArgs, "--package-type", pkgType)
+	}
+	cmdArgs = append(cmdArgs, extraArgs...)
+	cmdArgs = append(cmdArgs, sourceDir) // sourceDir is the last argument
+
+	rootCmd.SetArgs(cmdArgs)
+
+	// Capture stdout/stderr for debugging if needed
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	rOut, wOut, _ := os.Pipe()
+	rErr, wErr, _ := os.Pipe()
+	os.Stdout = wOut
+	os.Stderr = wErr
+	executeErr := rootCmd.Execute()
+	wOut.Close()
+	wErr.Close()
+	outBytes, _ := io.ReadAll(rOut)
+	errBytes, _ := io.ReadAll(rErr)
+	os.Stdout = oldStdout
+	os.Stderr = oldStderr
+
+	t.Logf("Package command stdout:\n%s", string(outBytes))
+	if executeErr != nil {
+		t.Logf("Package command stderr:\n%s", string(errBytes))
+		t.Fatalf("fpm package command failed: %v", executeErr)
+	}
+	require.NoError(t, executeErr, "fpm package command failed")
+
+	// Determine appName for filename construction (app_name from flag, or inferred from source dir if flag not used)
+	// The actual app name used for the .fpm file name and metadata.PackageName
+	// is determined by complex logic (flag > hooks > git > dir).
+	// For these tests, we typically provide --app-name.
+	finalAppName := appName
+	if finalAppName == "" { // If --app-name not provided, it's harder to predict filename here without replicating logic.
+		// Fallback to predicting from sourceDir, but this might not match if hooks/git changed it.
+		// This part is tricky. For robust testing, we should probably try to find the generated .fpm file.
+		// Or, ensure --app-name is always passed in tests for predictability.
+		// For now, assume appName is passed if predictability is key for filename.
+		// If appName is not passed, the command might succeed but we might not find the file easily.
+		// Let's assume `appName` arg to this helper is the one that will be in the filename.
+		if appName == "" { // If appName is not passed to helper, this will fail.
+			t.Fatal("appName must be provided to runPackageAndGetMeta for predictable FPM filename")
+		}
+	}
+
+
+	fpmFileName := fmt.Sprintf("%s-%s.fpm", finalAppName, version)
+	expectedFpmFilePath := filepath.Join(outputDir, fpmFileName)
+	require.FileExists(t, expectedFpmFilePath, "Expected .fpm file was not created at %s", expectedFpmFilePath)
+
+	meta, err := readMetadataFromFpm(t, expectedFpmFilePath)
+	require.NoError(t, err, "Failed to read metadata from FPM package")
+	return meta, expectedFpmFilePath
+}
+
+// createMinimalFrappeApp creates a very basic app structure for testing.
+// App name is the directory name.
+func createMinimalFrappeApp(t *testing.T, baseDir string, appName string, files map[string]string) string {
+	t.Helper()
+	sourceDir := filepath.Join(baseDir, appName+"_source") // Unique source dir name
+	appModuleDir := filepath.Join(sourceDir, appName)
+	require.NoError(t, os.MkdirAll(appModuleDir, 0755))
+
+	standardAppFiles := map[string]string{
+		"__init__.py": "",
+		"hooks.py":    fmt.Sprintf("app_name = \"%s\"", appName),
+		"modules.txt": "",
+	}
+	for fname, content := range standardAppFiles {
+		require.NoError(t, os.WriteFile(filepath.Join(appModuleDir, fname), []byte(content), 0644))
+	}
+
+	if files != nil {
+		for relPath, content := range files {
+			absPath := filepath.Join(sourceDir, relPath)
+			absDir := filepath.Dir(absPath)
+			require.NoError(t, os.MkdirAll(absDir, 0755))
+			require.NoError(t, os.WriteFile(absPath, []byte(content), 0644))
+		}
+	}
+	return sourceDir
+}
+
+
+func TestPackageSourceControlURL(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration-style test in short mode.")
+	}
+	baseTestDir := t.TempDir()
+	appName := "test_git_app"
+	version := "0.0.1"
+	gitRemoteURL := "https://github.com/test_org/test_repo.git"
+
+	sourceDir := createMinimalFrappeApp(t, baseTestDir, appName, nil)
+	createMockGitConfig(t, sourceDir, gitRemoteURL) // This creates .git/config
+
+	// Need to init and commit for GetFullGitRemoteOriginURL to work as it might read from actual git commands or HEAD
+	cmdInGitRepo := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = sourceDir
+		output, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git command %v failed in %s: %s", args, sourceDir, string(output))
+	}
+	cmdInGitRepo("init")
+	cmdInGitRepo("add", ".")
+	cmdInGitRepo("config", "user.email", "test@example.com")
+	cmdInGitRepo("config", "user.name", "Test User")
+	cmdInGitRepo("commit", "-m", "initial commit")
+
+
+	meta, _ := runPackageAndGetMeta(t, sourceDir, appName, version, "" /* pkgType */)
+	assert.Equal(t, gitRemoteURL, meta.SourceControlURL)
+}
+
+func TestPackageTypeFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration-style test in short mode.")
+	}
+	baseTestDir := t.TempDir()
+	appName := "test_pkg_type_app"
+	version := "1.0.0"
+	sourceDir := createMinimalFrappeApp(t, baseTestDir, appName, nil)
+
+	testCases := []struct {
+		name            string
+		packageTypeFlag string
+		expectedType    string
+	}{
+		{"dev type", "dev", "dev"},
+		{"prod type", "prod", "prod"},
+		{"default type (prod)", "", "prod"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			meta, _ := runPackageAndGetMeta(t, sourceDir, appName, version, tc.packageTypeFlag)
+			assert.Equal(t, tc.expectedType, meta.PackageType)
+		})
+	}
+}
+
+// inspectFPM opens the FPM file and allows assertions on its contents.
+// It provides a map of file names to their zip.File struct and the zip.Reader itself.
+func inspectFPM(t *testing.T, fpmPath string, checkFn func(filesInArchive map[string]*zip.File, r *zip.Reader)) {
+	t.Helper()
+	r, err := zip.OpenReader(fpmPath)
+	require.NoError(t, err, "Failed to open .fpm file %s", fpmPath)
+	defer r.Close()
+
+	filesInArchive := make(map[string]*zip.File)
+	for _, f := range r.File {
+		filesInArchive[f.Name] = f
+	}
+	checkFn(filesInArchive, r)
+}
+
+
+func TestProductionExclusions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration-style test in short mode.")
+	}
+	baseTestDir := t.TempDir()
+	appName := "test_exclusion_app"
+	version := "1.0.0"
+
+	// Files that should always be included (unless .fpmignore says otherwise, not tested here)
+	alwaysIncludeFiles := map[string]string{
+		filepath.Join(appName, "main.py"):      "print('hello')",
+		filepath.Join(appName, "module_utils/util.py"): "def helper(): pass",
+		"assets/important_asset.txt":         "important data",
+	}
+
+	// Files that should be excluded only in production mode
+	prodOnlyExcludeFiles := map[string]string{
+		".git/config":                                     "[remote \"origin\"]\nurl = someurl",
+		filepath.Join(appName, "__pycache__/some.pyc"):          "bytecode",
+		filepath.Join(appName, "tests/test_main.py"):            "import main",
+		filepath.Join(appName, "test_specific_feature.py"): "def test_feat(): pass",
+		// A file directly in app module matching test*
+		filepath.Join(appName, "test_another.py"): "test code",
+		// A top-level file/dir matching test*
+		"test_data/data.json": `{"key":"value"}`,
+	}
+
+	// Create all files for the source directory
+	allFilesForSource := make(map[string]string)
+	for k, v := range alwaysIncludeFiles { allFilesForSource[k] = v }
+	for k, v := range prodOnlyExcludeFiles { allFilesForSource[k] = v }
+
+	sourceDir := createMinimalFrappeApp(t, baseTestDir, appName, allFilesForSource)
+	// createMinimalFrappeApp already creates appName/__init__.py, hooks.py, modules.txt
+
+	t.Run("prod mode applies exclusions", func(t *testing.T) {
+		meta, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, version, "prod")
+		assert.Equal(t, "prod", meta.PackageType)
+
+		inspectFPM(t, fpmPath, func(filesInArchive map[string]*zip.File, r *zip.Reader) {
+			for relPath := range alwaysIncludeFiles {
+				normalizedPath := filepath.ToSlash(relPath)
+				assert.Contains(t, filesInArchive, normalizedPath, "Expected file '%s' to be present in PROD archive", normalizedPath)
+			}
+			for relPath := range prodOnlyExcludeFiles {
+				normalizedPath := filepath.ToSlash(relPath)
+				assert.NotContains(t, filesInArchive, normalizedPath, "Expected file '%s' to be ABSENT in PROOD archive", normalizedPath)
+			}
+			// Check standard app files also present
+			assert.Contains(t, filesInArchive, filepath.ToSlash(filepath.Join(appName, "__init__.py")))
+		})
+	})
+
+	t.Run("dev mode does not apply prod exclusions", func(t *testing.T) {
+		meta, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, version, "dev")
+		assert.Equal(t, "dev", meta.PackageType)
+
+		inspectFPM(t, fpmPath, func(filesInArchive map[string]*zip.File, r *zip.Reader) {
+			for relPath := range alwaysIncludeFiles {
+				normalizedPath := filepath.ToSlash(relPath)
+				assert.Contains(t, filesInArchive, normalizedPath, "Expected file '%s' to be present in DEV archive", normalizedPath)
+			}
+			// In dev mode, production-specific exclusions should NOT be applied.
+			// However, defaultIgnorePatterns like .git/ still apply.
+			// The productionExclusionPatterns are: .git, __pycache__, *.pyc, test*, tests
+			// Default ignores are: .git/, *.pyc, __pycache__/, .DS_Store, etc.
+			// So .git/, __pycache__, *.pyc will be excluded in BOTH dev and prod due to default + prod specific overlap.
+			// Only test* and tests/ are unique to prod exclusions.
+
+			for relPath := range prodOnlyExcludeFiles {
+				normalizedPath := filepath.ToSlash(relPath)
+				isActuallyExcludedByDefaultForDev := strings.HasPrefix(normalizedPath, ".git/") ||
+				                                   strings.Contains(normalizedPath, "__pycache__/") ||
+				                                   strings.HasSuffix(normalizedPath, ".pyc")
+
+				if isActuallyExcludedByDefaultForDev {
+					assert.NotContains(t, filesInArchive, normalizedPath, "File '%s' should be ABSENT in DEV due to default ignores", normalizedPath)
+				} else {
+					// These are files like test_*.py or tests/* which are only excluded in prod.
+					assert.Contains(t, filesInArchive, normalizedPath, "Expected file '%s' to be PRESENT in DEV archive", normalizedPath)
+				}
+			}
+		})
+	})
+}
+
+func TestArchiveStructure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration-style test in short mode.")
+	}
+	baseTestDir := t.TempDir()
+	appName := "test_structure_app"
+	version := "0.1.0"
+
+	files := map[string]string{
+		filepath.Join(appName, "models/item.py"): "class Item:",
+		"assets/css/style.css":                 ".body {}",
+		"requirements.txt":                     "frappe-sdk",
+		// Ensure a file that might be accidentally put in app_source by old logic is tested
+		"file_at_root.txt": "should be at root",
+	}
+	sourceDir := createMinimalFrappeApp(t, baseTestDir, appName, files)
+
+	_, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, version, "prod" /* any type */)
+
+	expectedPathsInArchive := []string{
+		"app_metadata.json",
+		filepath.ToSlash(filepath.Join(appName, "models/item.py")),
+		"assets/css/style.css",
+		"requirements.txt",
+		"file_at_root.txt",
+		filepath.ToSlash(filepath.Join(appName, "__init__.py")),
+		filepath.ToSlash(filepath.Join(appName, "hooks.py")),
+		filepath.ToSlash(filepath.Join(appName, "modules.txt")),
+	}
+
+	inspectFPM(t, fpmPath, func(filesInArchive map[string]*zip.File, r *zip.Reader) {
+		for _, expectedPath := range expectedPathsInArchive {
+			assert.Contains(t, filesInArchive, expectedPath, "Expected file '%s' to be in archive at root level", expectedPath)
+		}
+
+		// Explicitly check no app_source directory
+		foundAppSourceDir := false
+		foundAppSourceFile := false
+		for pathInArchive := range filesInArchive {
+			if strings.HasPrefix(pathInArchive, "app_source/") {
+				foundAppSourceDir = true // Found something that looks like the old dir
+				if pathInArchive == filepath.ToSlash(filepath.Join("app_source", appName, "models/item.py")) {
+					foundAppSourceFile = true
+				}
+			}
+		}
+		assert.False(t, foundAppSourceDir, "No files or directories should be under 'app_source/'")
+		assert.False(t, foundAppSourceFile, "File 'app_source/%s/models/item.py' should not exist", appName)
+	})
+}
+
+func TestContentChecksum(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration-style test in short mode.")
+	}
+	baseTestDir := t.TempDir()
+	appName := "test_checksum_app"
+	version := "1.0.0" // Base version
+
+	initialFileRelPath := filepath.Join(appName, "file_to_check.txt") // Relative to sourceDir
+	initialContent := "original checksum content"
+	modifiedContent := "new checksum content"
+
+	// Create initial app state
+	sourceDir := createMinimalFrappeApp(t, baseTestDir, appName, map[string]string{
+		initialFileRelPath:                   initialContent,
+		filepath.Join(appName, "another.py"): "some consistent code",
+	})
+
+	// Package 1: Initial content
+	meta1, fpmPath1 := runPackageAndGetMeta(t, sourceDir, appName, version, "prod")
+	require.NotEmpty(t, meta1.ContentChecksum, "ContentChecksum should not be empty (meta1)")
+	t.Logf("Checksum 1 (initial): %s for version %s, path %s", meta1.ContentChecksum, version, fpmPath1)
+
+	// Package 2: Modify a file and repackage.
+	// We modify the file in the existing sourceDir.
+	absInitialFilePath := filepath.Join(sourceDir, initialFileRelPath)
+	require.NoError(t, os.WriteFile(absInitialFilePath, []byte(modifiedContent), 0644), "Failed to modify file for checksum test")
+
+	versionMod := version + "-mod" // Use a different package version for clarity in logs/outputs
+	meta2, fpmPath2 := runPackageAndGetMeta(t, sourceDir, appName, versionMod, "prod")
+	require.NotEmpty(t, meta2.ContentChecksum, "ContentChecksum should not be empty (meta2)")
+	t.Logf("Checksum 2 (modified): %s for version %s, path %s", meta2.ContentChecksum, versionMod, fpmPath2)
+	assert.NotEqual(t, meta1.ContentChecksum, meta2.ContentChecksum, "ContentChecksum should change when file content changes.")
+
+	// Package 3: Revert modification. Checksum should revert to original.
+	require.NoError(t, os.WriteFile(absInitialFilePath, []byte(initialContent), 0644), "Failed to revert file for checksum test")
+	versionRevert := version + "-revert"
+	meta3, fpmPath3 := runPackageAndGetMeta(t, sourceDir, appName, versionRevert, "prod")
+	require.NotEmpty(t, meta3.ContentChecksum, "ContentChecksum should not be empty (meta3)")
+	t.Logf("Checksum 3 (reverted): %s for version %s, path %s", meta3.ContentChecksum, versionRevert, fpmPath3)
+	assert.Equal(t, meta1.ContentChecksum, meta3.ContentChecksum, "ContentChecksum should revert to original when content is reverted.")
+
+	// Package 4: Package the original content again, but with a different package version in app_metadata.json.
+	// The content checksum should remain the same as meta1, because app_metadata.json (which would contain
+	// the different package version) is ignored during checksum calculation.
+	versionDifferentMeta := version + "-diffmeta"
+	// sourceDir currently has initialFileRelPath with initialContent.
+	meta4, fpmPath4 := runPackageAndGetMeta(t, sourceDir, appName, versionDifferentMeta, "prod")
+	require.NotEmpty(t, meta4.ContentChecksum, "ContentChecksum should not be empty (meta4)")
+	t.Logf("Checksum 4 (diffmeta): %s for version %s, path %s", meta4.ContentChecksum, versionDifferentMeta, fpmPath4)
+
+	// Verify meta4 from FPM (after packaging) has the new version, but ContentChecksum matches original (meta1)
+	// This uses the readMetadataFromFpm helper defined in this test file.
+	fpmMeta4Data, err := readMetadataFromFpm(t, fpmPath4)
+	require.NoError(t, err, "Failed to read metadata from FPM for meta4 check")
+	assert.Equal(t, versionDifferentMeta, fpmMeta4Data.PackageVersion, "PackageVersion in app_metadata.json should be the new one.")
+	assert.Equal(t, meta1.ContentChecksum, fpmMeta4Data.ContentChecksum, "ContentChecksum in app_metadata.json should match original (meta1) despite other metadata changes.")
+	// Also check against meta4.ContentChecksum which was derived directly from runPackageAndGetMeta
+	assert.Equal(t, meta1.ContentChecksum, meta4.ContentChecksum, "ContentChecksum from runPackageAndGetMeta should match original (meta1).")
+
+
+	// Package 5: Add a new file. Checksum should change.
+	newFileRelPath := filepath.Join(appName, "newly_added_file.txt")
+	absNewFilePath := filepath.Join(sourceDir, newFileRelPath)
+	require.NoError(t, os.WriteFile(absNewFilePath, []byte("new file data"), 0644))
+	versionAddedFile := version + "-addfile"
+	meta5, fpmPath5 := runPackageAndGetMeta(t, sourceDir, appName, versionAddedFile, "prod")
+	require.NotEmpty(t, meta5.ContentChecksum, "ContentChecksum should not be empty (meta5)")
+	t.Logf("Checksum 5 (file added): %s for version %s, path %s", meta5.ContentChecksum, versionAddedFile, fpmPath5)
+	assert.NotEqual(t, meta1.ContentChecksum, meta5.ContentChecksum, "ContentChecksum should change when a new file is added.")
+	// Cleanup the added file for subsequent tests in this function
+	require.NoError(t, os.Remove(absNewFilePath))
+
+
+	// Package 6: Rename a file. Checksum should change.
+	// Ensure back to original state first (no newFileRelPath, initialFileRelPath has initialContent)
+	// This is already the state as newFileRelPath was removed, and initialFileRelPath content is initialContent.
+	renamedFileRelPath := filepath.Join(appName, "renamed_" + filepath.Base(initialFileRelPath))
+	absRenamedFilePath := filepath.Join(sourceDir, renamedFileRelPath)
+	require.NoError(t, os.Rename(absInitialFilePath, absRenamedFilePath)) // Rename initialFileRelPath
+
+	versionRenamedFile := version + "-renamed"
+	meta6, fpmPath6 := runPackageAndGetMeta(t, sourceDir, appName, versionRenamedFile, "prod")
+	require.NotEmpty(t, meta6.ContentChecksum, "ContentChecksum should not be empty (meta6)")
+	t.Logf("Checksum 6 (file renamed): %s for version %s, path %s", meta6.ContentChecksum, versionRenamedFile, fpmPath6)
+	assert.NotEqual(t, meta1.ContentChecksum, meta6.ContentChecksum, "ContentChecksum should change when a file is renamed.")
+
+	// Restore file name for hygiene, though sourceDir is temp and will be cleaned up
+	require.NoError(t, os.Rename(absRenamedFilePath, absInitialFilePath))
+}

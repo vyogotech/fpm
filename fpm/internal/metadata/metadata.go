@@ -18,6 +18,9 @@ type AppMetadata struct {
 	Dependencies        map[string]string `json:"dependencies,omitempty"` // e.g., "erpnext": "13.2.1"
 	FrappeCompatibility []string          `json:"frappe_compatibility,omitempty"` // e.g., ["13.x.x", "14.x.x"]
 	Hooks               map[string]string `json:"hooks,omitempty"` // e.g., "install_hooks": "install_hooks.py"
+	SourceControlURL    string            `json:"source_control_url,omitempty"`
+	PackageType         string            `json:"package_type,omitempty"`
+	ContentChecksum     string            `json:"content_checksum,omitempty"`
 	// Add other fields as necessary
 }
 
