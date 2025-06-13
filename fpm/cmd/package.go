@@ -77,6 +77,7 @@ var (
 	packageOutputPath string
 	packageVersion    string
 	packageOverwrite  bool
+	packageType       string
 )
 
 var packageCmd = &cobra.Command{
@@ -205,6 +206,23 @@ It reads app metadata, collects source files, and bundles them into a versioned 
 		meta.PackageName = finalAppName // AppName is the primary identifier now
 		// meta.PackageVersion is already set from the flag
 
+		// Get full git remote URL
+		fullGitURL, errGitURL := gitutils.GetFullGitRemoteOriginURL(absSourcePath)
+		if errGitURL != nil {
+			// Similar to org/repo parsing, treat "not found" as non-fatal for this field
+			unwrappedErr := errors.Unwrap(errGitURL)
+			if unwrappedErr == nil { unwrappedErr = errGitURL }
+
+			if !strings.Contains(unwrappedErr.Error(), "not found") && !strings.Contains(unwrappedErr.Error(), "no such file or directory") {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not determine full git remote URL: %v\n", errGitURL)
+			}
+			// No "Info" message here, as it's less critical than org/repo for basic operation
+		}
+		meta.SourceControlURL = fullGitURL
+
+		// Set package type from flag
+		meta.PackageType = packageType // packageType is the global var bound to the flag
+
 		// Validate Frappe app structure using the final determined AppName
 		if err := validateFrappeAppStructure(absSourcePath, meta.AppName); err != nil {
 			return err
@@ -246,6 +264,7 @@ func init() {
 	// Optional flags for overriding derived values
 	packageCmd.Flags().String("org", "", "GitHub organization or similar identifier for the app (overrides auto-detection)")
 	packageCmd.Flags().String("app-name", "", "Actual Frappe app name (e.g., erpnext, my_custom_app) (overrides auto-detection)")
+	packageCmd.Flags().StringVar(&packageType, "package-type", "prod", "Package type (prod|dev)")
 
 	// No longer marking app-name as required, as it can be derived.
 	// Version is still marked as required implicitly by the check in RunE.

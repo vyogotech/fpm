@@ -90,3 +90,49 @@ func GetGitRemoteOriginInfo(repoPath string) (org string, repoName string, err e
 
 	return "", "", fmt.Errorf("failed to parse org and repo from origin URL: '%s'", originURL)
 }
+
+// GetFullGitRemoteOriginURL parses .git/config to find the remote "origin" URL.
+// It returns the full URL string or an error if parsing fails or info is not found.
+func GetFullGitRemoteOriginURL(repoPath string) (string, error) {
+	gitConfigPath := filepath.Join(repoPath, ".git", "config")
+
+	file, err := os.Open(gitConfigPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("git config not found at %s: %w", gitConfigPath, err)
+		}
+		return "", fmt.Errorf("failed to open git config %s: %w", gitConfigPath, err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	inOriginSection := false
+	originURL := ""
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "[remote \"origin\"]") {
+			inOriginSection = true
+			continue
+		}
+		if inOriginSection {
+			if strings.HasPrefix(line, "[") { // Entered a new section
+				break
+			}
+			if strings.HasPrefix(line, "url = ") {
+				originURL = strings.TrimPrefix(line, "url = ")
+				break // Found the URL for origin
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("error scanning git config %s: %w", gitConfigPath, err)
+	}
+
+	if originURL == "" {
+		return "", fmt.Errorf("remote 'origin' URL not found or 'url' field missing in %s", gitConfigPath)
+	}
+
+	return originURL, nil
+}

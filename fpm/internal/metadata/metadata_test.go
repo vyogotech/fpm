@@ -36,6 +36,9 @@ func TestLoadAppMetadata(t *testing.T) {
 		Dependencies:        map[string]string{"frappe": "13.0.0"},
 		FrappeCompatibility: make([]string, 0), // Should match initialized empty slice
 		Hooks:               make(map[string]string), // Should match initialized empty map
+		SourceControlURL:    "", // Expect zero value if not in JSON
+		PackageType:         "", // Expect zero value if not in JSON
+		ContentChecksum:     "", // Expect zero value if not in JSON
 	}
 	if !reflect.DeepEqual(loadedMeta, expectedMeta) {
 		t.Errorf("Loaded metadata mismatch. Got %#v, want %#v", loadedMeta, expectedMeta) // Using %#v for more detail
@@ -127,6 +130,9 @@ func TestSaveAndLoadAppMetadata(t *testing.T) {
 		Dependencies:   map[string]string{"frappe": "14.0.0"},
         FrappeCompatibility: []string{"14.x.x"},
         Hooks: map[string]string{"install": "install.py"},
+        SourceControlURL: "https://github.com/test/app.git",
+        PackageType: "prod",
+        ContentChecksum: "dummychecksum123abc",
 	}
 
 	err = SaveAppMetadata(tmpDir, metaToSave)
