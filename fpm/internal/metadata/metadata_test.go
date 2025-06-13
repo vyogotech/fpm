@@ -17,8 +17,8 @@ func TestLoadAppMetadata(t *testing.T) {
 
 	// Case 1: app_metadata.json exists and is valid
 	validMetadataContent := `{
-		"packageName": "test_app",
-		"packageVersion": "0.0.1",
+		"package_name": "test_app",
+		"package_version": "0.0.1",
 		"dependencies": {"frappe": "13.0.0"}
 	}`
 	validMetadataPath := filepath.Join(tmpDir, "app_metadata.json")

@@ -3,7 +3,6 @@ package utils
 import (
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -373,9 +372,12 @@ func TestCalculateDirectoryChecksum(t *testing.T) {
 		// Checksum1 was with "target.txt" content "this is the target"
 		// Checksum3 is with "target.txt" content "content has changed here"
 		// Since the link "link_to_file.txt" still points to the name "target.txt" (or its equivalent relative path),
-		// and we hash the link's target *path string*, the checksum should be the same.
-		if checksum1 != checksum3 {
-			t.Errorf("Expected checksums to be the same when only the content of a symlink's target file changes, but not the target path itself. Got %s and %s", checksum1, checksum3)
+		// the symlink's own contribution to the hash (its path + its target path string "target.txt") remains the same.
+		// However, the file "target.txt" is ALSO part of the directory structure independently.
+		// When its content changes, its independent contribution to the hash changes.
+		// Therefore, the overall directory checksum SHOULD change.
+		if checksum1 == checksum3 {
+			t.Errorf("Expected checksums to DIFFER when the content of a symlink's target file (also in the checksummed dir) changes. Got same checksum %s. Checksum1 %s, Checksum3 %s", checksum1, checksum1, checksum3)
 		}
 
 	})
