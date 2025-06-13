@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"strings"
+
 	"fpm/internal/metadata" // Import the metadata package
 	"fpm/internal/utils"    // Import for checksum calculation
 
@@ -30,11 +32,11 @@ var defaultIgnorePatterns = []string{
 }
 
 var productionExclusionPatterns = []string{
-	".git",       // Exclude the entire .git directory
-	"__pycache__", // Exclude python bytecode cache
-	"*.pyc",      // Exclude python compiled files
-	"test*",      // Exclude files/dirs starting with test
-	"tests",      // Exclude directories named tests
+	"/.git/",
+	"__pycache__/", // These are fine anywhere
+	"*.pyc",
+	"/tests/",      // Only root tests/ directory
+	"/test_*",      // Only root files/dirs like test_runner.py or test_output/
 }
 
 // CreateFPMArchive creates an .fpm package from the app source.
@@ -68,43 +70,55 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 
 	// --- Prepare .fpmignore ---
 	ignoreFilePath := filepath.Join(absAppSourcePath, ".fpmignore")
-	var ignorer *ignore.GitIgnore // Changed gitignore to ignore
-	if _, err := os.Stat(ignoreFilePath); err == nil {
-		ignorer, err = ignore.CompileIgnoreFile(ignoreFilePath) // Changed gitignore to ignore
-		if err != nil {
-			return fmt.Errorf("failed to compile .fpmignore: %w", err)
+	var ignorer *ignore.GitIgnore // Declare ignorer once
+
+	// Start with default ignore patterns
+	combinedIgnorePatterns := make([]string, len(defaultIgnorePatterns))
+	copy(combinedIgnorePatterns, defaultIgnorePatterns)
+
+	// Add patterns from .fpmignore if it exists
+	// Use a new variable for os.Stat error to avoid shadowing function-scoped err
+	if _, statErr := os.Stat(ignoreFilePath); statErr == nil {
+		fpmIgnoreBytes, readErr := os.ReadFile(ignoreFilePath) // Use new variable for ReadFile error
+		if readErr != nil {
+			return fmt.Errorf("failed to read .fpmignore file %s: %w", ignoreFilePath, readErr)
 		}
-	} else {
-		// Use default patterns if .fpmignore doesn't exist
-		ignorer = ignore.CompileIgnoreLines(defaultIgnorePatterns...) // Changed gitignore to ignore
+		fpmIgnoreLines := strings.Split(string(fpmIgnoreBytes), "\n")
+		for _, line := range fpmIgnoreLines {
+			trimmedLine := strings.TrimSpace(line)
+			if trimmedLine != "" && !strings.HasPrefix(trimmedLine, "#") { // Ignore empty lines and comments
+				// Check for duplicates before appending, though CompileIgnoreLines might handle it
+				alreadyExists := false
+				for _, existingPattern := range combinedIgnorePatterns {
+					if trimmedLine == existingPattern {
+						alreadyExists = true
+						break
+					}
+				}
+				if !alreadyExists {
+					combinedIgnorePatterns = append(combinedIgnorePatterns, trimmedLine)
+				}
+			}
+		}
 	}
 
-	// If package type is "prod", add production exclusions
-	var currentRules []string
-	// Try to get lines from existing ignorer (which could be from .fpmignore or defaults)
-	if ignorer != nil {
-		currentRules = ignorer.Lines()
-	} else {
-		// This case should ideally not be hit if ignorer is always initialized
-		currentRules = defaultIgnorePatterns
-	}
-
+	// If package type is "prod", add production-specific exclusion patterns
 	if meta.PackageType == "prod" {
-		combinedRules := currentRules
 		for _, prodPattern := range productionExclusionPatterns {
 			alreadyExists := false
-			for _, existingPattern := range combinedRules {
+			for _, existingPattern := range combinedIgnorePatterns {
 				if prodPattern == existingPattern {
 					alreadyExists = true
 					break
 				}
 			}
 			if !alreadyExists {
-				combinedRules = append(combinedRules, prodPattern)
+				combinedIgnorePatterns = append(combinedIgnorePatterns, prodPattern)
 			}
 		}
-		ignorer = ignore.CompileIgnoreLines(combinedRules...)
 	}
+
+	ignorer = ignore.CompileIgnoreLines(combinedIgnorePatterns...)
 
 
 	// --- Copy app source files ---
@@ -143,7 +157,9 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 
 		// Check against ignorer (relative to appSourcePath)
 		// go-gitignore expects paths relative to the .fpmignore file's location (absAppSourcePath)
-		if ignorer.MatchesPath(relPath) { // This ignorer now includes prod patterns if applicable
+		// The app's main module directory (meta.AppName) should not be skipped by top-level rules like "test*"
+		// Its contents will be evaluated individually.
+		if relPath != meta.AppName && ignorer.MatchesPath(relPath) { // This ignorer now includes prod patterns if applicable
 			if d.IsDir() {
 				return filepath.SkipDir // Skip ignored directories
 			}

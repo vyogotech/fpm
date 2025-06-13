@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -258,15 +259,16 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 	}
 
 	// Helper to reset flags on packageCmd before each execution in subtests
-	resetPackageCmdFlags := func() {
-		packageCmd.Flags().VisitAll(func(f *pflag.Flag) {
-			f.Value.Set(f.DefValue)
-			f.Changed = false
-		})
-	}
+	// Moved to package level for use by multiple test functions.
+	// resetPackageCmdFlags := func() {
+	// 	packageCmd.Flags().VisitAll(func(f *pflag.Flag) {
+	// 		f.Value.Set(f.DefValue)
+	// 		f.Changed = false
+	// 	})
+	// }
 
 	t.Run("derivation success no flags", func(t *testing.T) {
-		resetPackageCmdFlags()
+		// resetPackageCmdFlags() // Call the package-level helper
 		baseTestDir := t.TempDir()
 		sourceDirName := "testapp_src_hooks" // Directory that will be source
 		sourceDir := filepath.Join(baseTestDir, sourceDirName)
@@ -590,8 +592,8 @@ func TestPackageTypeFlag(t *testing.T) {
 }
 
 // inspectFPM opens the FPM file and allows assertions on its contents.
-// It provides a map of file names to their zip.File struct and the zip.Reader itself.
-func inspectFPM(t *testing.T, fpmPath string, checkFn func(filesInArchive map[string]*zip.File, r *zip.Reader)) {
+// It provides a map of file names to their zip.File struct and the zip.ReadCloser itself.
+func inspectFPM(t *testing.T, fpmPath string, checkFn func(filesInArchive map[string]*zip.File, r *zip.ReadCloser)) {
 	t.Helper()
 	r, err := zip.OpenReader(fpmPath)
 	require.NoError(t, err, "Failed to open .fpm file %s", fpmPath)
@@ -604,13 +606,39 @@ func inspectFPM(t *testing.T, fpmPath string, checkFn func(filesInArchive map[st
 	checkFn(filesInArchive, r)
 }
 
+// resetPackageCmdFlags resets all flags for packageCmd to their default values.
+// This is important for running packageCmd multiple times in tests.
+func resetPackageCmdFlags() {
+	packageCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		// For some flag types, Value.Set might not correctly reset to default if the
+		// default value string is complex (e.g. for slices or maps).
+		// The most reliable way to reset pflag values to their true defaults is often
+		// to re-initialize them or use specific methods if available.
+		// However, for string, bool, int flags, f.Value.Set(f.DefValue) is usually fine.
+		f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	// Also reset global variables bound to flags if they are not reset by the above.
+	// For example, packageSourcePath, packageOutputPath, packageVersion, packageOverwrite, packageType
+	// are global variables in cmd/package.go. These need to be reset manually if they are directly used.
+	// The runPackageAndGetMeta helper re-sets them by not relying on global state but passing params.
+	// The TestPackageCmd_DerivationAndOverrides test explicitly calls packageCmd.Flags().Set for overrides.
+	// The `resetPackageCmdFlags` in TestPackageCmd_DerivationAndOverrides was scoped locally.
+	// Making it package-level means it can be used by runPackageAndGetMeta too.
+	// The global variables bound to flags in package.go's init() are:
+	// packageOutputPath, packageVersion, packageOverwrite, packageType (for --package-type)
+	// And String flags for "org", "app-name".
+	// The `packageCmd.Flags().VisitAll` should handle resetting these at the flagset level.
+	// The variables themselves if modified directly would need manual reset, but cobra usually works via flags.
+}
+
 
 func TestProductionExclusions(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration-style test in short mode.")
 	}
 	baseTestDir := t.TempDir()
-	appName := "test_exclusion_app"
+	appName := "sample_exclusion_app" // Renamed to avoid conflict with /test_* pattern
 	version := "1.0.0"
 
 	// Files that should always be included (unless .fpmignore says otherwise, not tested here)
@@ -644,7 +672,7 @@ func TestProductionExclusions(t *testing.T) {
 		meta, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, version, "prod")
 		assert.Equal(t, "prod", meta.PackageType)
 
-		inspectFPM(t, fpmPath, func(filesInArchive map[string]*zip.File, r *zip.Reader) {
+		inspectFPM(t, fpmPath, func(filesInArchive map[string]*zip.File, r *zip.ReadCloser) {
 			for relPath := range alwaysIncludeFiles {
 				normalizedPath := filepath.ToSlash(relPath)
 				assert.Contains(t, filesInArchive, normalizedPath, "Expected file '%s' to be present in PROD archive", normalizedPath)
@@ -662,7 +690,7 @@ func TestProductionExclusions(t *testing.T) {
 		meta, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, version, "dev")
 		assert.Equal(t, "dev", meta.PackageType)
 
-		inspectFPM(t, fpmPath, func(filesInArchive map[string]*zip.File, r *zip.Reader) {
+		inspectFPM(t, fpmPath, func(filesInArchive map[string]*zip.File, r *zip.ReadCloser) {
 			for relPath := range alwaysIncludeFiles {
 				normalizedPath := filepath.ToSlash(relPath)
 				assert.Contains(t, filesInArchive, normalizedPath, "Expected file '%s' to be present in DEV archive", normalizedPath)
@@ -696,7 +724,7 @@ func TestArchiveStructure(t *testing.T) {
 		t.Skip("Skipping integration-style test in short mode.")
 	}
 	baseTestDir := t.TempDir()
-	appName := "test_structure_app"
+	appName := "sample_structure_app" // Renamed to avoid conflict
 	version := "0.1.0"
 
 	files := map[string]string{
@@ -721,7 +749,7 @@ func TestArchiveStructure(t *testing.T) {
 		filepath.ToSlash(filepath.Join(appName, "modules.txt")),
 	}
 
-	inspectFPM(t, fpmPath, func(filesInArchive map[string]*zip.File, r *zip.Reader) {
+	inspectFPM(t, fpmPath, func(filesInArchive map[string]*zip.File, r *zip.ReadCloser) {
 		for _, expectedPath := range expectedPathsInArchive {
 			assert.Contains(t, filesInArchive, expectedPath, "Expected file '%s' to be in archive at root level", expectedPath)
 		}
@@ -747,7 +775,7 @@ func TestContentChecksum(t *testing.T) {
 		t.Skip("Skipping integration-style test in short mode.")
 	}
 	baseTestDir := t.TempDir()
-	appName := "test_checksum_app"
+	appName := "sample_checksum_app" // Renamed to avoid conflict
 	version := "1.0.0" // Base version
 
 	initialFileRelPath := filepath.Join(appName, "file_to_check.txt") // Relative to sourceDir

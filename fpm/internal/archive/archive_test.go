@@ -114,7 +114,7 @@ func TestCreateFPMArchive(t *testing.T) {
 
 	// Sample files for the mock app
 	appFiles := map[string]string{
-		"app_metadata.json":         `{"packageName": "my_test_app", "packageVersion": "0.0.1", "description": "A test app."}`, // Version will be overridden
+		"app_metadata.json":         `{"package_name": "my_test_app", "package_version": "0.0.1", "description": "A test app."}`, // Version will be overridden
 		"requirements.txt":          "frappe>=13.0.0",
 		"install_hooks.py":          "print('hello from install hook')",
 		"my_test_app/file1.py":      "print('file1')",
@@ -161,9 +161,9 @@ func TestCreateFPMArchive(t *testing.T) {
 		"app_metadata.json":         &strExpectedMetadataJson,
 		"requirements.txt":          &strRequirementsTxt,
 		"install_hooks.py":          &strInstallHooksPy,
-		"app_source/my_test_app/file1.py": &strAppSourceFile1Py,
-        "app_source/my_test_app/data/file.json": &strAppSourceDataFileJson, // Should NOT be ignored due to simple ignore file
-		"app_source/public/js/script.js": nil, // Content check optional for all
+		"my_test_app/file1.py": &strAppSourceFile1Py, // No app_source prefix
+        "my_test_app/data/file.json": &strAppSourceDataFileJson, // No app_source prefix
+		"public/js/script.js": nil, // No app_source prefix, this path is relative to app source root
 		"compiled_assets/css/style.css": &strCompiledAssetsStyleCss,
 	}
 

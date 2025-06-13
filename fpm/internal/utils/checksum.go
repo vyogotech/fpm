@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 )
 
 // CalculateDirectoryChecksum calculates a SHA256 checksum for the contents of a directory.
