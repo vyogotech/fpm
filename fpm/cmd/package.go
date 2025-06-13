@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"errors" // For errors.Unwrap
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings" // Added missing import
 
+	"fpm/internal/apputils"
 	"fpm/internal/archive"
+	"fpm/internal/gitutils"
 	"fpm/internal/metadata"
 
 	"github.com/spf13/cobra"
@@ -80,72 +84,133 @@ var packageCmd = &cobra.Command{
 	Short: "Package a Frappe application into an .fpm file",
 	Long: `Packages a Frappe application from a local development directory into an .fpm file.
 It reads app metadata, collects source files, and bundles them into a versioned archive.`,
-	RunE: func(cmd *cobra.Command, args []string) error { // Using RunE for error handling
-		// Retrieve flag values
-		orgFlagValue, err := cmd.Flags().GetString("org")
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Source path is now an optional argument, defaults to "."
+		sourcePath := "."
+		if len(args) > 0 {
+			sourcePath = args[0]
+		}
+		absSourcePath, err := filepath.Abs(sourcePath)
 		if err != nil {
-			return fmt.Errorf("failed to get 'org' flag value: %w", err)
+			return fmt.Errorf("failed to get absolute source path for '%s': %w", sourcePath, err)
 		}
-		appNameFlagValue, err := cmd.Flags().GetString("app-name")
-		if err != nil {
-			return fmt.Errorf("failed to get 'app-name' flag value: %w", err)
-		}
-		// Version is already a global variable packageVersion, direct check
-		if packageVersion == "" {
-			return fmt.Errorf("--version flag is required")
-		}
-		// appNameFlagValue is marked required by Cobra, so it should exist if command parsing succeeded.
-
-
-		absSourcePath, err := filepath.Abs(packageSourcePath)
-		if err != nil {
-			return fmt.Errorf("failed to get absolute source path: %w", err)
-		}
-
 		if _, err := os.Stat(absSourcePath); os.IsNotExist(err) {
 			return fmt.Errorf("source path '%s' does not exist", absSourcePath)
 		}
 
-		// Load existing metadata or generate a new one
+		// Version flag is still required
+		versionFlagValue := packageVersion // packageVersion is the global var bound to the flag
+		if versionFlagValue == "" {
+			return fmt.Errorf("--version flag is required")
+		}
+
+		// 1. Initial metadata load/generation
+		// This provides an initial meta object, potentially with app_name, org from an existing app_metadata.json
+		// or with PackageName inferred from absSourcePath if generating.
 		meta, err := metadata.LoadAppMetadata(absSourcePath)
 		if err != nil {
-			// If LoadAppMetadata returns an error for reasons other than file not found,
-			// or if we decide it should error if file not found, handle here.
-			// For now, LoadAppMetadata returns empty struct if not found.
-			// Let's assume if meta.PackageName is empty after Load, we should generate.
+			// Attempt to generate if loading failed or if specific "not found" type error (LoadAppMetadata current returns empty struct if not found)
+			// For now, let's assume LoadAppMetadata returns an empty struct and no error if not found.
+			// So, we check if meta.PackageName is empty (or AppName, if LoadAppMetadata sets it)
+		}
+		if meta.PackageName == "" && meta.AppName == "" { // If no useful name info loaded
+			generatedMeta, genErr := metadata.GenerateAppMetadata(absSourcePath, versionFlagValue)
+			if genErr != nil {
+				return fmt.Errorf("failed to generate default app metadata: %w", genErr)
+			}
+			meta = generatedMeta // Use the generated one
+		}
+		meta.PackageVersion = versionFlagValue // Version flag is authoritative
+
+		// 2. Derive Org from Git
+		orgFromGit, repoNameFromGit, errGit := gitutils.GetGitRemoteOriginInfo(absSourcePath)
+		if errGit != nil {
+			// Check if the error is more serious than just .git/config not found or origin missing
+			// os.IsNotExist is tricky with wrapped errors. A custom error type in gitutils might be better.
+			// For now, log non-critical "not found" types of errors.
+			unwrappedErr := errors.Unwrap(errGit)
+			if unwrappedErr == nil { unwrappedErr = errGit } // Use original error if not wrapped by fmt.Errorf %w
+
+			if !strings.Contains(unwrappedErr.Error(), "not found") && !strings.Contains(unwrappedErr.Error(), "no such file or directory") {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not determine org/repo from git: %v\n", errGit)
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Info: no git remote 'origin' found or not a git repo: %s\n", absSourcePath)
+			}
 		}
 
-		// If package name is still empty (either file didn't exist or was empty), generate.
-		if meta.PackageName == "" {
-		    inferredMeta, genErr := metadata.GenerateAppMetadata(absSourcePath, packageVersion)
-		    if genErr != nil {
-		        return fmt.Errorf("failed to generate default app metadata: %w", genErr)
-		    }
-		    meta = inferredMeta // Use the generated one
-		} else {
-            // If loaded, still ensure the CLI version overrides
-		    meta.PackageVersion = packageVersion
-        }
-        // If GenerateAppMetadata was called, it already set the version.
-        // If LoadAppMetadata was called and it was successful, PackageVersion in meta
-        // will be updated by the GenerateAppMetadata or the line above.
+		// 3. Derive AppName from hooks.py or Git repository name
+		derivedAppName := ""
+		// Use initial guess for app_name dir from metadata to find hooks.py.
+		// meta.PackageName is often the directory name. If AppName was loaded, use that.
+		appModuleDirGuess := meta.AppName
+		if appModuleDirGuess == "" {
+			appModuleDirGuess = meta.PackageName // Fallback to PackageName if AppName isn't set yet
+		}
 
-		// --- Populate metadata with flag values (overriding loaded/generated values if any) ---
-		// The --app-name flag is now the authoritative source for AppName and PackageName
-		meta.AppName = appNameFlagValue
-		meta.PackageName = appNameFlagValue // Set PackageName from app-name flag
-		meta.Org = orgFlagValue
-		// Ensure version from flag is used (already done if generated, this ensures for loaded meta)
-		meta.PackageVersion = packageVersion
+		if appModuleDirGuess != "" { // Only try if we have a directory to look into
+			hooksFilePath := filepath.Join(absSourcePath, appModuleDirGuess, "hooks.py")
+			appNameFromHooks, errHooks := apputils.GetAppNameFromHooks(hooksFilePath)
+			if errHooks == nil && appNameFromHooks != "" {
+				derivedAppName = appNameFromHooks
+				fmt.Fprintf(cmd.OutOrStdout(), "Info: Inferred app_name '%s' from hooks.py\n", derivedAppName)
+			} else if errHooks != nil {
+				unwrappedErr := errors.Unwrap(errHooks)
+				if unwrappedErr == nil { unwrappedErr = errHooks }
+				if !strings.Contains(unwrappedErr.Error(), "not found") && !strings.Contains(unwrappedErr.Error(), "no such file or directory"){
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not determine app_name from %s: %v\n", hooksFilePath, errHooks)
+				} else {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Info: hooks.py not found at %s or app_name not in it.\n", hooksFilePath)
+				}
+			}
+		}
+
+		if derivedAppName == "" && repoNameFromGit != "" {
+			derivedAppName = repoNameFromGit
+			fmt.Fprintf(cmd.OutOrStdout(), "Info: Using repository name '%s' as app_name (derived from git remote)\n", derivedAppName)
+		}
 
 
-		// Validate Frappe app structure using the definitive appName from the flag
+		// 4. Determine Final Org and AppName (Flags override derived values, which override loaded values)
+		orgFlagValue, _ := cmd.Flags().GetString("org")
+		appNameFlagValue, _ := cmd.Flags().GetString("app-name")
+
+		finalOrg := meta.Org // Start with value from app_metadata.json (if any)
+		if orgFromGit != "" { // Derived from Git (if no flag)
+			finalOrg = orgFromGit
+		}
+		if orgFlagValue != "" { // Flag has highest precedence
+			finalOrg = orgFlagValue
+		}
+
+		finalAppName := meta.AppName // Start with value from app_metadata.json (if any)
+		if derivedAppName != "" { // Derived (hooks or git)
+			finalAppName = derivedAppName
+		}
+		if appNameFlagValue != "" { // Flag has highest precedence
+			finalAppName = appNameFlagValue
+		}
+
+		// 5. Validate final AppName (must exist)
+		if finalAppName == "" {
+			hooksPathForError := filepath.Join(absSourcePath, "[app_module_name]", "hooks.py")
+			if appModuleDirGuess != "" { // Use the guess if available for a more specific error message
+				hooksPathForError = filepath.Join(absSourcePath, appModuleDirGuess, "hooks.py")
+			}
+			return fmt.Errorf("app_name could not be determined. Please provide --app-name flag, or ensure it's in '%s', or derivable from git remote name.", hooksPathForError)
+		}
+
+		// 6. Update metadata object with the final determined values
+		meta.Org = finalOrg
+		meta.AppName = finalAppName
+		meta.PackageName = finalAppName // AppName is the primary identifier now
+		// meta.PackageVersion is already set from the flag
+
+		// Validate Frappe app structure using the final determined AppName
 		if err := validateFrappeAppStructure(absSourcePath, meta.AppName); err != nil {
-			// Pass meta.AppName (which is appNameFlagValue) to validation
-			return err // The error from validateFrappeAppStructure is already descriptive
+			return err
 		}
 
-		// Output filename should also use the definitive appName from the flag
+		// Output filename uses final AppName and Version
 		outputFileName := fmt.Sprintf("%s-%s.fpm", meta.AppName, meta.PackageVersion)
 		absOutputPath, err := filepath.Abs(packageOutputPath)
 		if err != nil {
@@ -172,26 +237,17 @@ It reads app metadata, collects source files, and bundles them into a versioned 
 
 func init() {
 	rootCmd.AddCommand(packageCmd)
-	packageCmd.Flags().StringVarP(&packageSourcePath, "source", "s", ".", "Path to the Frappe app source directory")
+	// packageSourcePath is now an optional argument, not a flag.
+	// packageCmd.Flags().StringVarP(&packageSourcePath, "source", "s", ".", "Path to the Frappe app source directory")
 	packageCmd.Flags().StringVarP(&packageOutputPath, "output-path", "o", ".", "Directory to save the .fpm file")
-	packageCmd.Flags().StringVarP(&packageVersion, "version", "v", "", "Package version (e.g., 1.0.0) (required)")
+	packageCmd.Flags().StringVarP(&packageVersion, "version", "v", "", "Package version (e.g., 1.0.0) (required)") // Still global for now
 	packageCmd.Flags().BoolVar(&packageOverwrite, "overwrite", false, "Overwrite if .fpm file already exists")
 
-	// New flags
-	packageCmd.Flags().String("org", "", "GitHub organization or similar identifier for the app")
-	packageCmd.Flags().String("app-name", "", "Actual Frappe app name (e.g., erpnext, my_custom_app)")
+	// Optional flags for overriding derived values
+	packageCmd.Flags().String("org", "", "GitHub organization or similar identifier for the app (overrides auto-detection)")
+	packageCmd.Flags().String("app-name", "", "Actual Frappe app name (e.g., erpnext, my_custom_app) (overrides auto-detection)")
 
-	// Mark app-name as required
-	if err := packageCmd.MarkFlagRequired("app-name"); err != nil {
-		// This error typically occurs during setup if the flag doesn't exist,
-		// which shouldn't happen here as we just defined it.
-		// Cobra itself will handle the error if the user doesn't provide the flag.
-		// For robustness, one might log this, but it's more of a developer error.
-		fmt.Fprintf(os.Stderr, "Critical setup error: failed to mark 'app-name' flag as required: %v\n", err)
-		// Depending on desired behavior, could os.Exit(1) if this is considered fatal for CLI setup
-	}
-	// Manual check for version is already in RunE, but could also use MarkFlagRequired for consistency.
-	// if err := packageCmd.MarkFlagRequired("version"); err != nil {
-	// 	fmt.Fprintf(os.Stderr, "Critical setup error: failed to mark 'version' flag as required: %v\n", err)
-	// }
+	// No longer marking app-name as required, as it can be derived.
+	// Version is still marked as required implicitly by the check in RunE.
+	// Consider using packageCmd.MarkFlagRequired("version") for consistency in help text.
 }
