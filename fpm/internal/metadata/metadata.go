@@ -9,14 +9,16 @@ import (
 // AppMetadata defines the structure of the app_metadata.json file
 // that will be included in the .fpm package.
 type AppMetadata struct {
-	PackageName         string            `json:"packageName"`
-	PackageVersion      string            `json:"packageVersion"`
+	PackageName         string            `json:"package_name,omitempty"` // This might be the same as AppName or the repo name
+	PackageVersion      string            `json:"package_version,omitempty"`
 	Description         string            `json:"description,omitempty"`
 	Author              string            `json:"author,omitempty"`
+	Org                 string            `json:"org,omitempty"`      // GitHub organization or similar
+	AppName             string            `json:"app_name,omitempty"` // The actual Frappe app name (e.g., erpnext)
 	Dependencies        map[string]string `json:"dependencies,omitempty"` // e.g., "erpnext": "13.2.1"
-	FrappeCompatibility []string          `json:"frappeCompatibility,omitempty"` // e.g., ["13.x.x", "14.x.x"]
+	FrappeCompatibility []string          `json:"frappe_compatibility,omitempty"` // e.g., ["13.x.x", "14.x.x"]
 	Hooks               map[string]string `json:"hooks,omitempty"` // e.g., "install_hooks": "install_hooks.py"
-	// Add other fields as necessary from the vision document's package structure
+	// Add other fields as necessary
 }
 
 // LoadAppMetadata loads metadata from app_metadata.json file in the given appPath.
