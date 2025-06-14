@@ -10,7 +10,8 @@ import (
 
 	"fpm/internal/config" // Added import for FPM config
 	"fpm/internal/metadata"
-	"os/exec" // Added for running pip command
+	"fpm/internal/repository" // Added for repository-based fetching
+	"os/exec"                 // Added for running pip command
 
 	"github.com/spf13/cobra"
 )
@@ -64,12 +65,16 @@ func copyDirContents(src, dst string) error {
 }
 
 var installCmd = &cobra.Command{
-	Use:   "install <package_path>",
-	Short: "Install a Frappe app from a local .fpm package",
-	Long:  `Installs a Frappe application from a specified local .fpm package file into a Frappe bench.`,
-	Args:  cobra.ExactArgs(1), // Ensures exactly one argument (the package path) is provided.
+	Use:   "install <package_path | package_identifier>",
+	Short: "Install a Frappe app from a local .fpm package or a remote repository",
+	Long: `Installs a Frappe application into a Frappe bench.
+The package can be a path to a local .fpm file or a remote package identifier
+in the format <group>/<artifact> or <group>/<artifact>==<version>.
+If the version is not specified for a remote package, the latest version is assumed.`,
+	Args: cobra.ExactArgs(1), // Ensures exactly one argument is provided.
 	RunE: func(cmd *cobra.Command, args []string) error {
-		packagePath := args[0]
+		packagePathArg := args[0] // Original argument, could be path or identifier
+		var finalPackagePath string   // This will be the path to the .fpm file to install
 
 		benchPath, err := cmd.Flags().GetString("bench-path")
 		if err != nil {
@@ -81,24 +86,64 @@ var installCmd = &cobra.Command{
 			return fmt.Errorf("error retrieving 'site' flag: %w", err)
 		}
 
-		fmt.Printf("Starting installation of package: %s\n", packagePath)
+		// Try to stat the path first. If it's a valid local file, use it.
+		// Otherwise, assume it's a remote package identifier.
+		statInfo, statErr := os.Stat(packagePathArg)
+		if statErr == nil && !statInfo.IsDir() {
+			fmt.Printf("Local package file found: %s\n", packagePathArg)
+			finalPackagePath = packagePathArg
+		} else if os.IsNotExist(statErr) || (statInfo != nil && statInfo.IsDir()) {
+			// Path doesn't exist as a file, or it's a directory; treat as remote identifier
+			fmt.Printf("Package '%s' not found locally or is a directory. Attempting to resolve from repositories...\n", packagePathArg)
+
+			var groupID, artifactID, version string
+			parts := strings.Split(packagePathArg, "/")
+			if len(parts) == 2 {
+				groupID = strings.TrimSpace(parts[0])
+				appAndVersion := strings.Split(parts[1], "==")
+				artifactID = strings.TrimSpace(appAndVersion[0])
+				if len(appAndVersion) == 2 {
+					version = strings.TrimSpace(appAndVersion[1])
+				}
+			} else {
+				return fmt.Errorf("invalid remote package identifier format: '%s'. Expected <group>/<artifact> or <group>/<artifact>==<version>", packagePathArg)
+			}
+
+			if groupID == "" || artifactID == "" {
+				return fmt.Errorf("invalid remote package identifier: groupID ('%s') and artifactID ('%s') must be specified in '%s'", groupID, artifactID, packagePathArg)
+			}
+
+			cfg, configErr := config.InitConfig()
+			if configErr != nil {
+				return fmt.Errorf("failed to initialize FPM configuration: %w", configErr)
+			}
+
+			fmt.Printf("Attempting to find package %s/%s (version: '%s') in configured repositories...\n", groupID, artifactID, version)
+			downloadedPkg, findErr := repository.FindPackageInRepos(cfg, groupID, artifactID, version)
+			if findErr != nil {
+				return fmt.Errorf("failed to find or download package '%s': %w", packagePathArg, findErr)
+			}
+
+			fmt.Printf("Package successfully resolved from repository '%s'. Using cached file: %s\n", downloadedPkg.RepositoryName, downloadedPkg.LocalPath)
+			finalPackagePath = downloadedPkg.LocalPath
+		} else if statErr != nil { // Other error from os.Stat
+			return fmt.Errorf("error checking package path '%s': %w", packagePathArg, statErr)
+		}
+
+		// Validate finalPackagePath before proceeding
+		fileInfoForInstall, err := os.Stat(finalPackagePath)
+		if err != nil {
+			return fmt.Errorf("critical error: resolved package path '%s' is not accessible: %w", finalPackagePath, err)
+		}
+		if fileInfoForInstall.IsDir() {
+			return fmt.Errorf("critical error: resolved package path '%s' is a directory, should be a .fpm file", finalPackagePath)
+		}
+
+		fmt.Printf("Starting installation of package: %s\n", finalPackagePath)
 		fmt.Printf("Target Bench Path: %s\n", benchPath)
 		if siteName != "" {
 			fmt.Printf("Target Site (for future use): %s\n", siteName)
 		}
-
-		// 1. Validate Package Path Argument
-		fileInfo, err := os.Stat(packagePath)
-		if os.IsNotExist(err) {
-			return fmt.Errorf("package path '%s' does not exist", packagePath)
-		}
-		if err != nil {
-			return fmt.Errorf("error checking package path '%s': %w", packagePath, err)
-		}
-		if fileInfo.IsDir() {
-			return fmt.Errorf("package path '%s' is a directory, not a file", packagePath)
-		}
-		fmt.Printf("Package file '%s' found.\n", packagePath)
 
 		// 2. Unzip .fpm Package to a Temporary Directory
 		tmpDir, err := os.MkdirTemp("", "fpm-pkg-extract-*")
@@ -108,9 +153,9 @@ var installCmd = &cobra.Command{
 		defer os.RemoveAll(tmpDir) // Ensure cleanup
 		fmt.Printf("Extracting package to temporary directory: %s\n", tmpDir)
 
-		r, err := zip.OpenReader(packagePath)
+		r, err := zip.OpenReader(finalPackagePath)
 		if err != nil {
-			return fmt.Errorf("failed to open package %s: %w", packagePath, err)
+			return fmt.Errorf("failed to open package %s: %w", finalPackagePath, err)
 		}
 		defer r.Close()
 
