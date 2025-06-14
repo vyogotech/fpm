@@ -174,34 +174,19 @@ var installCmd = &cobra.Command{
 		}
 		fmt.Println("Package metadata validated.")
 
-		// 5. Basic Package Structure Validation
-		appSourceDir := filepath.Join(tmpDir, "app_source")
-		info, err := os.Stat(appSourceDir)
+		// 5. New Package Structure Validation (app module at root of package)
+		appModulePathInTmp := filepath.Join(tmpDir, pkgMeta.AppName)
+		info, err := os.Stat(appModulePathInTmp)
 		if os.IsNotExist(err) {
-			return fmt.Errorf("package structure validation failed: 'app_source' directory not found in package")
+			return fmt.Errorf("package structure validation failed: app module directory '%s' not found at the root of the package", pkgMeta.AppName)
 		}
 		if err != nil {
-			return fmt.Errorf("error checking 'app_source' directory: %w", err)
+			return fmt.Errorf("error checking app module directory '%s': %w", appModulePathInTmp, err)
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("package structure validation failed: 'app_source' is not a directory")
+			return fmt.Errorf("package structure validation failed: app module '%s' at the root is not a directory", pkgMeta.AppName)
 		}
-		fmt.Println("'app_source' directory found in package.")
-
-		// Further validation for app_source/pkgMeta.AppName
-		innerAppSourceDir := filepath.Join(appSourceDir, pkgMeta.AppName)
-		info, err = os.Stat(innerAppSourceDir)
-		if os.IsNotExist(err) {
-		    return fmt.Errorf("package structure validation failed: app directory '%s' not found in 'app_source/'", pkgMeta.AppName)
-		}
-		if err != nil {
-		    return fmt.Errorf("error checking app directory '%s' in 'app_source/': %w", pkgMeta.AppName, err)
-		}
-		if !info.IsDir() {
-		    return fmt.Errorf("package structure validation failed: '%s' in 'app_source/' is not a directory", pkgMeta.AppName)
-		}
-		fmt.Printf("App directory '%s' found in 'app_source/'.\n", pkgMeta.AppName)
-
+		fmt.Printf("App module directory '%s' found at package root.\n", pkgMeta.AppName)
 
 		// Load FPM configuration (needed for AppsBasePath)
 		fpmConfig, err := config.LoadConfig()
@@ -225,18 +210,94 @@ var installCmd = &cobra.Command{
 		}
 		fmt.Printf("Target directory %s created/ensured.\n", targetAppPath)
 
-		// 3. Extract Package Contents (app_source) to Target Path
-		sourceDirToCopy := filepath.Join(tmpDir, "app_source")
-		fmt.Printf("Copying contents from %s to %s...\n", sourceDirToCopy, targetAppPath)
+		// 3. Copy Package Contents to Target Path
+		fmt.Println("Copying package contents to target installation path...")
 
-		if err := copyDirContents(sourceDirToCopy, targetAppPath); err != nil {
-			return fmt.Errorf("failed to copy app contents from %s to %s: %w", sourceDirToCopy, targetAppPath, err)
+		// Copy the app module directory (e.g., tmpDir/my_app -> targetAppPath/my_app)
+		srcAppModuleDir := filepath.Join(tmpDir, pkgMeta.AppName)
+		destAppModuleDir := filepath.Join(targetAppPath, pkgMeta.AppName)
+
+		fmt.Printf("Copying app module from %s to %s...\n", srcAppModuleDir, destAppModuleDir)
+		// Ensure parent of destAppModuleDir (i.e. targetAppPath) exists for the app module.
+		// MkdirAll on targetAppPath earlier ensures targetAppPath exists.
+		// copyDirContents copies the *contents* of srcAppModuleDir into destAppModuleDir.
+		// So, we need to ensure destAppModuleDir itself exists.
+		if err := os.MkdirAll(destAppModuleDir, os.ModePerm); err != nil {
+			return fmt.Errorf("failed to create destination app module directory %s: %w", destAppModuleDir, err)
 		}
-		fmt.Printf("App contents copied successfully to %s.\n", targetAppPath)
+		if err := copyDirContents(srcAppModuleDir, destAppModuleDir); err != nil {
+			return fmt.Errorf("failed to copy app module from %s to %s: %w", srcAppModuleDir, destAppModuleDir, err)
+		}
+		fmt.Printf("App module copied successfully to %s.\n", destAppModuleDir)
 
-		// TODO: Copy other files like install_hooks.py, requirements.txt from tmpDir to targetAppPath if they exist.
-		// For example:
-		// otherFilesToCopy := []string{"install_hooks.py", "requirements.txt", "package.json"}
+		// Copy other root files/directories from tmpDir to targetAppPath
+		otherPackageItems, err := os.ReadDir(tmpDir)
+		if err != nil {
+			return fmt.Errorf("failed to read contents of temporary package directory %s: %w", tmpDir, err)
+		}
+
+		for _, item := range otherPackageItems {
+			itemName := item.Name()
+			// Skip the app module (already copied) and app_metadata.json (not part of app code to be copied to this level)
+			if itemName == pkgMeta.AppName || itemName == "app_metadata.json" {
+				continue
+			}
+
+			srcItemPath := filepath.Join(tmpDir, itemName)
+			dstItemPath := filepath.Join(targetAppPath, itemName)
+
+			fmt.Printf("Processing package item: %s\n", itemName)
+			if item.IsDir() {
+				fmt.Printf("Copying directory from %s to %s...\n", srcItemPath, dstItemPath)
+				// Ensure specific destination directory for this item exists before copying contents.
+				if err := os.MkdirAll(dstItemPath, os.ModePerm); err != nil {
+					return fmt.Errorf("failed to create destination directory %s: %w", dstItemPath, err)
+				}
+				if err := copyDirContents(srcItemPath, dstItemPath); err != nil {
+					return fmt.Errorf("failed to copy directory item %s: %w", itemName, err)
+				}
+			} else { // It's a file
+				fmt.Printf("Copying file from %s to %s...\n", srcItemPath, dstItemPath)
+				// Parent directory (targetAppPath) for dstItemPath is already created.
+
+				srcF, openErr := os.Open(srcItemPath)
+				if openErr != nil {
+					return fmt.Errorf("failed to open source file %s: %w", srcItemPath, openErr)
+				}
+
+				// Get original file mode
+				fileInfo, statErr := srcF.Stat()
+				if statErr != nil {
+					srcF.Close()
+					return fmt.Errorf("failed to stat source file %s: %w", srcItemPath, statErr)
+				}
+
+				dstF, createErr := os.OpenFile(dstItemPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fileInfo.Mode())
+				if createErr != nil {
+					srcF.Close()
+					return fmt.Errorf("failed to create destination file %s: %w", dstItemPath, createErr)
+				}
+
+				_, copyErr := io.Copy(dstF, srcF)
+
+				closeErrSrc := srcF.Close()
+				closeErrDst := dstF.Close()
+
+				if copyErr != nil {
+					return fmt.Errorf("failed to copy file item %s: %w", itemName, copyErr)
+				}
+				if closeErrSrc != nil {
+					return fmt.Errorf("failed to close source file %s: %w", srcItemPath, closeErrSrc)
+				}
+				if closeErrDst != nil {
+					return fmt.Errorf("failed to close destination file %s: %w", dstItemPath, closeErrDst)
+				}
+			}
+			fmt.Printf("Successfully copied %s.\n", itemName)
+		}
+		fmt.Println("All package contents processed.")
+
+		// TODO: Copy compiled_assets directory if it exists tmpDir/compiled_assets to targetAppPath/compiled_assets
 		// for _, fileName := range otherFilesToCopy {
 		//	srcFilePath := filepath.Join(tmpDir, fileName)
 		//	dstFilePath := filepath.Join(targetAppPath, fileName)
@@ -267,8 +328,9 @@ var installCmd = &cobra.Command{
 			return fmt.Errorf("failed to get absolute path for bench directory '%s': %w", benchPath, err)
 		}
 
-		// The actual app code (containing __init__.py, etc.) is inside targetAppPath/pkgMeta.AppName
-		originalPath := filepath.Join(targetAppPath, pkgMeta.AppName)
+		// The actual app code (containing __init__.py, etc.) is now directly in targetAppPath/pkgMeta.AppName
+		// So, originalPath for symlink is correct.
+		originalPath := filepath.Join(targetAppPath, pkgMeta.AppName) // This is correct: <apps_base>/<org>/<app>/<ver>/<app_module_name>
 		linkName := filepath.Join(absBenchPath, "apps", pkgMeta.AppName)
 
 		fmt.Printf("Preparing to symlink app '%s' from '%s' to '%s'\n", pkgMeta.AppName, originalPath, linkName)
