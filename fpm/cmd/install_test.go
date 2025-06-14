@@ -8,6 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"net/http"         // For httptest
+	"net/http/httptest" // For mock server
+	"encoding/json"    // For serving JSON metadata
+	"fpm/internal/repository" // For PackageMetadata struct
+	"fpm/internal/config" // For config.LoadConfig() to find AppsBasePath
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -361,5 +366,169 @@ func TestInstallCommand_NewPackageStructure(t *testing.T) {
 		pipLogBytes, _ := os.ReadFile(pipLogPath)
 		expectedPipCall := filepath.Join("./apps", testAppName) // pip is run from bench root
 		assert.Contains(t, string(pipLogBytes), expectedPipCall, "pip_called.log does not contain expected app path")
+	}
+}
+
+
+func TestInstallCommand_RemotePackage(t *testing.T) {
+	// --- Setup Phase ---
+	// 1. Setup Mock FPM Repository Server
+	mockRepoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Logf("Mock repo server received request: %s %s", r.Method, r.URL.Path)
+		if strings.HasSuffix(r.URL.Path, "package-metadata.json") {
+			// Serve package-metadata.json
+			pkgMeta := repository.PackageMetadata{
+				GroupID:       "testgrp",
+				ArtifactID:    "testapp",
+				LatestVersion: "1.0.1",
+				Versions: map[string]repository.PackageVersionMetadata{
+					"1.0.1": {
+						FPMPath:        "artifacts/testgrp/testapp/1.0.1/testapp-1.0.1.fpm",
+						ChecksumSHA256: "dummychecksumfortestapp101", // TODO: Calculate actual checksum if serving a real file
+					},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(pkgMeta)
+		} else if strings.HasSuffix(r.URL.Path, ".fpm") {
+			// Serve a dummy .fpm file (can use createDummyFpmPackage logic to create a real one if needed)
+			// For this test, we need to ensure the FPM file has the *new* package structure.
+			// So, create a temporary FPM file with the new structure.
+
+			tempFpmDir, err := os.MkdirTemp("", "tempfpm-*")
+			require.NoError(t, err)
+			defer os.RemoveAll(tempFpmDir)
+
+			dummyFpmName := "testapp-1.0.1.fpm"
+			dummyFpmPath := filepath.Join(tempFpmDir, dummyFpmName)
+
+			// Create a dummy app source that will be packaged into the .fpm
+			// This app source is temporary and only used to create the dummy .fpm file content.
+			appSourceDirForDummyFPM, err := os.MkdirTemp("", "tempsourcefordummyfpm-*")
+			require.NoError(t, err)
+			defer os.RemoveAll(appSourceDirForDummyFPM)
+			// Use the same createMinimalFrappeApp helper. The paths it creates inside appSourceDirForDummyFPM
+			// will be relative to that directory, which is what we need for zipping.
+			createMinimalFrappeApp(t, appSourceDirForDummyFPM, "testapp", "1.0.1", "testgrp")
+
+
+			archiveFile, err := os.Create(dummyFpmPath)
+			require.NoError(t, err)
+			zipWriter := zip.NewWriter(archiveFile)
+
+			// Add app_metadata.json (essential for install command to read pkgMeta)
+			appMetaContent := fmt.Sprintf(`{"org":"testgrp", "app_name":"testapp", "package_name":"testapp", "package_version":"1.0.1", "content_checksum":"dummychecksumfortestapp101"}`)
+			fWriter, err := zipWriter.Create("app_metadata.json")
+			require.NoError(t, err)
+			_, err = io.WriteString(fWriter, appMetaContent)
+			require.NoError(t, err)
+
+			// Add app module files (new structure) - these are relative to the root of the zip
+			// hooks.py for the app "testapp"
+			hooksPathInZip := filepath.Join("testapp", "hooks.py")
+			fWriterHooks, err := zipWriter.Create(hooksPathInZip)
+			require.NoError(t, err)
+			_, err = io.WriteString(fWriterHooks, "app_name = \"testapp\"")
+			require.NoError(t, err)
+
+			// __init__.py for the app "testapp"
+			initPathInZip := filepath.Join("testapp", "__init__.py")
+			fWriterInit, err := zipWriter.Create(initPathInZip)
+			require.NoError(t, err)
+			_, err = io.WriteString(fWriterInit, "# init")
+			require.NoError(t, err)
+
+			// modules.txt for the app "testapp"
+			modulesPathInZip := filepath.Join("testapp", "modules.txt")
+            fWriterModules, err := zipWriter.Create(modulesPathInZip)
+            require.NoError(t, err)
+            _, err = io.WriteString(fWriterModules, "testmodule")
+            require.NoError(t, err)
+
+			// Important: Close the zipWriter and the archiveFile before http.ServeFile uses it.
+			require.NoError(t, zipWriter.Close())
+			require.NoError(t, archiveFile.Close())
+
+			http.ServeFile(w, r, dummyFpmPath)
+		} else {
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockRepoServer.Close()
+
+	// 2. Setup FPM Config with the mock repository
+	_, cleanup := setupTempFPMConfig(t) // Uses helper from repo_test.go (same package)
+	defer cleanup()
+
+	addRepoArgs := []string{"repo", "add", "mockrepo", mockRepoServer.URL, "--priority", "0"}
+	// Need to reset repoAddPriority as it's a global in cmd package used by repoAddCmd
+	repoAddPriority = 0
+	if repoAddCmd.Flags().Lookup("priority") != nil {
+		repoAddCmd.Flags().Lookup("priority").Value.Set("0")
+	}
+	_, err := executeCommand(rootCmd, addRepoArgs...) // Uses helper from repo_test.go
+	require.NoError(t, err, "Failed to add mock repository")
+
+	// 3. Setup Mock Bench
+	mockBenchPath, err := os.MkdirTemp("", "mockbench-remote-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(mockBenchPath)
+	require.NoError(t, os.MkdirAll(filepath.Join(mockBenchPath, "apps"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(mockBenchPath, "sites"), 0o755))
+	mockPipDir := filepath.Join(mockBenchPath, "env", "bin")
+	require.NoError(t, os.MkdirAll(mockPipDir, 0o755))
+	mockPipPath := filepath.Join(mockPipDir, "pip")
+	if runtime.GOOS == "windows" { mockPipPath += ".exe" }
+	pipScriptContent := "#!/bin/sh\necho \"Mock remote pip install $@\" >> pip_remote_called.log"
+	if runtime.GOOS == "windows" { pipScriptContent = "@echo off\necho Mock remote pip install %* >> pip_remote_called.log" }
+	require.NoError(t, os.WriteFile(mockPipPath, []byte(pipScriptContent), 0o755))
+
+	cfg, err := config.LoadConfig()
+	require.NoError(t, err, "Failed to load config for determining AppsBasePath")
+	expectedFpmStorageAppPath := filepath.Join(cfg.AppsBasePath, "testgrp", "testapp", "1.0.1")
+	expectedAppModuleInStorage := filepath.Join(expectedFpmStorageAppPath, "testapp")
+
+
+	// --- Execution Phase ---
+	installArgs := []string{
+		"install", "testgrp/testapp==1.0.1", // Remote package identifier
+		"--bench-path", mockBenchPath,
+	}
+	// Reset installCmd flags if any (though it doesn't have persistent ones like repoAddCmd)
+	installCmd.Flags().VisitAll(func(f *cobra.Flag) { // Use actual installCmd var
+		f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	installCmdOutput, err := executeCommand(rootCmd, installArgs...)
+	require.NoError(t, err, "fpm install command failed for remote package. Output: %s", string(installCmdOutput))
+
+	// --- Assertion Phase ---
+	// Check if app files are in FPM storage
+	_, err = os.Stat(filepath.Join(expectedAppModuleInStorage, "hooks.py"))
+	assert.NoError(t, err, "hooks.py not found in FPM storage for remote install")
+
+	// Check symlink in bench
+	benchAppSymlinkPath := filepath.Join(mockBenchPath, "apps", "testapp")
+	linkFi, err := os.Lstat(benchAppSymlinkPath)
+	require.NoError(t, err, "symlink in bench not found for remote install")
+	assert.True(t, linkFi.Mode()&os.ModeSymlink != 0, "bench app path is not a symlink for remote install")
+	linkTarget, err := os.Readlink(benchAppSymlinkPath)
+	require.NoError(t, err)
+	absExpectedAppModuleInStorage, _ := filepath.Abs(expectedAppModuleInStorage)
+	assert.Equal(t, absExpectedAppModuleInStorage, linkTarget, "symlink for remote install points to wrong FPM storage location")
+
+	// Check apps.txt
+	appsTxtPath := filepath.Join(mockBenchPath, "sites", "apps.txt")
+	appsTxtBytes, err := os.ReadFile(appsTxtPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(appsTxtBytes), "testapp", "app name not found in apps.txt for remote install")
+
+	// Check pip call
+	pipLogPath := filepath.Join(mockBenchPath, "pip_remote_called.log") // Different log file
+	_, err = os.Stat(pipLogPath)
+	assert.NoError(t, err, "pip_remote_called.log not found for remote install")
+	if err == nil {
+		pipLogBytes, _ := os.ReadFile(pipLogPath)
+		assert.Contains(t, string(pipLogBytes), filepath.Join("./apps", "testapp"), "pip_remote_called.log does not contain expected app path")
 	}
 }
