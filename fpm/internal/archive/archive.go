@@ -32,11 +32,11 @@ var defaultIgnorePatterns = []string{
 }
 
 var productionExclusionPatterns = []string{
-	"/.git/",
-	"__pycache__/", // These are fine anywhere
-	"*.pyc",
-	"/tests/",      // Only root tests/ directory
-	"/test_*",      // Only root files/dirs like test_runner.py or test_output/
+	"/.git/",       // Matches .git directory only at the root of the app source path
+	"__pycache__/", // Matches __pycache__ directories anywhere
+	"*.pyc",        // Matches .pyc files anywhere
+	"tests/",       // Matches directories named "tests" anywhere and their contents
+	"test_*",       // Matches files or directories starting with "test_" anywhere
 }
 
 // CreateFPMArchive creates an .fpm package from the app source.
