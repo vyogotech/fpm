@@ -191,8 +191,8 @@ If no query is provided, it lists all packages found in the local store and cach
 					continue
 				}
 				if remotePkgMeta != nil { // Metadata found
-					for versionStr, versionMeta := range remotePkgMeta.Versions {
-						_ = versionMeta // to use versionMeta if needed for notes, etc.
+					for versionStr, _ := range remotePkgMeta.Versions { // Changed versionMeta to _
+						// _ = versionMeta // No longer needed
 						newItem := SearchResultItem{
 							Source:      fmt.Sprintf("(remote: %s)", repo.Name),
 							GroupID:     remotePkgMeta.GroupID,
