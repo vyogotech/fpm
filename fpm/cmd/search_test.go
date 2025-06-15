@@ -1,23 +1,45 @@
 package cmd
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	// "time" // Not strictly needed for search tests unless http client timeout is customized here
 
-	"fpm/internal/config" // For FPMConfig to find cache path relative to FPM base
-	"fpm/internal/repository" // For PackageMetadata struct
+	"fpm/internal/config"
+	"fpm/internal/metadata"      // For AppMetadata when creating dummy FPMs
+	"fpm/internal/repository" // For PackageMetadata struct for cache & remote mock
+	// "fpm/internal/utils" // Not directly used in this test file
+
+	// "github.com/spf13/cobra" // Not directly manipulating commands here
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// setupMockFPMSearchCache creates a mock FPM cache structure with package-metadata.json files.
-// It also sets the HOME/USERPROFILE env var to a temp dir where this cache is created.
-func setupMockFPMSearchCache(t *testing.T, packages map[string]repository.PackageMetadata) (tempHomeDir string, cleanupFunc func()) {
+// MockPackageData represents data for setting up in cache or local store.
+type MockPackageData struct {
+	RepoName          string // For cache entries
+	IsLocalStore      bool   // True if this should be in ~/.fpm/apps
+	Org               string
+	AppName           string
+	Version           string
+	Description       string
+	LatestVersionHint string // For package-metadata.json if IsLocalStore is false
+	// Add other fields if needed, like FPMPath for remote metadata
+}
+
+// setupTestEnvironment creates a temporary FPM config, local app store, and cache.
+// It can populate these based on mockData.
+func setupTestEnvironment(t *testing.T, mockData []MockPackageData) (tempHomeDir string, cleanupFunc func()) {
 	t.Helper()
 
 	var origHome string
@@ -38,28 +60,76 @@ func setupMockFPMSearchCache(t *testing.T, packages map[string]repository.Packag
 		t.Setenv("HOME", tempHome)
 	}
 
-	// Create config file with this tempHome so cache path is derived correctly if code uses it
-	// (though search currently defaults to ~/.fpm/cache)
-	fpmConfigDir := filepath.Join(tempHome, ".fpm")
-	require.NoError(t, os.MkdirAll(fpmConfigDir, 0o755))
-
-	// The search command defaults its cache path discovery based on UserHomeDir then .fpm/cache.
-	// It does not strictly need a full config file for *cache path discovery*, but InitConfig might be called.
-	// Let's ensure InitConfig can run without error if searchCmd calls it.
-	_, err = config.InitConfig() // This will create a default config in tempHome/.fpm/
+	cfg, err := config.InitConfig() // This creates default config file in tempHome/.fpm/
 	require.NoError(t, err, "Failed to init config in temp search home dir")
 
+	appsBaseDir := cfg.AppsBasePath // from config, likely tempHome/.fpm/apps
+	cacheBaseDir := filepath.Join(filepath.Dir(appsBaseDir), "cache") // Sibling to apps dir
 
-	cacheBaseDir := filepath.Join(tempHome, ".fpm", "cache")
+	require.NoError(t, os.MkdirAll(appsBaseDir, 0o755))
+	require.NoError(t, os.MkdirAll(cacheBaseDir, 0o755))
 
-	for repoName, pkgMeta := range packages {
-		// Path: <cacheBaseDir>/<repoName>/metadata/<groupID>/<artifactID>/package-metadata.json
-		metadataFilePath := filepath.Join(cacheBaseDir, repoName, "metadata", pkgMeta.GroupID, pkgMeta.ArtifactID, "package-metadata.json")
-		require.NoError(t, os.MkdirAll(filepath.Dir(metadataFilePath), 0o755))
+	for _, data := range mockData {
+		if data.IsLocalStore {
+			// Populate local FPM app store: <appsBaseDir>/<org>/<appName>/<version>/
+			appVersionStorePath := filepath.Join(appsBaseDir, data.Org, data.AppName, data.Version)
+			require.NoError(t, os.MkdirAll(appVersionStorePath, 0o755))
 
-		metaBytes, err := json.MarshalIndent(pkgMeta, "", "  ")
-		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(metadataFilePath, metaBytes, 0o644))
+			// Create a dummy _<appName>-<version>.fpm file
+			fpmFileName := fmt.Sprintf("_%s-%s.fpm", data.AppName, data.Version)
+			fpmFilePath := filepath.Join(appVersionStorePath, fpmFileName)
+
+			archiveFile, err := os.Create(fpmFilePath)
+			require.NoError(t, err)
+			zipWriter := zip.NewWriter(archiveFile)
+
+			appMeta := metadata.AppMetadata{
+				Org:            data.Org,
+				AppName:        data.AppName,
+				PackageName:    data.AppName,
+				PackageVersion: data.Version,
+				Description:    data.Description,
+			}
+			metaBytes, _ := json.MarshalIndent(appMeta, "", "  ")
+			fWriter, _ := zipWriter.Create("app_metadata.json")
+			io.WriteString(fWriter, string(metaBytes))
+			// Add a dummy file inside app module dir for realism
+			appModuleDirEntry := fmt.Sprintf("%s/", data.AppName)
+			zipWriter.CreateHeader(&zip.FileHeader{Name: appModuleDirEntry, Mode: 0o755 | os.ModeDir})
+			fHook, _ := zipWriter.Create(filepath.Join(data.AppName, "hooks.py"))
+			io.WriteString(fHook, "# hooks")
+
+			zipWriter.Close()
+			archiveFile.Close()
+		} else { // Populate cache
+			metadataFilePath := filepath.Join(cacheBaseDir, data.RepoName, "metadata", data.Org, data.AppName, "package-metadata.json")
+			require.NoError(t, os.MkdirAll(filepath.Dir(metadataFilePath), 0o755))
+
+			pkgMeta := repository.PackageMetadata{
+				GroupID:       data.Org,
+				ArtifactID:    data.AppName,
+				Description:   data.Description,
+				LatestVersion: data.LatestVersionHint, // Use hint for cache
+				Versions: map[string]repository.PackageVersionMetadata{
+					data.Version: { // Assume data.Version is one of the versions for this cache entry
+						FPMPath: fmt.Sprintf("%s/%s/%s/%s-%s.fpm", data.Org, data.AppName, data.Version, data.AppName, data.Version),
+						ChecksumSHA256: "dummychecksum",
+					},
+				},
+			}
+			// If LatestVersionHint is also a specific version, add it too if different
+			if data.LatestVersionHint != "" && data.LatestVersionHint != data.Version {
+				pkgMeta.Versions[data.LatestVersionHint] = repository.PackageVersionMetadata{
+					FPMPath: fmt.Sprintf("%s/%s/%s/%s-%s.fpm", data.Org, data.AppName, data.LatestVersionHint, data.AppName, data.LatestVersionHint),
+					ChecksumSHA256: "dummychecksumlatest",
+				}
+			}
+
+
+			metaBytes, err := json.MarshalIndent(pkgMeta, "", "  ")
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(metadataFilePath, metaBytes, 0o644))
+		}
 	}
 
 	cleanup := func() {
@@ -78,204 +148,177 @@ func setupMockFPMSearchCache(t *testing.T, packages map[string]repository.Packag
 		}
 		os.RemoveAll(tempHome)
 	}
-
 	return tempHome, cleanup
 }
 
 
 func TestSearchCmd(t *testing.T) {
-	mockPackages := map[string]repository.PackageMetadata{
-		"repo1": {
-			GroupID:       "com.example",
-			ArtifactID:    "appone",
-			Description:   "First amazing application",
-			LatestVersion: "1.2.0",
-			Versions: map[string]repository.PackageVersionMetadata{
-				"1.2.0": {FPMPath: "path/to/appone-1.2.0.fpm"},
-				"1.0.0": {FPMPath: "path/to/appone-1.0.0.fpm"},
-			},
-		},
-		"repo1": { // This will overwrite the previous entry for "repo1" if map key is just repoName.
-			         // The cache structure is /<repoName>/metadata/<groupID>/<artifactID>/...
-			         // So, the map key for setup should be unique per metadata file.
-			         // Let's make the key more unique for setup.
-			GroupID:       "com.example",
-			ArtifactID:    "apptwo",
-			Description:   "Second awesome app",
-			LatestVersion: "2.1.0",
-			Versions: map[string]repository.PackageVersionMetadata{
-				"2.1.0": {FPMPath: "path/to/apptwo-2.1.0.fpm"},
-			},
-		},
-		"repo2": {
-			GroupID:       "org.another",
-			ArtifactID:    "utility",
-			Description:   "A useful utility app",
-			LatestVersion: "0.5.0",
-			Versions: map[string]repository.PackageVersionMetadata{
-				"0.5.0": {FPMPath: "path/to/utility-0.5.0.fpm"},
-			},
-		},
-	}
-	// Corrected mockPackages setup: key should be unique for each package metadata file.
-	// The key can represent the path segment <repoName>/metadata/<groupID>/<artifactID>
-	// or simply ensure different repoNames if group/artifact are the same for this test map.
-	// The cache structure allows multiple groupID/artifactID under one repoName.
-	// Let's use distinct repoName for simplicity in this map, or make a list of structs.
-	// For this test, let's assume distinct metadata files are needed.
+	// Mock server for remote queries
+	var serverRequests []string // To track requests to the server
+	mockRepoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverRequests = append(serverRequests, r.URL.Path) // Log the request path
+		t.Logf("Search Test Mock Repo Server: %s %s", r.Method, r.URL.Path)
+		if r.URL.Path == "/metadata/orgB/appY/package-metadata.json" {
+			pkgMeta := repository.PackageMetadata{
+				GroupID: "orgB", ArtifactID: "appY", Description: "App Y from remote", LatestVersion: "1.1.0",
+				Versions: map[string]repository.PackageVersionMetadata{
+					"1.0.0": {FPMPath: "orgB/appY/1.0.0/appY-1.0.0.fpm"},
+					"1.1.0": {FPMPath: "orgB/appY/1.1.0/appY-1.1.0.fpm"},
+				},
+			}
+			json.NewEncoder(w).Encode(pkgMeta)
+		} else if r.URL.Path == "/metadata/orgZ/appZ/package-metadata.json" {
+			 pkgMeta := repository.PackageMetadata{
+                GroupID: "orgZ", ArtifactID: "appZ", Description: "App Z only on remote", LatestVersion: "3.0.0",
+                Versions: map[string]repository.PackageVersionMetadata{
+                    "3.0.0": {FPMPath: "orgZ/appZ/3.0.0/appZ-3.0.0.fpm"},
+                },
+            }
+            json.NewEncoder(w).Encode(pkgMeta)
+		} else {
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockRepoServer.Close()
 
-	// Redefine mockPackages for clarity, ensuring distinct metadata paths.
-	// The setup helper creates path using <repoName>/metadata/<groupID>/<artifactID>
-	// So, the map key for setupMockFPMSearchCache should be unique enough to allow this.
-	// Using repoName as key is fine if each pkgMeta has unique GroupID/ArtifactID *within that repo*.
-	// The issue was that "repo1" was used twice as a map key, overwriting.
-	// Let's use a list of structs for more explicit setup.
-	type mockPackageEntry struct {
-		RepoName string
-		Metadata repository.PackageMetadata
+	mockData := []MockPackageData{
+		// For TestSearch_OrderAndSources
+		{IsLocalStore: true, Org: "orgA", AppName: "appX", Version: "1.0.0", Description: "App X installed locally"},
+		{RepoName: "repo1", IsLocalStore: false, Org: "orgA", AppName: "appX", Version: "1.0.0", Description: "App X metadata in cache repo1", LatestVersionHint: "1.0.0"},
+		// repo2 will serve orgA/appX via mockRepoServer if queried live. Let's make its metadata slightly different for remote.
+		// For TestSearch_OrderAndSources (other packages)
+		{RepoName: "repo1", IsLocalStore: false, Org: "orgC", AppName: "appCacheOnly", Version: "0.9.0", Description: "App C only in cache", LatestVersionHint: "0.9.0"},
+		{IsLocalStore: true, Org: "orgD", AppName: "appLocalOnly", Version: "1.5.0", Description: "App D only in local store"},
 	}
 
-	mockEntries := []mockPackageEntry{
-		{RepoName: "repo1", Metadata: repository.PackageMetadata{
-			GroupID: "com.example", ArtifactID: "appone", Description: "First amazing application", LatestVersion: "1.2.0",
-			Versions: map[string]repository.PackageVersionMetadata{"1.2.0": {FPMPath: "path/to/appone-1.2.0.fpm"}},
-		}},
-		{RepoName: "repo1", Metadata: repository.PackageMetadata{ // Same repo, different app
-			GroupID: "com.example", ArtifactID: "apptwo", Description: "Second awesome app", LatestVersion: "2.1.0",
-			Versions: map[string]repository.PackageVersionMetadata{"2.1.0": {FPMPath: "path/to/apptwo-2.1.0.fpm"}},
-		}},
-		{RepoName: "repo2", Metadata: repository.PackageMetadata{
-			GroupID: "org.another", ArtifactID: "utility", Description: "A useful utility app", LatestVersion: "0.5.0",
-			Versions: map[string]repository.PackageVersionMetadata{"0.5.0": {FPMPath: "path/to/utility-0.5.0.fpm"}},
-		}},
-		{RepoName: "repo3", Metadata: repository.PackageMetadata{ // Package for testing no description match
-			GroupID: "com.special", ArtifactID: "nodessapp", LatestVersion: "1.0.0", Description: "",
-			Versions: map[string]repository.PackageVersionMetadata{"1.0.0": {FPMPath: "path/to/nodessapp-1.0.0.fpm"}},
-		}},
-	}
-
-
-	tempHome, cleanup := setupMockFPMSearchCacheWithEntries(t, mockEntries)
+	tempHome, cleanup := setupTestEnvironment(t, mockData)
 	defer cleanup()
-	t.Logf("TestSearchCmd using temp home for cache: %s", tempHome)
+	t.Logf("TestSearchCmd using temp home for ALL searches: %s", tempHome)
 
-	testCases := []struct {
-		name           string
-		query          string
-		expectedFound  []string // list of <groupID>/<artifactID> expected
-		unexpectedFound []string // list of <groupID>/<artifactID> not expected
-		expectNoResults bool
-	}{
-		{
-			name:  "list all (no query)",
-			query: "",
-			expectedFound: []string{"com.example/appone", "com.example/apptwo", "org.another/utility", "com.special/nodessapp"},
-		},
-		{
-			name:  "search by artifactID",
-			query: "apptwo",
-			expectedFound: []string{"com.example/apptwo"},
-			unexpectedFound: []string{"com.example/appone", "org.another/utility"},
-		},
-		{
-			name:  "search by groupID",
-			query: "com.example",
-			expectedFound: []string{"com.example/appone", "com.example/apptwo"},
-			unexpectedFound: []string{"org.another/utility"},
-		},
-		{
-			name:  "search by description",
-			query: "useful",
-			expectedFound: []string{"org.another/utility"},
-			unexpectedFound: []string{"com.example/appone"},
-		},
-		{
-			name:  "search by partial description",
-			query: "app", // Should match "application" and "app"
-			expectedFound: []string{"com.example/appone", "com.example/apptwo", "org.another/utility"},
-		},
-		{
-			name:  "case insensitive search",
-			query: "EXAMPLE",
-			expectedFound: []string{"com.example/appone", "com.example/apptwo"},
-		},
-		{
-			name:            "no results found",
-			query:           "nonexistentpackage",
-			expectNoResults: true,
-		},
-		{
-			name:  "search matching empty description (should not list if query non-empty)",
-			query: "nodessapp", // Matches artifactID
-			expectedFound: []string{"com.special/nodessapp"},
-		},
-	}
+	// Add mockRepoServer as repo2 for live queries
+	resetRepoCmdFlags() // from repo_test.go
+	_, err := executeCommand(rootCmd, "repo", "add", "repo2", mockRepoServer.URL)
+	require.NoError(t, err)
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			args := []string{"search"}
-			if tc.query != "" {
-				args = append(args, tc.query)
+
+	t.Run("TestSearch_OrderAndSources", func(t *testing.T) {
+		serverRequests = nil // Reset server request log
+		output, err := executeCommand(rootCmd, "search", "orgA/appX")
+		require.NoError(t, err)
+
+		t.Logf("Output for TestSearch_OrderAndSources (orgA/appX):\n%s", output)
+		// Expect orgA/appX==1.0.0 from (local-store) only, due to de-duplication.
+		// Remote query to repo2 for orgA/appX should happen.
+		// Cache entry for orgA/appX from repo1 should be overridden by local-store.
+		assert.Contains(t, output, "(local-store)         com.orgA/appX") // GroupID case might change based on metadata
+		assert.Contains(t, output, "1.0.0", "Version for local appX")
+		assert.NotContains(t, output, "(cache: repo1)          orgA/appX") // Should be de-duplicated
+		assert.NotContains(t, output, "(remote: repo2)         orgA/appX") // Should be de-duplicated by local-store
+
+		// Check if server was queried for orgA/appX (it should, but result de-duplicated)
+		wasQueried := false
+		for _, reqPath := range serverRequests {
+			if reqPath == "/metadata/orgA/appX/package-metadata.json" { // Assuming input query case is used
+				wasQueried = true
+				break
 			}
-			output, err := executeCommand(rootCmd, args...)
-			require.NoError(t, err, "fpm search command failed")
+		}
+		assert.True(t, wasQueried, "Mock server should have been queried for orgA/appX")
 
-			if tc.expectNoResults {
-				assert.Contains(t, output, "No package metadata found in the local cache.")
-			} else {
-				for _, expected := range tc.expectedFound {
-					assert.Contains(t, output, expected, "Expected to find package %s", expected)
-				}
-				if tc.unexpectedFound != nil {
-					for _, unexpected := range tc.unexpectedFound {
-						assert.NotContains(t, output, unexpected, "Did not expect to find package %s", unexpected)
-					}
-				}
+		// Search for all to see other distinct packages
+		serverRequests = nil
+		outputAll, errAll := executeCommand(rootCmd, "search")
+		require.NoError(t, errAll)
+		t.Logf("Output for TestSearch_OrderAndSources (all):\n%s", outputAll)
+		assert.Contains(t, outputAll, "(local-store)         orgA/appX")
+		assert.Contains(t, outputAll, "(cache: repo1)          orgC/appCacheOnly")
+		assert.Contains(t, outputAll, "(local-store)         orgD/appLocalOnly")
+	})
+
+	t.Run("TestSearch_RemoteQueryOnlyWhenIdentifierIsSpecific", func(t *testing.T) {
+		serverRequests = nil
+		output, err := executeCommand(rootCmd, "search", "orgZ/appZ") // Specific query
+		require.NoError(t, err)
+		t.Logf("Output for TestSearch_RemoteQueryOnlyWhenIdentifierIsSpecific (orgZ/appZ):\n%s", output)
+		assert.Contains(t, output, "(remote: repo2)         orgZ/appZ")
+		assert.Contains(t, output, "3.0.0", "Version for remote appZ")
+
+		wasQueried := false
+		for _, reqPath := range serverRequests {
+			if reqPath == "/metadata/orgZ/appZ/package-metadata.json" {
+				wasQueried = true; break
 			}
-		})
-	}
+		}
+		assert.True(t, wasQueried, "Mock server should have been queried for specific orgZ/appZ")
+
+		serverRequests = nil // Reset for next check
+		outputGeneric, errGeneric := executeCommand(rootCmd, "search", "appZ") // Generic query
+		require.NoError(t, errGeneric)
+		t.Logf("Output for TestSearch_RemoteQueryOnlyWhenIdentifierIsSpecific (appZ generic):\n%s", outputGeneric)
+		// Depending on if "appZ" is in cache from other tests, it might show up.
+		// The key is that a *new* live remote query for "orgZ/appZ" specifically should not have happened here.
+		wasQueriedGeneric := false
+		for _, reqPath := range serverRequests { // Check requests made for *this* command
+			if reqPath == "/metadata/orgZ/appZ/package-metadata.json" {
+				wasQueriedGeneric = true; break
+			}
+		}
+		assert.False(t, wasQueriedGeneric, "Mock server should NOT have been queried for orgZ/appZ on a generic 'appZ' search term")
+		// It might still find "orgZ/appZ" if its metadata was *cached* by the previous specific search.
+		// Let's ensure the output reflects that it's from cache if found.
+		if strings.Contains(outputGeneric, "orgZ/appZ") {
+			assert.Contains(t, outputGeneric, "(cache: repo2)          orgZ/appZ", "If appZ found via generic search after specific, it should be from cache")
+		}
+	})
+
+	t.Run("TestSearch_MultipleRemoteVersionsFromLiveQuery", func(t *testing.T) {
+		serverRequests = nil
+		output, err := executeCommand(rootCmd, "search", "orgB/appY")
+		require.NoError(t, err)
+		t.Logf("Output for TestSearch_MultipleRemoteVersionsFromLiveQuery (orgB/appY):\n%s", output)
+		assert.Contains(t, output, "(remote: repo2)         orgB/appY")
+		assert.Contains(t, output, "1.0.0")
+		assert.Contains(t, output, "1.1.0")
+
+		wasQueried := false
+		for _, reqPath := range serverRequests {
+			if reqPath == "/metadata/orgB/appY/package-metadata.json" {
+				wasQueried = true; break
+			}
+		}
+		assert.True(t, wasQueried, "Mock server should have been queried for orgB/appY")
+	})
 }
 
-// setupMockFPMSearchCacheWithEntries is a corrected helper for setting up the cache.
-func setupMockFPMSearchCacheWithEntries(t *testing.T, entries []struct{RepoName string; Metadata repository.PackageMetadata}) (string, func()) {
-	t.Helper()
-	// Simplified HOME setup, assuming default .fpm path construction
-	tempHome, err := os.MkdirTemp("", "fpm-test-search-home-*")
-	require.NoError(t, err)
+// executeCommand helper is expected from repo_test.go (same package)
+// setupTempFPMConfig helper is expected from repo_test.go (same package)
+// createMinimalFrappeApp helper is from install_test.go (same package)
+// resetRepoCmdFlags is defined in repo_test.go (same package)
+// Note: Ensure these helpers are correctly accessible and that global state (like rootCmd flags)
+// is properly managed between test runs if `executeCommand` uses the global `rootCmd`.
+// The `setupTempFPMConfig` re-initializes config, which is good.
+// Cobra commands often need their flags reset if the command object is reused.
+// The `executeCommand` in `repo_test.go` uses `rootCmd.Execute()`.
+// It's generally safer if `executeCommand` took `NewRootCmd()` or if `rootCmd` was reset.
+// For now, assuming `rootCmd.SetArgs` and subsequent `Execute` handle flag parsing correctly for each call.
+// The `resetRepoCmdFlags` in `install_test.go` was a placeholder.
+// A proper `resetRootCmdFlags` or per-command flag reset might be needed if tests interfere.
+// For `searchCmd`, it has no flags itself, so less risk.
+// For `repo add` calls within test setup, `repoAddCmd` flags are reset in `repo_test.go`.
+// Let's assume the `executeCommand` from `repo_test.go` is sufficient.
+// The `resetRepoCmdFlags` in `install_test.go` was a placeholder.
+// If `repo_test.go` `executeCommand` is `func executeCommand(root *cobra.Command, args ...string) (string, error)`
+// then it's fine. The `runFPMCommand` in `install_test.go` is different.
+// For consistency, I'll assume `executeCommand` from `repo_test.go` is the standard one being used.
 
-	origHomeVal := os.Getenv("HOME")
-	homeEnvVar := "HOME"
-	if runtime.GOOS == "windows" {
-		origHomeVal = os.Getenv("USERPROFILE")
-		homeEnvVar = "USERPROFILE"
+// Adding a local definition for resetRepoCmdFlags to ensure it's available.
+// This should ideally be in a shared test helper file.
+func resetRepoCmdFlags() {
+	if repoAddCmd != nil && repoAddCmd.Flags() != nil { // repoAddCmd is defined in repo.go
+		repoAddCmd.Flags().VisitAll(func(f *cobra.Flag) {
+			f.Value.Set(f.DefValue)
+			f.Changed = false
+		})
 	}
-
-	require.NoError(t, os.Setenv(homeEnvVar, tempHome))
-
-	// Ensure config is initialized for this tempHome
-	_, err = config.InitConfig()
-	require.NoError(t, err)
-
-
-	cacheBaseDir := filepath.Join(tempHome, ".fpm", "cache")
-
-	for _, entry := range entries {
-		pkgMeta := entry.Metadata
-		metadataFilePath := filepath.Join(cacheBaseDir, entry.RepoName, "metadata", pkgMeta.GroupID, pkgMeta.ArtifactID, "package-metadata.json")
-		require.NoError(t, os.MkdirAll(filepath.Dir(metadataFilePath), 0o755))
-
-		metaBytes, err := json.MarshalIndent(pkgMeta, "", "  ")
-		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(metadataFilePath, metaBytes, 0o644))
-	}
-
-	cleanup := func() {
-		if origHomeVal == "" {
-			os.Unsetenv(homeEnvVar)
-		} else {
-			os.Setenv(homeEnvVar, origHomeVal)
-		}
-		os.RemoveAll(tempHome)
-	}
-	return tempHome, cleanup
+	// Reset other repo subcommands flags if they exist and have persistent flags
 }
