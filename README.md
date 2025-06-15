@@ -175,24 +175,43 @@ fpm repo default
 
 ### `fpm search [query]`
 
-Searches for FPM packages by matching the query against the `groupID`, `artifactID`, or `description` of packages. The search is performed on the metadata that FPM has locally cached from configured repositories.
+Searches for FPM packages by matching the query against the `groupID`, `artifactID`, or `description`. The search prioritizes results from different sources in the following order:
+1.  **Local FPM App Store (`~/.fpm/apps/`)**: Shows packages already installed locally by FPM. These are considered the highest priority.
+2.  **Live Remote Repositories**: If the `[query]` is a specific package identifier in the format `<group>/<artifact>` (without version or wildcards), FPM will query configured remote repositories live for this specific package.
+3.  **Locally Cached Repository Metadata (`~/.fpm/cache/`)**: Shows packages known from the last time repository metadata was fetched/updated.
 
-*   `[query]`: (Optional) The search term. If omitted, `fpm search` lists all packages found in the local metadata cache. The search is case-insensitive.
+*   `[query]`: (Optional) The search term.
+    *   If omitted, `fpm search` lists all packages found in the local FPM app store and the local metadata cache (it does not perform live remote queries for an empty query).
+    *   If a generic keyword (e.g., "erp"), it searches package identifiers and descriptions in the local store and cache.
+    *   If a specific identifier (`<group>/<artifact>`), it additionally performs live queries to remote repositories for that exact package.
+    *   The search is case-insensitive.
+
+**Output:**
+The output includes a "SOURCE" column to indicate where the package information was found:
+*   `(local-store)`: The package (specific version) is installed in your local FPM app store.
+*   `(remote: <repo_name>)`: The package version information was fetched live from the named remote repository.
+*   `(cache: <repo_name>)`: The package information is from the local cache of metadata for the named remote repository.
+
+If a package version is found in multiple sources, the result with the highest priority (local-store > remote-live > cache) is displayed. The command lists specific versions found, not just a "latest version" summary.
 
 **Example:**
 ```bash
-# List all cached package metadata
+# List all packages found in local store and cache
 fpm search
 
-# Search for packages related to "erp"
+# Search for packages related to "erp" in local store and cache
 fpm search erp
+
+# Search for a specific package "myorg/myerp" across local store, cache, and live remotes
+fpm search myorg/myerp
 ```
-**Example Output:**
+**Example Output (illustrative):**
 ```
-REPOSITORY           PACKAGE (GROUP/ARTIFACT)                   LATEST_VER      DESCRIPTION
--------------------- ---------------------------------------- --------------- ---------------------------------------------
-central              frappe/erpnext                           13.20.1         ERPNext is the world's best free and open source ERP
-community            customorg/custom_erp_module              1.0.5           Adds custom features to ERPNext for ACME Corp
+SOURCE                PACKAGE (GROUP/ARTIFACT)                   VERSION         DESCRIPTION
+--------------------  ---------------------------------------- --------------- ---------------------------------------------
+(local-store)         myorg/myerp                              1.0.1           My Custom ERP Module (Installed)
+(remote: central)     myorg/myerp                              1.0.0           My Custom ERP Module
+(cache: community)    frappe/erpnext                           13.20.1         ERPNext is the world's best free and open source ERP
 ```
 
 ## Hosting FPM Repositories
