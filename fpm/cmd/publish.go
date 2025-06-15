@@ -134,36 +134,33 @@ to publish from the local FPM app store.`,
 		httpClient := &http.Client{Timeout: 180 * time.Second}
 
 		fmt.Printf("Fetching remote metadata for %s/%s from %s...\n", appOrg, appName, targetRepo.Name)
-		// FetchRemotePackageMetadata returns (nil,nil) for 404, which is fine (means new package)
-		// The boolean metadataFound was part of a planned signature but current FetchRemotePackageMetadata returns (meta, err)
-		// where meta is nil and err is nil for a 404.
-		remoteMeta, fetchMetaErr := repository.FetchRemotePackageMetadata(targetRepo.URL, appOrg, appName, httpClient)
-		if fetchMetaErr != nil {
-			return fmt.Errorf("failed to fetch remote package metadata: %w", fetchMetaErr)
+		remoteMeta, metadataExisted, err := repository.FetchRemotePackageMetadata(targetRepo.URL, appOrg, appName, httpClient)
+		if err != nil {
+			return fmt.Errorf("failed to fetch remote package metadata for %s/%s from %s: %w", appOrg, appName, targetRepo.URL, err)
 		}
 
-		if remoteMeta == nil { // Metadata did not exist (e.g. 404)
-			fmt.Printf("No existing remote metadata found for %s/%s. Creating new.\n", appOrg, appName)
+		if !metadataExisted {
+			fmt.Printf("No existing metadata found for %s/%s on remote repository %s. Initializing new metadata.\n", appOrg, appName, targetRepo.Name)
 			remoteMeta = &repository.PackageMetadata{
-				Org:        appOrg,    // Use renamed field
-				AppName:    appName, // Use renamed field
-				Versions:   make(map[string]repository.PackageVersionMetadata),
-				Description: currentAppMeta.Description,
+				Org:         appOrg,
+				AppName:     appName,
+				Versions:    make(map[string]repository.PackageVersionMetadata),
+				Description: currentAppMeta.Description, // Populate description from current package
 			}
-		} else {
-			fmt.Printf("Existing remote metadata found for %s/%s.\n", appOrg, appName)
+		} else if remoteMeta != nil { // metadataExisted is true, remoteMeta should not be nil if no error occurred
+			fmt.Printf("Successfully fetched existing metadata for %s/%s from repository %s.\n", appOrg, appName, targetRepo.Name)
 			if remoteMeta.Versions == nil {
 				remoteMeta.Versions = make(map[string]repository.PackageVersionMetadata)
 			}
-			// Ensure Org and AppName in fetched metadata match what we expect, or use fetched ones as canonical.
-			// For now, assume appOrg and appName derived from user input/local FPM are the target.
-			// Update description if it's empty on remote, from current package
-			if remoteMeta.Description == "" && currentAppMeta.Description != "" {
-				remoteMeta.Description = currentAppMeta.Description
-			}
-			// It's good practice to ensure GroupID and ArtifactID in remoteMeta match appOrg and appName if it's not new.
+			// Ensure Org and AppName in fetched metadata match, or update if necessary (using local as source of truth for path)
 			remoteMeta.Org = appOrg
 			remoteMeta.AppName = appName
+			if remoteMeta.Description == "" && currentAppMeta.Description != "" { // If remote has no desc, use current's
+				remoteMeta.Description = currentAppMeta.Description
+			}
+		} else {
+			// This case should ideally not happen if metadataExisted is true and err is nil.
+			return fmt.Errorf("internal error: metadata reported as existing but was nil for %s/%s from %s", appOrg, appName, targetRepo.URL)
 		}
 
 		if _, exists := remoteMeta.Versions[appVersion]; exists {
