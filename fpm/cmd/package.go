@@ -24,6 +24,34 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// copyRegularFile copies a single regular file from src to dst.
+// It creates the destination file with specified permissions.
+func copyRegularFile(src, dst string, perm os.FileMode) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("failed to open source file %s: %w", src, err)
+	}
+	defer srcFile.Close()
+
+	// Ensure destination directory exists
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { // 0o755 for parent dirs
+		return fmt.Errorf("failed to create parent directory for %s: %w", dst, err)
+	}
+
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return fmt.Errorf("failed to create destination file %s: %w", dst, err)
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	if err != nil {
+		return fmt.Errorf("failed to copy from %s to %s: %w", src, dst, err)
+	}
+	return nil
+}
+
+
 // validateFrappeAppStructure checks if the source directory has a valid Frappe app structure.
 func validateFrappeAppStructure(sourceDir string, appName string) error {
 	// Check 1: Existence of directory sourceDir + "/" + appName
@@ -341,6 +369,16 @@ It reads app metadata, collects source files, and bundles them into a versioned 
 				}
 			}
 			fmt.Printf("Successfully installed package %s/%s version %s to local FPM store: %s\n", meta.Org, meta.AppName, meta.PackageVersion, targetAppPathInStore)
+
+			// Also copy the .fpm file itself into the local store, prefixed with "_"
+			originalFpmFilename := filepath.Base(finalFpmFilePath)
+			storedFpmPath := filepath.Join(targetAppPathInStore, "_"+originalFpmFilename)
+			if err := copyRegularFile(finalFpmFilePath, storedFpmPath, 0o644); err != nil { // Use appropriate permissions
+				// This is not a fatal error for the overall package command, but should be logged.
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to store original .fpm package in local store at %s: %v\n", storedFpmPath, err)
+			} else {
+				fmt.Printf("Stored original .fpm package in local store: %s\n", storedFpmPath)
+			}
 
 		} else {
 			fmt.Println("Skipping installation to local FPM app store.")
