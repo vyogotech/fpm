@@ -32,7 +32,7 @@ func FetchRemotePackageMetadata(repoBaseURL, org, appName string, client *http.C
 
 	req, err := http.NewRequest("GET", fullMetadataURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("error creating request for %s: %w", fullMetadataURL, err)
+		return nil, false, fmt.Errorf("error creating request for %s: %w", fullMetadataURL, err)
 	}
 	req.Header.Set("User-Agent", userAgent)
 
@@ -53,13 +53,12 @@ func FetchRemotePackageMetadata(repoBaseURL, org, appName string, client *http.C
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, true, fmt.Errorf("failed to read response body from %s: %w", fullMetadataURL, err) // metadata was found but unreadable
+		return nil, false, fmt.Errorf("failed to read response body from %s: %w", fullMetadataURL, err)
 	}
 
 	var pkgMeta PackageMetadata
 	if err := json.Unmarshal(body, &pkgMeta); err != nil {
-		// Return true for metadataFound because the file exists but is malformed.
-		return nil, true, fmt.Errorf("failed to parse package-metadata.json from %s: %w. Body: %s", fullMetadataURL, err, string(body))
+		return nil, false, fmt.Errorf("failed to parse package-metadata.json from %s: %w. Body: %s", fullMetadataURL, err, string(body))
 	}
 	return &pkgMeta, true, nil
 }
