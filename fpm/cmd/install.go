@@ -13,7 +13,7 @@ import (
 	"fpm/internal/config"
 	"fpm/internal/metadata"
 	"fpm/internal/repository"
-	"fpm/internal/utils" // Added for utils.CopyRegularFile
+	"fpm/internal/utils" // For utils.CopyRegularFile
 	"os/exec"
 
 	"github.com/spf13/cobra"
@@ -32,11 +32,14 @@ func copyDirContents(src, dst string) error {
 		}
 		dstPath := filepath.Join(dst, relPath)
 		if info.IsDir() {
+			// For copyDirContents, we preserve the source directory's mode for subdirectories it creates.
+			// This is different from extractFPMArchive where we want to standardize.
 			if err := os.MkdirAll(dstPath, info.Mode()); err != nil {
 				return fmt.Errorf("failed to create directory %s: %w", dstPath, err)
 			}
 			return nil
 		}
+		// For files, ensure parent dir exists, then copy with original mode.
 		if err := os.MkdirAll(filepath.Dir(dstPath), os.ModePerm); err != nil {
 			return fmt.Errorf("failed to create parent directory for %s: %w", dstPath, err)
 		}
@@ -110,7 +113,7 @@ from the local FPM store, then from remote repositories.`,
 			if err := os.RemoveAll(targetAppVersionPathInStore); err != nil {
 				return fmt.Errorf("failed to clear existing content at %s: %w", targetAppVersionPathInStore, err)
 			}
-			if err := os.MkdirAll(targetAppVersionPathInStore, 0o755); err != nil {
+			if err := os.MkdirAll(targetAppVersionPathInStore, 0o755); err != nil { // Corrected permission
 				return fmt.Errorf("failed to create directory %s: %w", targetAppVersionPathInStore, err)
 			}
 			if err := extractFPMArchive(packagePathArg, targetAppVersionPathInStore); err != nil {
@@ -120,7 +123,7 @@ from the local FPM store, then from remote repositories.`,
 
 			originalFpmFilename := filepath.Base(packagePathArg)
 			storedFpmPath := filepath.Join(targetAppVersionPathInStore, "_"+originalFpmFilename)
-			if err := utils.CopyRegularFile(packagePathArg, storedFpmPath, 0o644); err != nil {
+			if err := utils.CopyRegularFile(packagePathArg, storedFpmPath, 0o644); err != nil { // Using utils.CopyRegularFile
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to store original .fpm package from local file in FPM store at %s: %v\n", storedFpmPath, err)
 			} else {
 				fmt.Printf("Stored original .fpm package in FPM store: %s\n", storedFpmPath)
@@ -222,7 +225,7 @@ from the local FPM store, then from remote repositories.`,
 				if err := os.RemoveAll(targetAppVersionPathInStore); err != nil {
 					return fmt.Errorf("failed to clear existing content at %s: %w", targetAppVersionPathInStore, err)
 				}
-				if err := os.MkdirAll(targetAppVersionPathInStore, 0o755); err != nil {
+				if err := os.MkdirAll(targetAppVersionPathInStore, 0o755); err != nil { // Corrected permission
 					return fmt.Errorf("failed to create directory %s: %w", targetAppVersionPathInStore, err)
 				}
 				if err := extractFPMArchive(downloadedPkgInfo.LocalPath, targetAppVersionPathInStore); err != nil {
@@ -232,7 +235,7 @@ from the local FPM store, then from remote repositories.`,
 
 				originalFpmFilename := filepath.Base(downloadedPkgInfo.LocalPath)
 				storedFpmPath := filepath.Join(targetAppVersionPathInStore, "_"+originalFpmFilename)
-				if err := utils.CopyRegularFile(downloadedPkgInfo.LocalPath, storedFpmPath, 0o644); err != nil {
+				if err := utils.CopyRegularFile(downloadedPkgInfo.LocalPath, storedFpmPath, 0o644); err != nil { // Using utils.CopyRegularFile
 					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to store original .fpm package from cache in FPM store at %s: %v\n", storedFpmPath, err)
 				} else {
 					fmt.Printf("Stored original .fpm package in FPM store: %s\n", storedFpmPath)
@@ -421,17 +424,17 @@ func extractFPMArchive(fpmPath string, targetDir string) error {
 		}
 
 		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(extractedFilePath, f.Mode()); err != nil {
+			if err := os.MkdirAll(extractedFilePath, 0o755); err != nil { // Standardized directory permission
 				return fmt.Errorf("failed to create directory %s during extraction: %w", extractedFilePath, err)
 			}
 			continue
 		}
 
-		if err := os.MkdirAll(filepath.Dir(extractedFilePath), os.ModePerm); err != nil {
+		if err := os.MkdirAll(filepath.Dir(extractedFilePath), os.ModePerm); err != nil { // Parent dirs can use broader perm
 			return fmt.Errorf("failed to create parent directory for %s during extraction: %w", extractedFilePath, err)
 		}
 
-		outFile, err := os.OpenFile(extractedFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		outFile, err := os.OpenFile(extractedFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644) // Standardized file permission
 		if err != nil {
 			return fmt.Errorf("failed to open file for writing %s during extraction: %w", extractedFilePath, err)
 		}
