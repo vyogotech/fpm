@@ -158,15 +158,16 @@ func UploadPackageMetadata(repoBaseURL, groupID, artifactID string, metaToUpload
 	}
 	userAgent := "fpm-client/0.1.0"
 
-	jsonData, err := json.MarshalIndent(pkgMeta, "", "  ")
+	jsonData, err := json.MarshalIndent(metaToUpload, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal package metadata for %s/%s: %w", pkgMeta.GroupID, pkgMeta.ArtifactID, err)
+		return fmt.Errorf("failed to marshal package metadata for %s/%s: %w", metaToUpload.GroupID, metaToUpload.ArtifactID, err)
 	}
 
-	metadataPath := fmt.Sprintf("metadata/%s/%s/package-metadata.json", pkgMeta.GroupID, pkgMeta.ArtifactID)
-	fullMetadataURL, err := url.JoinPath(repoURL, metadataPath)
+	// Construct path using the provided groupID and artifactID, which define the "coordinates"
+	metadataPath := fmt.Sprintf("metadata/%s/%s/package-metadata.json", groupID, artifactID)
+	fullMetadataURL, err := url.JoinPath(repoBaseURL, metadataPath)
 	if err != nil {
-		return fmt.Errorf("error constructing metadata upload URL for %s/%s on repo %s: %w", pkgMeta.GroupID, pkgMeta.ArtifactID, repoURL, err)
+		return fmt.Errorf("error constructing metadata upload URL for %s/%s on repo %s: %w", groupID, artifactID, repoBaseURL, err)
 	}
 
 	req, err := http.NewRequest(http.MethodPut, fullMetadataURL, bytes.NewBuffer(jsonData))
@@ -177,7 +178,7 @@ func UploadPackageMetadata(repoBaseURL, groupID, artifactID string, metaToUpload
 	req.Header.Set("Content-Type", "application/json")
 	req.ContentLength = int64(len(jsonData)) // Set Content-Length for PUT
 
-	fmt.Printf("Uploading metadata for %s/%s to %s...\n", groupID, artifactID, fullMetadataURL) // Use passed groupID, artifactID
+	fmt.Printf("Uploading metadata for %s/%s to %s...\n", groupID, artifactID, fullMetadataURL)
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to upload metadata to %s: %w", fullMetadataURL, err)
@@ -189,6 +190,7 @@ func UploadPackageMetadata(repoBaseURL, groupID, artifactID string, metaToUpload
 		return fmt.Errorf("failed to upload metadata to %s (status: %s). Response: %s", fullMetadataURL, resp.Status, string(respBodyBytes))
 	}
 
-	fmt.Printf("Metadata for %s/%s uploaded successfully to %s.\n", pkgMeta.GroupID, pkgMeta.ArtifactID, fullMetadataURL)
+	// Log with the groupID and artifactID that the metadata *claims* to be, from its content.
+	fmt.Printf("Metadata for %s/%s uploaded successfully to %s.\n", metaToUpload.GroupID, metaToUpload.ArtifactID, fullMetadataURL)
 	return nil
 }
