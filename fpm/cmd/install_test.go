@@ -532,3 +532,171 @@ func TestInstallCommand_RemotePackage(t *testing.T) {
 		assert.Contains(t, string(pipLogBytes), filepath.Join("./apps", "testapp"), "pip_remote_called.log does not contain expected app path")
 	}
 }
+
+// populateAppInLocalStore creates a dummy app installation in the mock FPM local store.
+func populateAppInLocalStore(t *testing.T, appsBasePath, org, appName, version, markerFileContent string) {
+	t.Helper()
+	appVersionStorePath := filepath.Join(appsBasePath, org, appName, version)
+	appModuleInStorePath := filepath.Join(appVersionStorePath, appName)
+	require.NoError(t, os.MkdirAll(appModuleInStorePath, 0o755))
+
+	// Create a few essential files and a marker file for identification
+	hooksContent := fmt.Sprintf("app_name = \"%s\"\napp_version = \"%s\"", appName, version)
+	require.NoError(t, os.WriteFile(filepath.Join(appModuleInStorePath, "hooks.py"), []byte(hooksContent), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(appModuleInStorePath, "__init__.py"), []byte("# "+markerFileContent), 0o644))
+
+	// Create app_metadata.json at the root of appVersionStorePath
+	appMetaContent := fmt.Sprintf(`{"org":"%s", "app_name":"%s", "package_name":"%s", "package_version":"%s"}`, org, appName, appName, version)
+	require.NoError(t, os.WriteFile(filepath.Join(appVersionStorePath, "app_metadata.json"), []byte(appMetaContent), 0o644))
+}
+
+
+func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
+	// --- Common Setup for all sub-tests ---
+	tempHome, baseCleanup := setupTempFPMConfig(t) // Manages FPM config and home dir
+	defer baseCleanup()
+	t.Logf("TestInstallCommand_PrioritizationAndLatestResolution using temp home: %s", tempHome)
+
+	cfg, err := config.LoadConfig() // Load config to get AppsBasePath
+	require.NoError(t, err)
+	mockAppsBasePath := cfg.AppsBasePath // This is where local FPM store will be (e.g. tempHome/.fpm/apps)
+	require.NoError(t, os.MkdirAll(mockAppsBasePath, 0o755)) // Ensure it exists
+
+	mockBenchPath, err := os.MkdirTemp("", "mockbench-prio-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(mockBenchPath)
+	require.NoError(t, os.MkdirAll(filepath.Join(mockBenchPath, "apps"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(mockBenchPath, "sites"), 0o755))
+	mockPipDir := filepath.Join(mockBenchPath, "env", "bin")
+	require.NoError(t, os.MkdirAll(mockPipDir, 0o755))
+	mockPipPath := filepath.Join(mockPipDir, "pip")
+	if runtime.GOOS == "windows" { mockPipPath += ".exe" }
+	pipScriptContent := "#!/bin/sh\necho \"Mock prio pip install $@\" >> pip_prio_called.log"
+	if runtime.GOOS == "windows" { pipScriptContent = "@echo off\necho Mock prio pip install %* >> pip_prio_called.log" }
+	require.NoError(t, os.WriteFile(mockPipPath, []byte(pipScriptContent), 0o755))
+
+	// Mock remote repository server
+	mockRepoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Logf("Prioritization Test Mock Repo Server received request: %s", r.URL.Path)
+		if r.URL.Path == "/metadata/myorg/myapp/package-metadata.json" {
+			pkgMeta := repository.PackageMetadata{
+				GroupID:       "myorg",	ArtifactID:    "myapp", LatestVersion: "1.2.0",
+				Versions: map[string]repository.PackageVersionMetadata{
+					"1.0.0": {FPMPath: "artifacts/myorg/myapp/1.0.0/myapp-1.0.0.fpm", ChecksumSHA256: "remote-myapp-1.0.0-checksum"},
+					"1.2.0": {FPMPath: "artifacts/myorg/myapp/1.2.0/myapp-1.2.0.fpm", ChecksumSHA256: "remote-myapp-1.2.0-checksum"},
+				},
+			}
+			json.NewEncoder(w).Encode(pkgMeta)
+		} else if strings.HasSuffix(r.URL.Path, ".fpm") { // Serve a generic FPM for any requested version
+			versionFromFile := strings.Split(filepath.Base(r.URL.Path), "-")[1]
+			versionFromFile = strings.TrimSuffix(versionFromFile, ".fpm")
+
+			tempFpmDir, _ := os.MkdirTemp("", "tempfpm-prio-*")
+			defer os.RemoveAll(tempFpmDir)
+			dummyFpmPath := filepath.Join(tempFpmDir, filepath.Base(r.URL.Path))
+
+			archiveFile, _ := os.Create(dummyFpmPath)
+			zipWriter := zip.NewWriter(archiveFile)
+			appMetaContent := fmt.Sprintf(`{"org":"myorg", "app_name":"myapp", "package_name":"myapp", "package_version":"%s", "content_checksum":"remote-myapp-%s-checksum"}`, versionFromFile, versionFromFile)
+			fWriter, _ := zipWriter.Create("app_metadata.json")
+			io.WriteString(fWriter, appMetaContent)
+			zipWriter.Mkdir("myapp/", 0o755)
+			fHooks, _ := zipWriter.Create("myapp/hooks.py")
+			io.WriteString(fHooks, fmt.Sprintf("# Remote version %s marker", versionFromFile)) // Unique marker
+			zipWriter.Close()
+			archiveFile.Close()
+			http.ServeFile(w, r, dummyFpmPath)
+		} else {
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockRepoServer.Close()
+
+	// Add mock repo to config
+	resetRepoCmdFlags() // Assuming this helper exists or is defined in this package
+	_, err = executeCommand(rootCmd, "repo", "add", "mockremoterepo", mockRepoServer.URL)
+	require.NoError(t, err)
+
+
+	t.Run("InstallsFromLocalStoreIfVersionExists", func(t *testing.T) {
+		populateAppInLocalStore(t, mockAppsBasePath, "myorg", "myapp", "1.0.0", "local_store_version_1.0.0")
+
+		installArgs := []string{"install", "myorg/myapp==1.0.0", "--bench-path", mockBenchPath}
+		resetInstallCmdFlags()
+		_, err := executeCommand(rootCmd, installArgs...)
+		require.NoError(t, err)
+
+		// Verify symlink target contains the local store marker
+		linkPath := filepath.Join(mockBenchPath, "apps", "myapp")
+		linkTarget, _ := os.Readlink(linkPath)
+		initPyContent, _ := os.ReadFile(filepath.Join(linkTarget, "__init__.py"))
+		assert.Contains(t, string(initPyContent), "local_store_version_1.0.0")
+	})
+
+	t.Run("FallsBackToRemoteIfVersionNotLocal", func(t *testing.T) {
+		// Ensure 1.2.0 is NOT in local store initially for this subtest
+		os.RemoveAll(filepath.Join(mockAppsBasePath, "myorg", "myapp", "1.2.0"))
+
+		installArgs := []string{"install", "myorg/myapp==1.2.0", "--bench-path", mockBenchPath}
+		resetInstallCmdFlags()
+		_, err := executeCommand(rootCmd, installArgs...)
+		require.NoError(t, err)
+
+		// Verify symlink target points to a path that now should exist in local store,
+		// and it should contain the remote marker.
+		linkPath := filepath.Join(mockBenchPath, "apps", "myapp")
+		linkTarget, _ := os.Readlink(linkPath)
+		// Expected path in store will be .../myorg/myapp/1.2.0/myapp
+		assert.Contains(t, linkTarget, filepath.Join(mockAppsBasePath, "myorg", "myapp", "1.2.0", "myapp"))
+
+		hooksPyContent, _ := os.ReadFile(filepath.Join(linkTarget, "hooks.py")) // hooks.py from remote has specific marker
+		assert.Contains(t, string(hooksPyContent), "# Remote version 1.2.0 marker")
+	})
+
+	t.Run("InstallsLatestFromLocalStore", func(t *testing.T) {
+		populateAppInLocalStore(t, mockAppsBasePath, "myorg", "myapp", "1.0.0", "local_v1.0.0")
+		populateAppInLocalStore(t, mockAppsBasePath, "myorg", "myapp", "1.1.0", "local_v1.1.0_latest") // This should be chosen
+
+		installArgs := []string{"install", "myorg/myapp", "--bench-path", mockBenchPath} // Request "latest"
+		resetInstallCmdFlags()
+		_, err := executeCommand(rootCmd, installArgs...)
+		require.NoError(t, err)
+
+		linkPath := filepath.Join(mockBenchPath, "apps", "myapp")
+		linkTarget, _ := os.Readlink(linkPath)
+		initPyContent, _ := os.ReadFile(filepath.Join(linkTarget, "__init__.py"))
+		assert.Contains(t, string(initPyContent), "local_v1.1.0_latest")
+		assert.Contains(t, linkTarget, "1.1.0") // Check path contains the version
+	})
+
+	t.Run("FallsBackToRemoteForLatestIfNotLocal", func(t *testing.T) {
+		// Ensure no versions of myorg/myapp exist locally for this test
+		os.RemoveAll(filepath.Join(mockAppsBasePath, "myorg", "myapp"))
+
+		installArgs := []string{"install", "myorg/myapp", "--bench-path", mockBenchPath} // Request "latest"
+		resetInstallCmdFlags()
+		_, err := executeCommand(rootCmd, installArgs...)
+		require.NoError(t, err)
+
+		// Remote server's latest is 1.2.0
+		linkPath := filepath.Join(mockBenchPath, "apps", "myapp")
+		linkTarget, _ := os.Readlink(linkPath)
+		hooksPyContent, _ := os.ReadFile(filepath.Join(linkTarget, "hooks.py"))
+		assert.Contains(t, string(hooksPyContent), "# Remote version 1.2.0 marker")
+		assert.Contains(t, linkTarget, "1.2.0") // Check path contains the version
+	})
+}
+
+// resetRepoCmdFlags is a placeholder for a helper that might be needed if repoCmd itself had flags.
+func resetRepoCmdFlags() {
+	// repoCmd.Flags().VisitAll(...)
+}
+// resetInstallCmdFlags is a placeholder for a helper that might be needed if installCmd itself had flags
+// that are not handled by rootCmd.SetArgs for each call.
+// The flags --bench-path and --site are parsed by Cobra for each run.
+func resetInstallCmdFlags() {
+	installCmd.Flags().VisitAll(func(f *cobra.Flag) {
+		f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+}
