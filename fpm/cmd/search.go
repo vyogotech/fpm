@@ -20,8 +20,8 @@ import (
 // SearchResultItem holds information about a found package for display.
 type SearchResultItem struct {
 	Source      string // e.g., "(local-store)", "(cache: <repo_name>)", "(remote: <repo_name>)"
-	GroupID     string
-	ArtifactID  string
+	Org         string // Renamed from GroupID
+	AppName     string // Renamed from ArtifactID
 	Version     string // Specific version found
 	Description string
 	SourceRank  int    // 1 for local-store, 2 for remote-live, 3 for cache
@@ -102,7 +102,7 @@ If no query is provided, it lists all packages found in the local store and cach
 					if match {
 						key := fmt.Sprintf("%s/%s:%s", appMeta.Org, appMeta.AppName, appMeta.PackageVersion)
 						deDupMap[key] = SearchResultItem{
-							Source: "(local-store)", GroupID: appMeta.Org, ArtifactID: appMeta.AppName,
+							Source: "(local-store)", Org: appMeta.Org, AppName: appMeta.AppName, // Use new fields
 							Version: appMeta.PackageVersion, Description: appMeta.Description, SourceRank: 1,
 						}
 					}
@@ -137,19 +137,19 @@ If no query is provided, it lists all packages found in the local store and cach
 					pkgMatch := false
 					if query == "" { pkgMatch = true
 					} else {
-						if strings.Contains(strings.ToLower(pkgMeta.GroupID), query) { pkgMatch = true }
-						if !pkgMatch && strings.Contains(strings.ToLower(pkgMeta.ArtifactID), query) { pkgMatch = true }
+						if strings.Contains(strings.ToLower(pkgMeta.Org), query) { pkgMatch = true } // Use new field
+						if !pkgMatch && strings.Contains(strings.ToLower(pkgMeta.AppName), query) { pkgMatch = true } // Use new field
 						if !pkgMatch && strings.Contains(strings.ToLower(pkgMeta.Description), query) { pkgMatch = true }
 					}
 
 					if pkgMatch {
-						for ver, verMeta := range pkgMeta.Versions {
+						for ver, _ := range pkgMeta.Versions { // verMeta not used here
 							newItem := SearchResultItem{
-								Source: fmt.Sprintf("(cache: %s)", repoNameFromPath), GroupID: pkgMeta.GroupID, ArtifactID: pkgMeta.ArtifactID,
-								Version: ver, Description: pkgMeta.Description, // Potentially verMeta.Notes for specific version desc
+								Source: fmt.Sprintf("(cache: %s)", repoNameFromPath), Org: pkgMeta.Org, AppName: pkgMeta.AppName, // Use new fields
+								Version: ver, Description: pkgMeta.Description,
 								SourceRank: 3,
 							}
-							key := fmt.Sprintf("%s/%s:%s", newItem.GroupID, newItem.ArtifactID, newItem.Version)
+							key := fmt.Sprintf("%s/%s:%s", newItem.Org, newItem.AppName, newItem.Version) // Use new fields
 							if existingItem, ok := deDupMap[key]; !ok || newItem.SourceRank < existingItem.SourceRank {
 								deDupMap[key] = newItem
 							}
@@ -162,53 +162,52 @@ If no query is provided, it lists all packages found in the local store and cach
             fmt.Fprintf(os.Stderr, "Warning: Could not access cache directory at %s: %v\n", cacheBaseDir, statErr)
         }
 
-		// 3. Targeted Remote Query if query is <group>/<artifact> - SourceRank = 2
-		var queryGroupID, queryArtifactID string
+		// 3. Targeted Remote Query if query is <org>/<appName> - SourceRank = 2
+		var queryOrg, queryAppName string // Renamed variables
 		isSpecificIdentifier := false
 		if query != "" && strings.Count(query, "/") == 1 && !strings.Contains(query, "==") && !strings.Contains(query, "*") {
 			parts := strings.Split(query, "/")
 			if len(parts) == 2 {
-				parsedGroup := strings.TrimSpace(parts[0])
-				parsedArtifact := strings.TrimSpace(parts[1])
-				if parsedGroup != "" && parsedArtifact != "" {
-					queryGroupID = parsedGroup
-					queryArtifactID = parsedArtifact
+				parsedOrg := strings.TrimSpace(parts[0])
+				parsedAppName := strings.TrimSpace(parts[1])
+				if parsedOrg != "" && parsedAppName != "" {
+					queryOrg = parsedOrg         // Use renamed variables
+					queryAppName = parsedAppName // Use renamed variables
 					isSpecificIdentifier = true
-					fmt.Printf("\nPerforming targeted remote query for %s/%s...\n", queryGroupID, queryArtifactID)
+					fmt.Printf("\nPerforming targeted remote query for %s/%s...\n", queryOrg, queryAppName)
 				}
 			}
 		}
 
-		if isSpecificIdentifier && cfg != nil { // cfg might be nil if InitConfig failed earlier
+		if isSpecificIdentifier && cfg != nil {
 			httpClient := &http.Client{Timeout: 15 * time.Second}
 			sortedRepos := config.ListRepositories(cfg)
 			for _, repo := range sortedRepos {
 				fmt.Printf("Querying repository: %s (%s)\n", repo.Name, repo.URL)
-				// FetchRemotePackageMetadata returns (nil,nil) if 404, (nil, err) for other errors
-				remotePkgMeta, fetchErr := repository.FetchRemotePackageMetadata(repo.URL, queryGroupID, queryArtifactID, httpClient)
+				remotePkgMeta, metadataFound, fetchErr := repository.FetchRemotePackageMetadata(repo.URL, queryOrg, queryAppName, httpClient) // Use new signature
 				if fetchErr != nil {
-					fmt.Fprintf(os.Stderr, "Error fetching metadata from %s for %s/%s: %v\n", repo.Name, queryGroupID, queryArtifactID, fetchErr)
+					fmt.Fprintf(os.Stderr, "Error fetching metadata from %s for %s/%s: %v\n", repo.Name, queryOrg, queryAppName, fetchErr)
 					continue
 				}
-				if remotePkgMeta != nil { // Metadata found
-					for versionStr, _ := range remotePkgMeta.Versions { // Changed versionMeta to _
-						// _ = versionMeta // No longer needed
+				if metadataFound && remotePkgMeta != nil { // Metadata found and parsed
+					for versionStr, _ := range remotePkgMeta.Versions {
 						newItem := SearchResultItem{
 							Source:      fmt.Sprintf("(remote: %s)", repo.Name),
-							GroupID:     remotePkgMeta.GroupID,
-							ArtifactID:  remotePkgMeta.ArtifactID,
+							Org:         remotePkgMeta.Org,     // Use new field
+							AppName:     remotePkgMeta.AppName, // Use new field
 							Version:     versionStr,
-							Description: remotePkgMeta.Description, // Or versionMeta.Notes
+							Description: remotePkgMeta.Description,
 							SourceRank:  2,
 						}
-						key := fmt.Sprintf("%s/%s:%s", newItem.GroupID, newItem.ArtifactID, newItem.Version)
+						key := fmt.Sprintf("%s/%s:%s", newItem.Org, newItem.AppName, newItem.Version) // Use new fields
 						if existingItem, ok := deDupMap[key]; !ok || newItem.SourceRank < existingItem.SourceRank {
 							deDupMap[key] = newItem
 						}
 					}
-				} else {
-					fmt.Printf("Package %s/%s not found in remote repository %s.\n", queryGroupID, queryArtifactID, repo.Name)
+				} else if !metadataFound { // Explicitly 404
+					fmt.Printf("Package %s/%s not found in remote repository %s.\n", queryOrg, queryAppName, repo.Name)
 				}
+				// If metadataFound is true but remotePkgMeta is nil, it implies a parsing error which was already logged by FetchRemotePackageMetadata
 			}
 		}
 
@@ -221,13 +220,12 @@ If no query is provided, it lists all packages found in the local store and cach
 			if foundPackages[i].SourceRank != foundPackages[j].SourceRank {
 				return foundPackages[i].SourceRank < foundPackages[j].SourceRank
 			}
-			if foundPackages[i].GroupID != foundPackages[j].GroupID {
-				return foundPackages[i].GroupID < foundPackages[j].GroupID
+			if foundPackages[i].Org != foundPackages[j].Org { // Use new field
+				return foundPackages[i].Org < foundPackages[j].Org
 			}
-			if foundPackages[i].ArtifactID != foundPackages[j].ArtifactID {
-				return foundPackages[i].ArtifactID < foundPackages[j].ArtifactID
+			if foundPackages[i].AppName != foundPackages[j].AppName { // Use new field
+				return foundPackages[i].AppName < foundPackages[j].AppName
 			}
-			// TODO: Proper SemVer sort for version
 			return foundPackages[i].Version < foundPackages[j].Version
 		})
 
@@ -240,10 +238,10 @@ If no query is provided, it lists all packages found in the local store and cach
 			return nil
 		}
 
-		fmt.Printf("\n%-20s %-40s %-15s %s\n", "SOURCE", "PACKAGE (GROUP/ARTIFACT)", "VERSION", "DESCRIPTION")
+		fmt.Printf("\n%-20s %-40s %-15s %s\n", "SOURCE", "PACKAGE (ORG/APPNAME)", "VERSION", "DESCRIPTION") // Updated header
 		fmt.Printf("%-20s %-40s %-15s %s\n", strings.Repeat("-", 20), strings.Repeat("-", 40), strings.Repeat("-", 15), strings.Repeat("-", 11))
 		for _, pkg := range foundPackages {
-			packageName := fmt.Sprintf("%s/%s", pkg.GroupID, pkg.ArtifactID)
+			packageName := fmt.Sprintf("%s/%s", pkg.Org, pkg.AppName) // Use new fields
 			desc := pkg.Description
 			if len(desc) > 50 {
 				desc = desc[:47] + "..."

@@ -16,16 +16,18 @@ import (
 )
 
 // FetchRemotePackageMetadata fetches the package-metadata.json from a remote repository.
-func FetchRemotePackageMetadata(repoURL, groupID, artifactID string, client *http.Client) (*PackageMetadata, error) {
+// The boolean return value indicates if metadata was found (true) or not (false, e.g. 404).
+// An error is returned for other issues.
+func FetchRemotePackageMetadata(repoBaseURL, org, appName string, client *http.Client) (*PackageMetadata, bool, error) {
 	if client == nil {
 		client = &http.Client{Timeout: time.Second * 30}
 	}
-	userAgent := "fpm-client/0.1.0" // Consider making this global or configurable
+	userAgent := "fpm-client/0.1.0"
 
-	metadataPath := fmt.Sprintf("metadata/%s/%s/package-metadata.json", groupID, artifactID)
-	fullMetadataURL, err := url.JoinPath(repoURL, metadataPath)
+	metadataPath := fmt.Sprintf("metadata/%s/%s/package-metadata.json", org, appName)
+	fullMetadataURL, err := url.JoinPath(repoBaseURL, metadataPath)
 	if err != nil {
-		return nil, fmt.Errorf("error constructing metadata URL for %s/%s on repo %s: %w", groupID, artifactID, repoURL, err)
+		return nil, false, fmt.Errorf("error constructing metadata URL for %s/%s on repo %s: %w", org, appName, repoBaseURL, err)
 	}
 
 	req, err := http.NewRequest("GET", fullMetadataURL, nil)
@@ -37,31 +39,29 @@ func FetchRemotePackageMetadata(repoURL, groupID, artifactID string, client *htt
 	fmt.Printf("Fetching remote metadata from %s...\n", fullMetadataURL)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch metadata %s: %w", fullMetadataURL, err)
+		return nil, false, fmt.Errorf("failed to fetch metadata %s: %w", fullMetadataURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		// It's not an error for metadata to not exist, means package isn't there (yet)
-		return nil, nil // Return nil metadata and nil error to indicate "not found"
+		return nil, false, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		// resp.Body.Close() already deferred
-		return nil, fmt.Errorf("failed to fetch metadata %s (status: %s). Response: %s", fullMetadataURL, resp.Status, string(bodyBytes))
+		return nil, false, fmt.Errorf("failed to fetch metadata %s (status: %s). Response: %s", fullMetadataURL, resp.Status, string(bodyBytes))
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		// resp.Body.Close() already deferred
-		return nil, fmt.Errorf("failed to read response body from %s: %w", fullMetadataURL, err)
+		return nil, true, fmt.Errorf("failed to read response body from %s: %w", fullMetadataURL, err) // metadata was found but unreadable
 	}
 
 	var pkgMeta PackageMetadata
 	if err := json.Unmarshal(body, &pkgMeta); err != nil {
-		return nil, fmt.Errorf("failed to parse package-metadata.json from %s: %w. Body: %s", fullMetadataURL, err, string(body))
+		// Return true for metadataFound because the file exists but is malformed.
+		return nil, true, fmt.Errorf("failed to parse package-metadata.json from %s: %w. Body: %s", fullMetadataURL, err, string(body))
 	}
-	return &pkgMeta, nil
+	return &pkgMeta, true, nil
 }
 
 // UploadHTTPFile uploads a single file using a specified HTTP method (e.g., "PUT" or "POST").
@@ -152,22 +152,34 @@ func UploadHTTPFile(targetURL, localFilePath, httpMethod, contentTypeHeader stri
 
 
 // UploadPackageMetadata uploads the package-metadata.json file to the repository using HTTP PUT.
-func UploadPackageMetadata(repoBaseURL, groupID, artifactID string, metaToUpload *PackageMetadata, client *http.Client) error {
+func UploadPackageMetadata(repoBaseURL, org, appName string, metaToUpload *PackageMetadata, client *http.Client) error {
 	if client == nil {
 		client = &http.Client{Timeout: time.Second * 60}
 	}
 	userAgent := "fpm-client/0.1.0"
 
-	jsonData, err := json.MarshalIndent(metaToUpload, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal package metadata for %s/%s: %w", metaToUpload.GroupID, metaToUpload.ArtifactID, err)
+	// Ensure the metadata being uploaded has matching Org and AppName, or use args for path
+	if metaToUpload.Org != org || metaToUpload.AppName != appName {
+	    // This could be an error, or we trust the path given by args and metadata content can differ (less ideal)
+	    // For now, let's assume metaToUpload's fields should match for consistency if they are set.
+	    // If metaToUpload comes from a newly initialized struct, its Org/AppName might be empty.
+	    // So, better to use the passed org/appName for path construction.
+	    // And ensure metaToUpload has these set before marshalling if it's new.
+	    if metaToUpload.Org == "" { metaToUpload.Org = org }
+		if metaToUpload.AppName == "" { metaToUpload.AppName = appName }
 	}
 
-	// Construct path using the provided groupID and artifactID, which define the "coordinates"
-	metadataPath := fmt.Sprintf("metadata/%s/%s/package-metadata.json", groupID, artifactID)
+
+	jsonData, err := json.MarshalIndent(metaToUpload, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal package metadata for %s/%s: %w", org, appName, err)
+	}
+
+	// Construct path using the provided org and appName
+	metadataPath := fmt.Sprintf("metadata/%s/%s/package-metadata.json", org, appName)
 	fullMetadataURL, err := url.JoinPath(repoBaseURL, metadataPath)
 	if err != nil {
-		return fmt.Errorf("error constructing metadata upload URL for %s/%s on repo %s: %w", groupID, artifactID, repoBaseURL, err)
+		return fmt.Errorf("error constructing metadata upload URL for %s/%s on repo %s: %w", org, appName, repoBaseURL, err)
 	}
 
 	req, err := http.NewRequest(http.MethodPut, fullMetadataURL, bytes.NewBuffer(jsonData))
@@ -176,9 +188,9 @@ func UploadPackageMetadata(repoBaseURL, groupID, artifactID string, metaToUpload
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Content-Type", "application/json")
-	req.ContentLength = int64(len(jsonData)) // Set Content-Length for PUT
+	req.ContentLength = int64(len(jsonData))
 
-	fmt.Printf("Uploading metadata for %s/%s to %s...\n", groupID, artifactID, fullMetadataURL)
+	fmt.Printf("Uploading metadata for %s/%s to %s...\n", org, appName, fullMetadataURL)
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to upload metadata to %s: %w", fullMetadataURL, err)
@@ -190,7 +202,6 @@ func UploadPackageMetadata(repoBaseURL, groupID, artifactID string, metaToUpload
 		return fmt.Errorf("failed to upload metadata to %s (status: %s). Response: %s", fullMetadataURL, resp.Status, string(respBodyBytes))
 	}
 
-	// Log with the groupID and artifactID that the metadata *claims* to be, from its content.
-	fmt.Printf("Metadata for %s/%s uploaded successfully to %s.\n", metaToUpload.GroupID, metaToUpload.ArtifactID, fullMetadataURL)
+	fmt.Printf("Metadata for %s/%s uploaded successfully to %s.\n", org, appName, fullMetadataURL) // Log with path identifiers
 	return nil
 }

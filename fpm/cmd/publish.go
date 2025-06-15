@@ -55,29 +55,29 @@ to publish from the local FPM app store.`,
 			fmt.Printf("Publishing from direct file: %s\n", fpmFilePathToPublish)
 		} else if len(args) == 1 { // Case 2: Package identifier is provided
 			packageIdentifier := args[0]
-			var parsedGroupID, parsedArtifactID, parsedVersion string
+			var parsedOrg, parsedAppName, parsedVersion string // Renamed variables
 			parts := strings.Split(packageIdentifier, "/")
 			if len(parts) == 2 {
-				parsedGroupID = strings.TrimSpace(parts[0])
+				parsedOrg = strings.TrimSpace(parts[0]) // Renamed variable
 				appAndVersion := strings.Split(parts[1], "==")
-				parsedArtifactID = strings.TrimSpace(appAndVersion[0])
+				parsedAppName = strings.TrimSpace(appAndVersion[0]) // Renamed variable
 				if len(appAndVersion) == 2 {
 					parsedVersion = strings.TrimSpace(appAndVersion[1])
 				}
 			} else {
-				return fmt.Errorf("invalid package identifier format: '%s'. Expected <group>/<artifact> or <group>/<artifact>==<version>", packageIdentifier)
+				return fmt.Errorf("invalid package identifier format: '%s'. Expected <org>/<appName> or <org>/<appName>==<version>", packageIdentifier)
 			}
-			if parsedGroupID == "" || parsedArtifactID == "" {
-				return fmt.Errorf("invalid package identifier: groupID and artifactID must be specified in '%s'", packageIdentifier)
+			if parsedOrg == "" || parsedAppName == "" { // Renamed variables
+				return fmt.Errorf("invalid package identifier: Org and AppName must be specified in '%s'", packageIdentifier)
 			}
 
-			appOrg = parsedGroupID
-			appName = parsedArtifactID
+			appOrg = parsedOrg     // Use renamed variables
+			appName = parsedAppName // Use renamed variables
 			appVersion = parsedVersion
 
 			if appVersion == "" || appVersion == "latest" {
 				fmt.Printf("Resolving latest version for %s/%s from local FPM app store...\n", appOrg, appName)
-				resolvedVersion, err := resolveLatestVersionFromLocalStore(cfg.AppsBasePath, appOrg, appName)
+				resolvedVersion, err := resolveLatestVersionFromLocalStore(cfg.AppsBasePath, appOrg, appName) // Call with new params
 				if err != nil {
 					return fmt.Errorf("failed to resolve latest version for %s/%s: %w", appOrg, appName, err)
 				}
@@ -135,17 +135,18 @@ to publish from the local FPM app store.`,
 
 		fmt.Printf("Fetching remote metadata for %s/%s from %s...\n", appOrg, appName, targetRepo.Name)
 		// FetchRemotePackageMetadata returns (nil,nil) for 404, which is fine (means new package)
-		remoteMeta, err := repository.FetchRemotePackageMetadata(targetRepo.URL, appOrg, appName, httpClient)
-		if err != nil {
-			// This implies an actual error during fetch, not just 404
-			return fmt.Errorf("failed to fetch remote package metadata: %w", err)
+		// The boolean metadataFound was part of a planned signature but current FetchRemotePackageMetadata returns (meta, err)
+		// where meta is nil and err is nil for a 404.
+		remoteMeta, fetchMetaErr := repository.FetchRemotePackageMetadata(targetRepo.URL, appOrg, appName, httpClient)
+		if fetchMetaErr != nil {
+			return fmt.Errorf("failed to fetch remote package metadata: %w", fetchMetaErr)
 		}
 
-		if remoteMeta == nil { // Metadata did not exist (404)
+		if remoteMeta == nil { // Metadata did not exist (e.g. 404)
 			fmt.Printf("No existing remote metadata found for %s/%s. Creating new.\n", appOrg, appName)
 			remoteMeta = &repository.PackageMetadata{
-				GroupID:    appOrg,
-				ArtifactID: appName,
+				Org:        appOrg,    // Use renamed field
+				AppName:    appName, // Use renamed field
 				Versions:   make(map[string]repository.PackageVersionMetadata),
 				Description: currentAppMeta.Description,
 			}
@@ -154,9 +155,15 @@ to publish from the local FPM app store.`,
 			if remoteMeta.Versions == nil {
 				remoteMeta.Versions = make(map[string]repository.PackageVersionMetadata)
 			}
+			// Ensure Org and AppName in fetched metadata match what we expect, or use fetched ones as canonical.
+			// For now, assume appOrg and appName derived from user input/local FPM are the target.
+			// Update description if it's empty on remote, from current package
 			if remoteMeta.Description == "" && currentAppMeta.Description != "" {
 				remoteMeta.Description = currentAppMeta.Description
 			}
+			// It's good practice to ensure GroupID and ArtifactID in remoteMeta match appOrg and appName if it's not new.
+			remoteMeta.Org = appOrg
+			remoteMeta.AppName = appName
 		}
 
 		if _, exists := remoteMeta.Versions[appVersion]; exists {
