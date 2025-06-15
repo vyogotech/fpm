@@ -7,8 +7,17 @@ import (
 	"path/filepath"
 	"strings" // Added missing import
 
+	"archive/zip" // For extracting the FPM file
+	"io"          // For io.Copy
+	// "os" already imported
+	// "path/filepath" already imported
+	// "strings" already imported
+	// "fmt" already imported
+	// "errors" already imported
+
 	"fpm/internal/apputils"
 	"fpm/internal/archive"
+	"fpm/internal/config" // For FPM configuration (AppsBasePath)
 	"fpm/internal/gitutils"
 	"fpm/internal/metadata"
 
@@ -76,8 +85,9 @@ var (
 	packageSourcePath string
 	packageOutputPath string
 	packageVersion    string
-	packageOverwrite  bool
-	packageType       string
+	packageOverwrite      bool
+	packageType           string
+	packageSkipLocalInstall bool // New flag variable
 )
 
 var packageCmd = &cobra.Command{
@@ -249,6 +259,92 @@ It reads app metadata, collects source files, and bundles them into a versioned 
 		}
 
 		fmt.Printf("Successfully packaged: %s\n", finalFpmFilePath)
+
+		// Install to local FPM store if not skipped
+		if !packageSkipLocalInstall {
+			fmt.Println("Attempting to install package to local FPM app store...")
+
+			cfg, err := config.InitConfig()
+			if err != nil {
+				return fmt.Errorf("failed to initialize FPM configuration for local install: %w", err)
+			}
+
+			// Ensure Org, AppName, and PackageVersion are available from metadata
+			if meta.Org == "" || meta.AppName == "" || meta.PackageVersion == "" {
+				return fmt.Errorf("metadata (Org, AppName, Version) incomplete, cannot install to local store. Org: '%s', AppName: '%s', Version: '%s'", meta.Org, meta.AppName, meta.PackageVersion)
+			}
+
+			targetAppPathInStore := filepath.Join(cfg.AppsBasePath, meta.Org, meta.AppName, meta.PackageVersion)
+
+			fmt.Printf("Cleaning up existing local installation directory (if any): %s\n", targetAppPathInStore)
+			if err := os.RemoveAll(targetAppPathInStore); err != nil {
+				return fmt.Errorf("failed to remove existing directory in local store %s: %w", targetAppPathInStore, err)
+			}
+			if err := os.MkdirAll(targetAppPathInStore, 0o755); err != nil { // Use 0o755 for directory
+				return fmt.Errorf("failed to create directory in local store %s: %w", targetAppPathInStore, err)
+			}
+
+			fmt.Printf("Extracting package %s to local store %s...\n", finalFpmFilePath, targetAppPathInStore)
+
+			// Extraction logic (can be moved to a helper)
+			r, zipErr := zip.OpenReader(finalFpmFilePath)
+			if zipErr != nil {
+				return fmt.Errorf("failed to open created FPM package for local install %s: %w", finalFpmFilePath, zipErr)
+			}
+			defer r.Close()
+
+			for _, f := range r.File {
+				extractedFilePath := filepath.Join(targetAppPathInStore, f.Name)
+
+				// Path traversal protection
+				if !strings.HasPrefix(extractedFilePath, filepath.Clean(targetAppPathInStore)+string(os.PathSeparator)) {
+					return fmt.Errorf("illegal file path in FPM archive: '%s' (targets outside '%s')", f.Name, targetAppPathInStore)
+				}
+
+				if f.FileInfo().IsDir() {
+					if err := os.MkdirAll(extractedFilePath, f.Mode()); err != nil { // Use mode from zip
+						return fmt.Errorf("failed to create directory structure %s during local install: %w", extractedFilePath, err)
+					}
+					continue
+				}
+
+				// Create parent directory for the file
+				if err := os.MkdirAll(filepath.Dir(extractedFilePath), os.ModePerm); err != nil { // Broad permission for parent dirs
+					return fmt.Errorf("failed to create parent directory for %s during local install: %w", extractedFilePath, err)
+				}
+
+				outFile, err := os.OpenFile(extractedFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode()) // Use mode from zip
+				if err != nil {
+					return fmt.Errorf("failed to open file for writing %s during local install: %w", extractedFilePath, err)
+				}
+
+				rc, err := f.Open()
+				if err != nil {
+					outFile.Close()
+					return fmt.Errorf("failed to open file in zip %s during local install: %w", f.Name, err)
+				}
+
+				_, err = io.Copy(outFile, rc)
+
+				// Close both files before checking io.Copy error
+				closeErrRC := rc.Close()
+				closeErrOutFile := outFile.Close()
+
+				if err != nil { // This is io.Copy error
+					return fmt.Errorf("failed to copy content of %s to %s during local install: %w", f.Name, extractedFilePath, err)
+				}
+				if closeErrRC != nil {
+					return fmt.Errorf("failed to close zip entry %s during local install: %w", f.Name, closeErrRC)
+				}
+				if closeErrOutFile != nil {
+					return fmt.Errorf("failed to close output file %s during local install: %w", extractedFilePath, closeErrOutFile)
+				}
+			}
+			fmt.Printf("Successfully installed package %s/%s version %s to local FPM store: %s\n", meta.Org, meta.AppName, meta.PackageVersion, targetAppPathInStore)
+
+		} else {
+			fmt.Println("Skipping installation to local FPM app store.")
+		}
 		return nil
 	},
 }
@@ -260,6 +356,8 @@ func init() {
 	packageCmd.Flags().StringVarP(&packageOutputPath, "output-path", "o", ".", "Directory to save the .fpm file")
 	packageCmd.Flags().StringVarP(&packageVersion, "version", "v", "", "Package version (e.g., 1.0.0) (required)") // Still global for now
 	packageCmd.Flags().BoolVar(&packageOverwrite, "overwrite", false, "Overwrite if .fpm file already exists")
+	packageCmd.Flags().BoolVar(&packageSkipLocalInstall, "skip-local-install", false, "Skip installing the package to the local FPM app store after packaging.")
+
 
 	// Optional flags for overriding derived values
 	packageCmd.Flags().String("org", "", "GitHub organization or similar identifier for the app (overrides auto-detection)")

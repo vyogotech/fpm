@@ -9,8 +9,11 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"runtime" // For OS-specific HOME for setupTempFPMConfig
+	"bytes"   // For executeCommand buffer
 
 	"fpm/internal/metadata"
+	"fpm/internal/config" // For FPM_APPS_BASE_PATH logic
 
 	"github.com/spf13/pflag" // For resetting flags
 	"github.com/stretchr/testify/assert"
@@ -630,6 +633,166 @@ func resetPackageCmdFlags() {
 	// And String flags for "org", "app-name".
 	// The `packageCmd.Flags().VisitAll` should handle resetting these at the flagset level.
 	// The variables themselves if modified directly would need manual reset, but cobra usually works via flags.
+}
+
+// executeCommand is a helper to execute Cobra commands and capture their output.
+// Copied/adapted from repo_test.go for use here.
+func executeCommand(root *cobra.Command, args ...string) (string, error) {
+	buf := new(bytes.Buffer)
+	root.SetOut(buf)
+	root.SetErr(buf)
+	root.SetArgs(args)
+
+	err := root.Execute()
+	output := buf.String()
+	return output, err
+}
+
+// verifyAppInLocalStore checks if an app is correctly installed in the local FPM store.
+func verifyAppInLocalStore(t *testing.T, appsBasePath, org, appName, version string, expectExists bool, expectedFiles ...string) {
+	t.Helper()
+	appVersionPath := filepath.Join(appsBasePath, org, appName, version)
+
+	_, err := os.Stat(appVersionPath)
+	if expectExists {
+		require.NoError(t, err, "App version path %s should exist in local store", appVersionPath)
+		require.DirExists(t, appVersionPath, "App version path %s should be a directory", appVersionPath)
+
+		for _, expectedFileRelPath := range expectedFiles {
+			fullExpectedFilePath := filepath.Join(appVersionPath, expectedFileRelPath)
+			assert.FileExists(t, fullExpectedFilePath, "Expected file %s not found in local store at %s", expectedFileRelPath, fullExpectedFilePath)
+		}
+	} else {
+		assert.True(t, os.IsNotExist(err), "App version path %s should NOT exist in local store, but it does (or other error: %v)", appVersionPath, err)
+	}
+}
+
+
+func TestPackageCmd_LocalInstallBehavior(t *testing.T) {
+	origHome, homeSet := os.LookupEnv("HOME")
+	if runtime.GOOS == "windows" {
+		origHome, homeSet = os.LookupEnv("USERPROFILE")
+	}
+
+	tempHomeForTest, err := os.MkdirTemp("", "fpm-testhome-pkglocal-*")
+	require.NoError(t, err)
+	defer func() {
+		if homeSet {
+			if runtime.GOOS == "windows" {
+				os.Setenv("USERPROFILE", origHome)
+			} else {
+				os.Setenv("HOME", origHome)
+			}
+		} else {
+			if runtime.GOOS == "windows" {
+				os.Unsetenv("USERPROFILE")
+			} else {
+				os.Unsetenv("HOME")
+			}
+		}
+		os.RemoveAll(tempHomeForTest)
+	}()
+
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", tempHomeForTest)
+	} else {
+		t.Setenv("HOME", tempHomeForTest)
+	}
+
+	// This call to InitConfig ensures that if a default config is created,
+	// it's within tempHomeForTest. The AppsBasePath will be derived based on this home.
+	cfg, err := config.InitConfig()
+	require.NoError(t, err, "Failed to init config in temp home for package local install test")
+	mockAppsBasePath := cfg.AppsBasePath // Use the AppsBasePath from the initialized config
+	// Ensure this base path itself is created, as InitConfig might only create the .fpm dir, not .fpm/apps
+	require.NoError(t, os.MkdirAll(mockAppsBasePath, 0o755))
+
+
+	sourceAppDir, err := os.MkdirTemp("", "sourceapp-pkglocal-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(sourceAppDir)
+
+	testAppName := "samplelocalapp"
+	testAppVersion := "0.0.1"
+	testAppOrg := "testorg"
+
+	// Using the existing createMinimalFrappeApp from this file (package_test.go)
+	// It creates source structure like: <sourceAppDir>/<testAppName>/hooks.py
+	// This is correct for `fpm package <sourceAppDir> --app-name <testAppName>`
+	createMinimalFrappeApp(t, sourceAppDir, testAppName, map[string]string{
+		"requirements.txt": "requests", // A root file
+	})
+
+
+	t.Run("DefaultInstallsToLocalStore", func(t *testing.T) {
+		packageOutputDir, err := os.MkdirTemp("", "fpmoutput-defaultinstall-*")
+		require.NoError(t, err)
+		defer os.RemoveAll(packageOutputDir)
+
+		// Reset flags for packageCmd
+		packageCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Value.Set(f.DefValue); f.Changed = false; })
+		// Manually reset package-level flag variables to their defaults
+		packageSkipLocalInstall = false
+
+
+		args := []string{
+			"package", sourceAppDir,
+			"--output-path", packageOutputDir,
+			"--version", testAppVersion,
+			"--org", testAppOrg,
+			"--app-name", testAppName,
+		}
+		output, err := executeCommand(rootCmd, args...)
+		t.Logf("fpm package (default install) output: %s", output)
+		require.NoError(t, err, "fpm package command failed for default local install")
+
+		packagedFPMFile := filepath.Join(packageOutputDir, testAppName+"-"+testAppVersion+".fpm")
+		assert.FileExists(t, packagedFPMFile, "Packaged .fpm file not found")
+
+		expectedFilesInStore := []string{
+			filepath.Join(testAppName, "hooks.py"), // App module files
+			filepath.Join(testAppName, "__init__.py"),
+			filepath.Join(testAppName, "modules.txt"),
+			"requirements.txt",      // Root files from package
+			"app_metadata.json",     // Metadata file
+		}
+		verifyAppInLocalStore(t, mockAppsBasePath, testAppOrg, testAppName, testAppVersion, true, expectedFilesInStore...)
+	})
+
+	t.Run("SkipLocalInstallFlag", func(t *testing.T) {
+		packageOutputDir, err := os.MkdirTemp("", "fpmoutput-skipinstall-*")
+		require.NoError(t, err)
+		defer os.RemoveAll(packageOutputDir)
+
+		// Clean the local store path to ensure it's not from a previous run
+		appVersionPathInStore := filepath.Join(mockAppsBasePath, testAppOrg, testAppName, testAppVersion)
+		os.RemoveAll(appVersionPathInStore)
+
+
+		// Reset flags for packageCmd
+		packageCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Value.Set(f.DefValue); f.Changed = false; })
+		// Manually reset package-level flag variables
+		packageSkipLocalInstall = false // Reset before setting for this test specifically
+
+
+		args := []string{
+			"package", sourceAppDir,
+			"--output-path", packageOutputDir,
+			"--version", testAppVersion,
+			"--org", testAppOrg,
+			"--app-name", testAppName,
+			"--skip-local-install", // Crucial flag for this test
+		}
+		output, err := executeCommand(rootCmd, args...)
+		t.Logf("fpm package (--skip-local-install) output: %s", output)
+		require.NoError(t, err, "fpm package command failed with --skip-local-install")
+
+		packagedFPMFile := filepath.Join(packageOutputDir, testAppName+"-"+testAppVersion+".fpm")
+		assert.FileExists(t, packagedFPMFile, "Packaged .fpm file not found with --skip-local-install")
+
+		verifyAppInLocalStore(t, mockAppsBasePath, testAppOrg, testAppName, testAppVersion, false)
+		assert.Contains(t, output, "Skipping installation to local FPM app store.")
+	})
 }
 
 
