@@ -2,92 +2,54 @@ package cmd
 
 import (
 	"archive/zip"
-	"encoding/json" // For readMetadataFromFPMFile helper
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort" // For "latest" version resolution from local store
+	"sort"
 	"strings"
 
 	"fpm/internal/config"
 	"fpm/internal/metadata"
 	"fpm/internal/repository"
+	"fpm/internal/utils" // Added for utils.CopyRegularFile
 	"os/exec"
 
 	"github.com/spf13/cobra"
 )
-
-// copyRegularFile copies a single regular file from src to dst.
-// It creates the destination file with specified permissions.
-// Note: This is duplicated from cmd/package.go. Consider moving to a shared utility if used more broadly.
-func copyRegularFile(src, dst string, perm os.FileMode) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("failed to open source file %s: %w", src, err)
-	}
-	defer srcFile.Close()
-
-	// Ensure destination directory exists
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { // 0o755 for parent dirs
-		return fmt.Errorf("failed to create parent directory for %s: %w", dst, err)
-	}
-
-	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if err != nil {
-		return fmt.Errorf("failed to create destination file %s: %w", dst, err)
-	}
-	defer dstFile.Close()
-
-	_, err = io.Copy(dstFile, srcFile)
-	if err != nil {
-		return fmt.Errorf("failed to copy from %s to %s: %w", src, dst, err)
-	}
-	return nil
-}
-
 
 // copyDirContents recursively copies contents from src to dst.
 // Assumes dst directory already exists or can be created by MkdirAll for subdirectories.
 func copyDirContents(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err // Propagate errors from Walk itself
+			return err
 		}
-
-		// Construct the destination path
 		relPath, err := filepath.Rel(src, path)
 		if err != nil {
 			return fmt.Errorf("failed to get relative path for %s from %s: %w", path, src, err)
 		}
 		dstPath := filepath.Join(dst, relPath)
-
 		if info.IsDir() {
-			// Create the directory in the destination with the same permissions
 			if err := os.MkdirAll(dstPath, info.Mode()); err != nil {
 				return fmt.Errorf("failed to create directory %s: %w", dstPath, err)
 			}
-			return nil // Directory processed, continue walking
+			return nil
 		}
-
-		// It's a file, so copy it
-		// Ensure the destination directory for the file exists
-		if err := os.MkdirAll(filepath.Dir(dstPath), os.ModePerm); err != nil { // Use ModePerm for parent dirs for simplicity
+		if err := os.MkdirAll(filepath.Dir(dstPath), os.ModePerm); err != nil {
 			return fmt.Errorf("failed to create parent directory for %s: %w", dstPath, err)
 		}
-
 		srcFile, err := os.Open(path)
 		if err != nil {
 			return fmt.Errorf("failed to open source file %s: %w", path, err)
 		}
 		defer srcFile.Close()
-
 		dstFile, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
 		if err != nil {
 			return fmt.Errorf("failed to create destination file %s: %w", dstPath, err)
 		}
 		defer dstFile.Close()
-
 		if _, err = io.Copy(dstFile, srcFile); err != nil {
 			return fmt.Errorf("failed to copy %s to %s: %w", path, dstPath, err)
 		}
@@ -106,9 +68,8 @@ from the local FPM store, then from remote repositories.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		packagePathArg := args[0]
-		var appModulePathInFPMStore string // Path to the app module like ~/.fpm/apps/org/app/ver/app
-		var appOrg, appName, appVersion string // Metadata extracted/resolved
-		// var currentPkgMeta *metadata.AppMetadata // Not strictly needed if appOrg, appName, appVersion are correctly sourced for bench ops
+		var appModulePathInFPMStore string
+		var appOrg, appName, appVersion string
 
 		cfg, configErr := config.InitConfig()
 		if configErr != nil {
@@ -127,7 +88,7 @@ from the local FPM store, then from remote repositories.`,
 		fmt.Printf("Attempting to install '%s'\n", packagePathArg)
 		statInfo, statErr := os.Stat(packagePathArg)
 
-		if statErr == nil && !statInfo.IsDir() { // Case 1: Argument is a local .fpm file
+		if statErr == nil && !statInfo.IsDir() {
 			fmt.Printf("Local package file found: %s\n", packagePathArg)
 			localFpmMeta, err := readMetadataFromFPMFile(packagePathArg)
 			if err != nil {
@@ -157,16 +118,15 @@ from the local FPM store, then from remote repositories.`,
 			}
 			fmt.Printf("Package content installed to %s\n", targetAppVersionPathInStore)
 
-			// Store the original .fpm file
 			originalFpmFilename := filepath.Base(packagePathArg)
 			storedFpmPath := filepath.Join(targetAppVersionPathInStore, "_"+originalFpmFilename)
-			if err := copyRegularFile(packagePathArg, storedFpmPath, 0o644); err != nil {
+			if err := utils.CopyRegularFile(packagePathArg, storedFpmPath, 0o644); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to store original .fpm package from local file in FPM store at %s: %v\n", storedFpmPath, err)
 			} else {
 				fmt.Printf("Stored original .fpm package in FPM store: %s\n", storedFpmPath)
 			}
 
-		} else if os.IsNotExist(statErr) || (statInfo != nil && statInfo.IsDir()) { // Case 2: Remote identifier
+		} else if os.IsNotExist(statErr) || (statInfo != nil && statInfo.IsDir()) {
 			fmt.Printf("Package '%s' not found locally or is a directory. Attempting to resolve as remote identifier...\n", packagePathArg)
 			var parsedGroupID, parsedArtifactID, parsedVersion string
 			parts := strings.Split(packagePathArg, "/")
@@ -270,10 +230,9 @@ from the local FPM store, then from remote repositories.`,
 				}
 				fmt.Printf("Package content installed from FPM cache to FPM store at %s\n", targetAppVersionPathInStore)
 
-				// Store the original (cached) .fpm file
 				originalFpmFilename := filepath.Base(downloadedPkgInfo.LocalPath)
 				storedFpmPath := filepath.Join(targetAppVersionPathInStore, "_"+originalFpmFilename)
-				if err := copyRegularFile(downloadedPkgInfo.LocalPath, storedFpmPath, 0o644); err != nil {
+				if err := utils.CopyRegularFile(downloadedPkgInfo.LocalPath, storedFpmPath, 0o644); err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to store original .fpm package from cache in FPM store at %s: %v\n", storedFpmPath, err)
 				} else {
 					fmt.Printf("Stored original .fpm package in FPM store: %s\n", storedFpmPath)

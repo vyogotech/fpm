@@ -5,52 +5,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings" // Added missing import
+	"strings"
 
 	"archive/zip" // For extracting the FPM file
 	"io"          // For io.Copy
-	// "os" already imported
-	// "path/filepath" already imported
-	// "strings" already imported
-	// "fmt" already imported
-	// "errors" already imported
 
 	"fpm/internal/apputils"
 	"fpm/internal/archive"
-	"fpm/internal/config" // For FPM configuration (AppsBasePath)
+	"fpm/internal/config"
 	"fpm/internal/gitutils"
 	"fpm/internal/metadata"
+	"fpm/internal/utils" // Added for utils.CopyRegularFile
 
 	"github.com/spf13/cobra"
 )
-
-// copyRegularFile copies a single regular file from src to dst.
-// It creates the destination file with specified permissions.
-func copyRegularFile(src, dst string, perm os.FileMode) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("failed to open source file %s: %w", src, err)
-	}
-	defer srcFile.Close()
-
-	// Ensure destination directory exists
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { // 0o755 for parent dirs
-		return fmt.Errorf("failed to create parent directory for %s: %w", dst, err)
-	}
-
-	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if err != nil {
-		return fmt.Errorf("failed to create destination file %s: %w", dst, err)
-	}
-	defer dstFile.Close()
-
-	_, err = io.Copy(dstFile, srcFile)
-	if err != nil {
-		return fmt.Errorf("failed to copy from %s to %s: %w", src, dst, err)
-	}
-	return nil
-}
-
 
 // validateFrappeAppStructure checks if the source directory has a valid Frappe app structure.
 func validateFrappeAppStructure(sourceDir string, appName string) error {
@@ -110,21 +78,21 @@ func validateFrappeAppStructure(sourceDir string, appName string) error {
 }
 
 var (
-	packageSourcePath string
+	// packageSourcePath string // This was commented out in original, keeping it that way.
 	packageOutputPath string
 	packageVersion    string
 	packageOverwrite      bool
 	packageType           string
-	packageSkipLocalInstall bool // New flag variable
+	packageSkipLocalInstall bool
 )
 
 var packageCmd = &cobra.Command{
 	Use:   "package",
 	Short: "Package a Frappe application into an .fpm file",
 	Long: `Packages a Frappe application from a local development directory into an .fpm file.
-It reads app metadata, collects source files, and bundles them into a versioned archive.`,
+It reads app metadata, collects source files, and bundles them into a versioned archive.
+By default, it also installs the packaged app to the local FPM app store.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Source path is now an optional argument, defaults to "."
 		sourcePath := "."
 		if len(args) > 0 {
 			sourcePath = args[0]
@@ -137,39 +105,29 @@ It reads app metadata, collects source files, and bundles them into a versioned 
 			return fmt.Errorf("source path '%s' does not exist", absSourcePath)
 		}
 
-		// Version flag is still required
-		versionFlagValue := packageVersion // packageVersion is the global var bound to the flag
+		versionFlagValue := packageVersion
 		if versionFlagValue == "" {
 			return fmt.Errorf("--version flag is required")
 		}
 
-		// 1. Initial metadata load/generation
-		// This provides an initial meta object, potentially with app_name, org from an existing app_metadata.json
-		// or with PackageName inferred from absSourcePath if generating.
 		meta, err := metadata.LoadAppMetadata(absSourcePath)
 		if err != nil {
-			// Attempt to generate if loading failed or if specific "not found" type error (LoadAppMetadata current returns empty struct if not found)
-			// For now, let's assume LoadAppMetadata returns an empty struct and no error if not found.
-			// So, we check if meta.PackageName is empty (or AppName, if LoadAppMetadata sets it)
+			// Consider this non-fatal or handle more gracefully if needed
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not load existing app_metadata.json: %v. Will generate new.\n", err)
 		}
-		if meta.PackageName == "" && meta.AppName == "" { // If no useful name info loaded
+		if meta == nil || (meta.PackageName == "" && meta.AppName == "") { // meta can be nil if LoadAppMetadata returns error
 			generatedMeta, genErr := metadata.GenerateAppMetadata(absSourcePath, versionFlagValue)
 			if genErr != nil {
 				return fmt.Errorf("failed to generate default app metadata: %w", genErr)
 			}
-			meta = generatedMeta // Use the generated one
+			meta = generatedMeta
 		}
-		meta.PackageVersion = versionFlagValue // Version flag is authoritative
+		meta.PackageVersion = versionFlagValue
 
-		// 2. Derive Org from Git
 		orgFromGit, repoNameFromGit, errGit := gitutils.GetGitRemoteOriginInfo(absSourcePath)
 		if errGit != nil {
-			// Check if the error is more serious than just .git/config not found or origin missing
-			// os.IsNotExist is tricky with wrapped errors. A custom error type in gitutils might be better.
-			// For now, log non-critical "not found" types of errors.
 			unwrappedErr := errors.Unwrap(errGit)
-			if unwrappedErr == nil { unwrappedErr = errGit } // Use original error if not wrapped by fmt.Errorf %w
-
+			if unwrappedErr == nil { unwrappedErr = errGit }
 			if !strings.Contains(unwrappedErr.Error(), "not found") && !strings.Contains(unwrappedErr.Error(), "no such file or directory") {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not determine org/repo from git: %v\n", errGit)
 			} else {
@@ -177,16 +135,12 @@ It reads app metadata, collects source files, and bundles them into a versioned 
 			}
 		}
 
-		// 3. Derive AppName from hooks.py or Git repository name
 		derivedAppName := ""
-		// Use initial guess for app_name dir from metadata to find hooks.py.
-		// meta.PackageName is often the directory name. If AppName was loaded, use that.
 		appModuleDirGuess := meta.AppName
 		if appModuleDirGuess == "" {
-			appModuleDirGuess = meta.PackageName // Fallback to PackageName if AppName isn't set yet
+			appModuleDirGuess = meta.PackageName
 		}
-
-		if appModuleDirGuess != "" { // Only try if we have a directory to look into
+		if appModuleDirGuess != "" {
 			hooksFilePath := filepath.Join(absSourcePath, appModuleDirGuess, "hooks.py")
 			appNameFromHooks, errHooks := apputils.GetAppNameFromHooks(hooksFilePath)
 			if errHooks == nil && appNameFromHooks != "" {
@@ -202,119 +156,95 @@ It reads app metadata, collects source files, and bundles them into a versioned 
 				}
 			}
 		}
-
 		if derivedAppName == "" && repoNameFromGit != "" {
 			derivedAppName = repoNameFromGit
 			fmt.Fprintf(cmd.OutOrStdout(), "Info: Using repository name '%s' as app_name (derived from git remote)\n", derivedAppName)
 		}
 
-
-		// 4. Determine Final Org and AppName (Flags override derived values, which override loaded values)
 		orgFlagValue, _ := cmd.Flags().GetString("org")
 		appNameFlagValue, _ := cmd.Flags().GetString("app-name")
 
-		finalOrg := meta.Org // Start with value from app_metadata.json (if any)
-		if orgFromGit != "" { // Derived from Git (if no flag)
+		finalOrg := meta.Org
+		if orgFromGit != "" {
 			finalOrg = orgFromGit
 		}
-		if orgFlagValue != "" { // Flag has highest precedence
+		if orgFlagValue != "" {
 			finalOrg = orgFlagValue
 		}
 
-		finalAppName := meta.AppName // Start with value from app_metadata.json (if any)
-		if derivedAppName != "" { // Derived (hooks or git)
+		finalAppName := meta.AppName
+		if derivedAppName != "" {
 			finalAppName = derivedAppName
 		}
-		if appNameFlagValue != "" { // Flag has highest precedence
+		if appNameFlagValue != "" {
 			finalAppName = appNameFlagValue
 		}
 
-		// 5. Validate final AppName (must exist)
 		if finalAppName == "" {
 			hooksPathForError := filepath.Join(absSourcePath, "[app_module_name]", "hooks.py")
-			if appModuleDirGuess != "" { // Use the guess if available for a more specific error message
+			if appModuleDirGuess != "" {
 				hooksPathForError = filepath.Join(absSourcePath, appModuleDirGuess, "hooks.py")
 			}
 			return fmt.Errorf("app_name could not be determined. Please provide --app-name flag, or ensure it's in '%s', or derivable from git remote name.", hooksPathForError)
 		}
 
-		// 6. Update metadata object with the final determined values
 		meta.Org = finalOrg
 		meta.AppName = finalAppName
-		meta.PackageName = finalAppName // AppName is the primary identifier now
-		// meta.PackageVersion is already set from the flag
+		meta.PackageName = finalAppName
 
-		// Get full git remote URL
 		fullGitURL, errGitURL := gitutils.GetFullGitRemoteOriginURL(absSourcePath)
 		if errGitURL != nil {
-			// Similar to org/repo parsing, treat "not found" as non-fatal for this field
 			unwrappedErr := errors.Unwrap(errGitURL)
 			if unwrappedErr == nil { unwrappedErr = errGitURL }
-
 			if !strings.Contains(unwrappedErr.Error(), "not found") && !strings.Contains(unwrappedErr.Error(), "no such file or directory") {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not determine full git remote URL: %v\n", errGitURL)
 			}
-			// No "Info" message here, as it's less critical than org/repo for basic operation
 		}
 		meta.SourceControlURL = fullGitURL
+		meta.PackageType = packageType
 
-		// Set package type from flag
-		meta.PackageType = packageType // packageType is the global var bound to the flag
-
-		// Validate Frappe app structure using the final determined AppName
 		if err := validateFrappeAppStructure(absSourcePath, meta.AppName); err != nil {
 			return err
 		}
 
-		// Output filename uses final AppName and Version
 		outputFileName := fmt.Sprintf("%s-%s.fpm", meta.AppName, meta.PackageVersion)
 		absOutputPath, err := filepath.Abs(packageOutputPath)
 		if err != nil {
 			return fmt.Errorf("failed to get absolute output path: %w", err)
 		}
-
 		finalFpmFilePath := filepath.Join(absOutputPath, outputFileName)
 
 		if _, err := os.Stat(finalFpmFilePath); err == nil && !packageOverwrite {
 			return fmt.Errorf("output file '%s' already exists. Use --overwrite to replace it", finalFpmFilePath)
 		}
 
-		fmt.Printf("Packaging '%s' version '%s' from '%s'...\n", meta.PackageName, packageVersion, absSourcePath)
-
-		err = archive.CreateFPMArchive(absSourcePath, absOutputPath, meta, packageVersion)
+		fmt.Printf("Packaging '%s' version '%s' from '%s'...\n", meta.PackageName, meta.PackageVersion, absSourcePath)
+		err = archive.CreateFPMArchive(absSourcePath, absOutputPath, meta, meta.PackageVersion)
 		if err != nil {
 			return fmt.Errorf("failed to create package: %w", err)
 		}
-
 		fmt.Printf("Successfully packaged: %s\n", finalFpmFilePath)
 
-		// Install to local FPM store if not skipped
 		if !packageSkipLocalInstall {
 			fmt.Println("Attempting to install package to local FPM app store...")
-
 			cfg, err := config.InitConfig()
 			if err != nil {
 				return fmt.Errorf("failed to initialize FPM configuration for local install: %w", err)
 			}
-
-			// Ensure Org, AppName, and PackageVersion are available from metadata
 			if meta.Org == "" || meta.AppName == "" || meta.PackageVersion == "" {
-				return fmt.Errorf("metadata (Org, AppName, Version) incomplete, cannot install to local store. Org: '%s', AppName: '%s', Version: '%s'", meta.Org, meta.AppName, meta.PackageVersion)
+				return fmt.Errorf("metadata (Org, AppName, Version) incomplete for local store install. Org: '%s', AppName: '%s', Version: '%s'", meta.Org, meta.AppName, meta.PackageVersion)
 			}
 
 			targetAppPathInStore := filepath.Join(cfg.AppsBasePath, meta.Org, meta.AppName, meta.PackageVersion)
-
 			fmt.Printf("Cleaning up existing local installation directory (if any): %s\n", targetAppPathInStore)
 			if err := os.RemoveAll(targetAppPathInStore); err != nil {
 				return fmt.Errorf("failed to remove existing directory in local store %s: %w", targetAppPathInStore, err)
 			}
-			if err := os.MkdirAll(targetAppPathInStore, 0o755); err != nil { // Use 0o755 for directory
+			if err := os.MkdirAll(targetAppPathInStore, 0o755); err != nil {
 				return fmt.Errorf("failed to create directory in local store %s: %w", targetAppPathInStore, err)
 			}
 
 			fmt.Printf("Extracting package %s to local store %s...\n", finalFpmFilePath, targetAppPathInStore)
-
-			// Extraction logic (can be moved to a helper)
 			r, zipErr := zip.OpenReader(finalFpmFilePath)
 			if zipErr != nil {
 				return fmt.Errorf("failed to open created FPM package for local install %s: %w", finalFpmFilePath, zipErr)
@@ -323,42 +253,31 @@ It reads app metadata, collects source files, and bundles them into a versioned 
 
 			for _, f := range r.File {
 				extractedFilePath := filepath.Join(targetAppPathInStore, f.Name)
-
-				// Path traversal protection
 				if !strings.HasPrefix(extractedFilePath, filepath.Clean(targetAppPathInStore)+string(os.PathSeparator)) {
 					return fmt.Errorf("illegal file path in FPM archive: '%s' (targets outside '%s')", f.Name, targetAppPathInStore)
 				}
-
 				if f.FileInfo().IsDir() {
-					if err := os.MkdirAll(extractedFilePath, f.Mode()); err != nil { // Use mode from zip
+					if err := os.MkdirAll(extractedFilePath, f.Mode()); err != nil {
 						return fmt.Errorf("failed to create directory structure %s during local install: %w", extractedFilePath, err)
 					}
 					continue
 				}
-
-				// Create parent directory for the file
-				if err := os.MkdirAll(filepath.Dir(extractedFilePath), os.ModePerm); err != nil { // Broad permission for parent dirs
+				if err := os.MkdirAll(filepath.Dir(extractedFilePath), os.ModePerm); err != nil {
 					return fmt.Errorf("failed to create parent directory for %s during local install: %w", extractedFilePath, err)
 				}
-
-				outFile, err := os.OpenFile(extractedFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode()) // Use mode from zip
+				outFile, err := os.OpenFile(extractedFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
 				if err != nil {
 					return fmt.Errorf("failed to open file for writing %s during local install: %w", extractedFilePath, err)
 				}
-
 				rc, err := f.Open()
 				if err != nil {
 					outFile.Close()
 					return fmt.Errorf("failed to open file in zip %s during local install: %w", f.Name, err)
 				}
-
 				_, err = io.Copy(outFile, rc)
-
-				// Close both files before checking io.Copy error
 				closeErrRC := rc.Close()
 				closeErrOutFile := outFile.Close()
-
-				if err != nil { // This is io.Copy error
+				if err != nil {
 					return fmt.Errorf("failed to copy content of %s to %s during local install: %w", f.Name, extractedFilePath, err)
 				}
 				if closeErrRC != nil {
@@ -368,18 +287,15 @@ It reads app metadata, collects source files, and bundles them into a versioned 
 					return fmt.Errorf("failed to close output file %s during local install: %w", extractedFilePath, closeErrOutFile)
 				}
 			}
-			fmt.Printf("Successfully installed package %s/%s version %s to local FPM store: %s\n", meta.Org, meta.AppName, meta.PackageVersion, targetAppPathInStore)
+			fmt.Printf("Successfully installed (extracted) package %s/%s version %s to local FPM store: %s\n", meta.Org, meta.AppName, meta.PackageVersion, targetAppPathInStore)
 
-			// Also copy the .fpm file itself into the local store, prefixed with "_"
 			originalFpmFilename := filepath.Base(finalFpmFilePath)
 			storedFpmPath := filepath.Join(targetAppPathInStore, "_"+originalFpmFilename)
-			if err := copyRegularFile(finalFpmFilePath, storedFpmPath, 0o644); err != nil { // Use appropriate permissions
-				// This is not a fatal error for the overall package command, but should be logged.
+			if err := utils.CopyRegularFile(finalFpmFilePath, storedFpmPath, 0o644); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to store original .fpm package in local store at %s: %v\n", storedFpmPath, err)
 			} else {
 				fmt.Printf("Stored original .fpm package in local store: %s\n", storedFpmPath)
 			}
-
 		} else {
 			fmt.Println("Skipping installation to local FPM app store.")
 		}
@@ -389,20 +305,11 @@ It reads app metadata, collects source files, and bundles them into a versioned 
 
 func init() {
 	rootCmd.AddCommand(packageCmd)
-	// packageSourcePath is now an optional argument, not a flag.
-	// packageCmd.Flags().StringVarP(&packageSourcePath, "source", "s", ".", "Path to the Frappe app source directory")
 	packageCmd.Flags().StringVarP(&packageOutputPath, "output-path", "o", ".", "Directory to save the .fpm file")
-	packageCmd.Flags().StringVarP(&packageVersion, "version", "v", "", "Package version (e.g., 1.0.0) (required)") // Still global for now
+	packageCmd.Flags().StringVarP(&packageVersion, "version", "v", "", "Package version (e.g., 1.0.0) (required)")
 	packageCmd.Flags().BoolVar(&packageOverwrite, "overwrite", false, "Overwrite if .fpm file already exists")
 	packageCmd.Flags().BoolVar(&packageSkipLocalInstall, "skip-local-install", false, "Skip installing the package to the local FPM app store after packaging.")
-
-
-	// Optional flags for overriding derived values
 	packageCmd.Flags().String("org", "", "GitHub organization or similar identifier for the app (overrides auto-detection)")
 	packageCmd.Flags().String("app-name", "", "Actual Frappe app name (e.g., erpnext, my_custom_app) (overrides auto-detection)")
 	packageCmd.Flags().StringVar(&packageType, "package-type", "prod", "Package type (prod|dev)")
-
-	// No longer marking app-name as required, as it can be derived.
-	// Version is still marked as required implicitly by the check in RunE.
-	// Consider using packageCmd.MarkFlagRequired("version") for consistency in help text.
 }
