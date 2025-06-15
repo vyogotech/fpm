@@ -42,10 +42,12 @@ type PackageMetadata struct {
 
 // DownloadedPackageInfo holds information about a successfully downloaded/cached package.
 type DownloadedPackageInfo struct {
-	LocalPath      string // Path to the downloaded .fpm file in the local cache
-	RepositoryName string // Name of the repository it was fetched from
-	Version        string // The version that was fetched
-	Checksum       string // The expected checksum from metadata
+	LocalPath      string
+	RepositoryName string
+	Org            string // Org of the package from its metadata
+	AppName        string // AppName of the package from its metadata
+	Version        string
+	Checksum       string
 }
 
 // FindPackageInRepos searches for a specific package version across configured repositories.
@@ -151,6 +153,8 @@ func FindPackageInRepos(cfg *config.FPMConfig, org, appName, requestedVersion st
 			return &DownloadedPackageInfo{
 				LocalPath:      cachedFPMPath,
 				RepositoryName: repo.Name,
+				Org:            pkgMeta.Org,     // Populate from parsed package metadata
+				AppName:        pkgMeta.AppName, // Populate from parsed package metadata
 				Version:        targetVersion,
 				Checksum:       versionMeta.ChecksumSHA256,
 			}, nil
@@ -225,6 +229,8 @@ func FindPackageInRepos(cfg *config.FPMConfig, org, appName, requestedVersion st
 		return &DownloadedPackageInfo{
 			LocalPath:      cachedFPMPath,
 			RepositoryName: repo.Name,
+			Org:            pkgMeta.Org,     // Populate from parsed package metadata
+			AppName:        pkgMeta.AppName, // Populate from parsed package metadata
 			Version:        targetVersion,
 			Checksum:       versionMeta.ChecksumSHA256,
 		}, nil
