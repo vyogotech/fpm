@@ -93,7 +93,7 @@ to publish from the local FPM app store.`,
 			fpmFilePathToPublish = filepath.Join(appVersionPathInStore, expectedFpmFilename)
 
 			if _, err := os.Stat(fpmFilePathToPublish); os.IsNotExist(err) {
-				return fmt.Errorf("package %s/%s version %s .fpm file not found in local FPM app store at %s", appOrg, appName, appVersion, fpmFilePathToPublish)
+				return fmt.Errorf("package %s/%s version %s .fpm file not found in local FPM app store at %s (expected %s)", appOrg, appName, appVersion, appVersionPathInStore, expectedFpmFilename)
 			}
 			fmt.Printf("Publishing %s/%s version %s from local FPM store: %s\n", appOrg, appName, appVersion, fpmFilePathToPublish)
 		} else {
@@ -104,12 +104,14 @@ to publish from the local FPM app store.`,
 		if err != nil {
 			return fmt.Errorf("failed to read metadata from FPM package %s: %w", fpmFilePathToPublish, err)
 		}
+		// Use metadata from package as source of truth for Org, AppName, PackageVersion for publishing coordinates
 		appOrg = currentAppMeta.Org
 		appName = currentAppMeta.AppName
 		appVersion = currentAppMeta.PackageVersion
 		if appOrg == "" || appName == "" || appVersion == "" {
 			return fmt.Errorf("package metadata in %s is incomplete (missing Org, AppName, or PackageVersion)", fpmFilePathToPublish)
 		}
+
 
 		var targetRepo config.RepositoryConfig
 		if publishRepoName != "" {
@@ -132,35 +134,36 @@ to publish from the local FPM app store.`,
 		httpClient := &http.Client{Timeout: 180 * time.Second}
 
 		fmt.Printf("Fetching remote metadata for %s/%s from %s...\n", appOrg, appName, targetRepo.Name)
-		remoteMeta, metadataFound, err := repository.FetchRemotePackageMetadata(targetRepo.URL, appOrg, appName, httpClient)
+		// FetchRemotePackageMetadata returns (nil,nil) for 404, which is fine (means new package)
+		remoteMeta, err := repository.FetchRemotePackageMetadata(targetRepo.URL, appOrg, appName, httpClient)
 		if err != nil {
-			// FetchRemotePackageMetadata returns (nil, false, err) for actual errors
+			// This implies an actual error during fetch, not just 404
 			return fmt.Errorf("failed to fetch remote package metadata: %w", err)
 		}
-		if !metadataFound { // This means 404, so create new metadata
+
+		if remoteMeta == nil { // Metadata did not exist (404)
 			fmt.Printf("No existing remote metadata found for %s/%s. Creating new.\n", appOrg, appName)
 			remoteMeta = &repository.PackageMetadata{
 				GroupID:    appOrg,
 				ArtifactID: appName,
 				Versions:   make(map[string]repository.PackageVersionMetadata),
-				Description: currentAppMeta.Description, // Use description from current package
+				Description: currentAppMeta.Description,
 			}
 		} else {
 			fmt.Printf("Existing remote metadata found for %s/%s.\n", appOrg, appName)
 			if remoteMeta.Versions == nil {
 				remoteMeta.Versions = make(map[string]repository.PackageVersionMetadata)
 			}
-			// Update description if it's empty on remote, from current package
 			if remoteMeta.Description == "" && currentAppMeta.Description != "" {
 				remoteMeta.Description = currentAppMeta.Description
 			}
 		}
 
 		if _, exists := remoteMeta.Versions[appVersion]; exists {
-			return fmt.Errorf("version %s for package %s/%s already exists in repository %s. Use --force to overwrite (not implemented).", appVersion, appOrg, appName, targetRepo.Name)
+			// TODO: Add a --force flag to allow overwriting? For now, error out.
+			return fmt.Errorf("version %s for package %s/%s already exists in repository %s", appVersion, appOrg, appName, targetRepo.Name)
 		}
 
-		// Construct relative path for FPM file on server, ensure no leading slash for JoinPath with URL
 		fpmServerRelPath := strings.TrimPrefix(fmt.Sprintf("/%s/%s/%s/%s-%s.fpm", appOrg, appName, appVersion, appName, appVersion), "/")
 		fpmDestURL, err := url.JoinPath(targetRepo.URL, fpmServerRelPath)
 		if err != nil {
@@ -168,7 +171,6 @@ to publish from the local FPM app store.`,
 		}
 
 		fmt.Printf("Uploading FPM package to %s...\n", fpmDestURL)
-		// Assuming server expects PUT for FPM file upload
 		err = repository.UploadHTTPFile(fpmDestURL, fpmFilePathToPublish, http.MethodPut, "application/octet-stream", httpClient, "", nil)
 		if err != nil {
 			return fmt.Errorf("failed to upload FPM package: %w", err)
@@ -184,15 +186,14 @@ to publish from the local FPM app store.`,
 
 		versionEntry := repository.PackageVersionMetadata{
 			FPMPath:        fpmServerRelPath,
-			ChecksumSHA256: checksum, // Use calculated checksum of the file
-			ReleaseDate:    time.Now().UTC().Format(time.RFC3339Nano), // More precise timestamp
-			Dependencies:   nil, // TODO: Populate from currentAppMeta.Dependencies (needs conversion)
-			Notes:          currentAppMeta.Description, // Or a dedicated "release notes" field if added
+			ChecksumSHA256: checksum,
+			ReleaseDate:    time.Now().UTC().Format(time.RFC3339Nano),
+			Dependencies:   nil, // TODO: Populate from currentAppMeta.Dependencies
+			Notes:          currentAppMeta.Description,
 		}
 		remoteMeta.Versions[appVersion] = versionEntry
 
-		// TODO: Implement proper SemVer comparison for LatestVersion
-		if remoteMeta.LatestVersion == "" || appVersion > remoteMeta.LatestVersion {
+		if remoteMeta.LatestVersion == "" || appVersion > remoteMeta.LatestVersion { // TODO: Proper SemVer
 			remoteMeta.LatestVersion = appVersion
 		}
 
@@ -207,14 +208,12 @@ to publish from the local FPM app store.`,
 	},
 }
 
-// resolveLatestVersionFromLocalStore finds the "latest" version of an app in the local FPM store.
-// Currently uses lexicographical sort. TODO: Implement proper SemVer sorting.
 func resolveLatestVersionFromLocalStore(appsBasePath, groupID, artifactID string) (string, error) {
 	versionsDir := filepath.Join(appsBasePath, groupID, artifactID)
 	entries, err := os.ReadDir(versionsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", nil // No versions found locally is not an error here, just means no local latest
+			return "", nil
 		}
 		return "", fmt.Errorf("failed to read versions directory %s: %w", versionsDir, err)
 	}
@@ -222,23 +221,14 @@ func resolveLatestVersionFromLocalStore(appsBasePath, groupID, artifactID string
 	var availableVersions []string
 	for _, entry := range entries {
 		if entry.IsDir() {
-			// TODO: Validate entry.Name() as a SemVer string before adding
 			availableVersions = append(availableVersions, entry.Name())
 		}
 	}
 
 	if len(availableVersions) == 0 {
-		return "", nil // No versions found
+		return "", nil
 	}
-
-	// Simple lexicographical sort. Replace with SemVer sort for correctness.
-	// For SemVer: use a library like "github.com/Masterminds/semver/v3"
-	// Example:
-	// vs := make([]*semver.Version, len(availableVersions))
-	// for i, r := range availableVersions { vs[i], _ = semver.NewVersion(r) }
-	// sort.Sort(semver.Collection(vs))
-	// return vs[len(vs)-1].Original(), nil
-	sort.Strings(availableVersions)
+	sort.Strings(availableVersions) // TODO: Replace with SemVer sort
 	return availableVersions[len(availableVersions)-1], nil
 }
 
