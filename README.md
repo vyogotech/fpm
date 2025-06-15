@@ -65,7 +65,7 @@ The key change from earlier designs is the removal of the `app_source/` director
 
 ### Repository Layout
 
-/{groupId}/{artifactId}/{version}/{artifactId}-{version}.fpm /metadata/{groupId}/{artifactId}/package-metadata.json
+/<org>/<appName>/<version>/<appName>-<version>.fpm /metadata/<org>/<appName>/package-metadata.json
 Examples: /frappe/erpnext/13.0.1/erpnext-13.0.1.fpm /company/custom-app/1.0.0/custom-app-1.0.0.fpm
 
 
@@ -175,15 +175,15 @@ fpm repo default
 
 ### `fpm search [query]`
 
-Searches for FPM packages by matching the query against the `groupID`, `artifactID`, or `description`. The search prioritizes results from different sources in the following order:
+Searches for FPM packages by matching the query against the `org`, `appName`, or `description`. The search prioritizes results from different sources in the following order:
 1.  **Local FPM App Store (`~/.fpm/apps/`)**: Shows packages already installed locally by FPM. These are considered the highest priority.
-2.  **Live Remote Repositories**: If the `[query]` is a specific package identifier in the format `<group>/<artifact>` (without version or wildcards), FPM will query configured remote repositories live for this specific package.
+2.  **Live Remote Repositories**: If the `[query]` is a specific package identifier in the format `<org>/<appName>` (without version or wildcards), FPM will query configured remote repositories live for this specific package.
 3.  **Locally Cached Repository Metadata (`~/.fpm/cache/`)**: Shows packages known from the last time repository metadata was fetched/updated.
 
 *   `[query]`: (Optional) The search term.
     *   If omitted, `fpm search` lists all packages found in the local FPM app store and the local metadata cache (it does not perform live remote queries for an empty query).
     *   If a generic keyword (e.g., "erp"), it searches package identifiers and descriptions in the local store and cache.
-    *   If a specific identifier (`<group>/<artifact>`), it additionally performs live queries to remote repositories for that exact package.
+    *   If a specific identifier (`<org>/<appName>`), it additionally performs live queries to remote repositories for that exact package.
     *   The search is case-insensitive.
 
 **Output:**
@@ -207,7 +207,7 @@ fpm search myorg/myerp
 ```
 **Example Output (illustrative):**
 ```
-SOURCE                PACKAGE (GROUP/ARTIFACT)                   VERSION         DESCRIPTION
+SOURCE                PACKAGE (ORG/APPNAME)                    VERSION         DESCRIPTION
 --------------------  ---------------------------------------- --------------- ---------------------------------------------
 (local-store)         myorg/myerp                              1.0.1           My Custom ERP Module (Installed)
 (remote: central)     myorg/myerp                              1.0.0           My Custom ERP Module
@@ -218,16 +218,16 @@ SOURCE                PACKAGE (GROUP/ARTIFACT)                   VERSION        
 
 An FPM repository is a web server (or local directory structure) that serves package files and metadata according to a defined layout.
 
-*   **Package Files**: Stored at a path like `/<groupID>/<artifactID>/<version>/<artifactID>-<version>.fpm`.
+*   **Package Files**: Stored at a path like `/<org>/<appName>/<version>/<appName>-<version>.fpm`.
     *   Example: `frappe/erpnext/13.0.1/erpnext-13.0.1.fpm`
-*   **Metadata File**: A single JSON file per package (group/artifact combination) provides information about all available versions.
-    *   Path: `/metadata/<groupID>/<artifactID>/package-metadata.json`
+*   **Metadata File**: A single JSON file per package (org/app name combination) provides information about all available versions.
+    *   Path: `/metadata/<org>/<appName>/package-metadata.json`
     *   Example: `/metadata/frappe/erpnext/package-metadata.json`
     *   **Schema for `package-metadata.json`**:
         ```json
         {
-          "groupId": "frappe",
-          "artifactId": "erpnext",
+          "org": "frappe",
+          "appName": "erpnext",
           "description": "Open Source ERP",
           "latest_version": "13.20.1",
           "versions": {
@@ -236,7 +236,7 @@ An FPM repository is a web server (or local directory structure) that serves pac
               "checksum_sha256": "sha256_checksum_of_the_fpm_file",
               "release_date": "YYYY-MM-DD",
               "dependencies": [
-                // {"groupId": "frappe", "artifactId": "frappe", "version_constraint": ">=13.20.0,<14.0.0"}
+                // {"org": "frappe", "appName": "frappe", "version_constraint": ">=13.20.0,<14.0.0"}
               ],
               "notes": "Release notes for v13.20.1"
             },
@@ -250,24 +250,24 @@ An FPM repository is a web server (or local directory structure) that serves pac
 FPM clients use this metadata to find available packages and their download URLs. The `fpm_path` in `package-metadata.json` is relative to the repository's base URL.
 
 To support `fpm publish`, a repository server must be able to:
-1.  Receive `.fpm` package files via HTTP PUT requests at the defined package file path (e.g., `/<groupID>/<artifactID>/<version>/<artifactID>-<version>.fpm`).
-2.  Receive `package-metadata.json` files via HTTP PUT requests at the defined metadata path (e.g., `/metadata/<groupID>/<artifactID>/package-metadata.json`).
+1.  Receive `.fpm` package files via HTTP PUT requests at the defined package file path (e.g., `/<org>/<appName>/<version>/<appName>-<version>.fpm`).
+2.  Receive `package-metadata.json` files via HTTP PUT requests at the defined metadata path (e.g., `/metadata/<org>/<appName>/package-metadata.json`).
 This can be a simple static file server with PUT-to-create/update capabilities or a more sophisticated package registry application.
 
 ## Publishing Packages
 
-### `fpm publish [<group>/<artifact>[==<version>]] [--from-file <filepath>] [--repo <repo_name>]`
+### `fpm publish [<org>/<appName>[==<version>]] [--from-file <filepath>] [--repo <repo_name>]`
 
 Publishes a Frappe application package to a configured FPM repository.
 
 The command can publish a package in two ways:
-1.  **From the local FPM app store**: By specifying the package identifier `[<group>/<artifact>[==<version>]]`.
-    *   If the version is omitted or specified as "latest", FPM resolves the lexicographically latest version found in the local store (`~/.fpm/apps/<group>/<artifact>/*`).
+1.  **From the local FPM app store**: By specifying the package identifier `[<org>/<appName>[==<version>]]`.
+    *   If the version is omitted or specified as "latest", FPM resolves the lexicographically latest version found in the local store (`~/.fpm/apps/<org>/<appName>/*`).
     *   It looks for the corresponding `_*.fpm` file within the resolved version's directory in the store.
 2.  **From a direct `.fpm` file**: By using the `--from-file <filepath>` flag.
 
 **Arguments & Flags:**
-*   `[<group>/<artifact>[==<version>]]`: (Optional) The identifier of the package in the local FPM app store.
+*   `[<org>/<appName>[==<version>]]`: (Optional) The identifier of the package in the local FPM app store.
 *   `--from-file <filepath>`: (Optional) Path to the `.fpm` package file to publish directly.
 *   `--repo <repo_name>`: (Optional) The name of the configured repository to publish to. If not specified, FPM will use the default publish repository set by `fpm repo default <repo_name>`.
 

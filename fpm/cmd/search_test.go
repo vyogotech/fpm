@@ -106,25 +106,23 @@ func setupTestEnvironment(t *testing.T, mockData []MockPackageData) (tempHomeDir
 			require.NoError(t, os.MkdirAll(filepath.Dir(metadataFilePath), 0o755))
 
 			pkgMeta := repository.PackageMetadata{
-				GroupID:       data.Org,
-				ArtifactID:    data.AppName,
+				Org:           data.Org,     // Changed from GroupID
+				AppName:       data.AppName, // Changed from ArtifactID
 				Description:   data.Description,
-				LatestVersion: data.LatestVersionHint, // Use hint for cache
+				LatestVersion: data.LatestVersionHint,
 				Versions: map[string]repository.PackageVersionMetadata{
-					data.Version: { // Assume data.Version is one of the versions for this cache entry
+					data.Version: {
 						FPMPath: fmt.Sprintf("%s/%s/%s/%s-%s.fpm", data.Org, data.AppName, data.Version, data.AppName, data.Version),
 						ChecksumSHA256: "dummychecksum",
 					},
 				},
 			}
-			// If LatestVersionHint is also a specific version, add it too if different
 			if data.LatestVersionHint != "" && data.LatestVersionHint != data.Version {
 				pkgMeta.Versions[data.LatestVersionHint] = repository.PackageVersionMetadata{
 					FPMPath: fmt.Sprintf("%s/%s/%s/%s-%s.fpm", data.Org, data.AppName, data.LatestVersionHint, data.AppName, data.LatestVersionHint),
 					ChecksumSHA256: "dummychecksumlatest",
 				}
 			}
-
 
 			metaBytes, err := json.MarshalIndent(pkgMeta, "", "  ")
 			require.NoError(t, err)
@@ -158,18 +156,19 @@ func TestSearchCmd(t *testing.T) {
 	mockRepoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		serverRequests = append(serverRequests, r.URL.Path) // Log the request path
 		t.Logf("Search Test Mock Repo Server: %s %s", r.Method, r.URL.Path)
-		if r.URL.Path == "/metadata/orgB/appY/package-metadata.json" {
+		// Ensure path matching uses Org/AppName terminology if tests are updated accordingly
+		if r.URL.Path == "/metadata/orgB/appY/package-metadata.json" { // Assuming query will use orgB/appY
 			pkgMeta := repository.PackageMetadata{
-				GroupID: "orgB", ArtifactID: "appY", Description: "App Y from remote", LatestVersion: "1.1.0",
+				Org: "orgB", AppName: "appY", Description: "App Y from remote", LatestVersion: "1.1.0", // Changed fields
 				Versions: map[string]repository.PackageVersionMetadata{
 					"1.0.0": {FPMPath: "orgB/appY/1.0.0/appY-1.0.0.fpm"},
 					"1.1.0": {FPMPath: "orgB/appY/1.1.0/appY-1.1.0.fpm"},
 				},
 			}
 			json.NewEncoder(w).Encode(pkgMeta)
-		} else if r.URL.Path == "/metadata/orgZ/appZ/package-metadata.json" {
+		} else if r.URL.Path == "/metadata/orgZ/appZ/package-metadata.json" { // Assuming query will use orgZ/appZ
 			 pkgMeta := repository.PackageMetadata{
-                GroupID: "orgZ", ArtifactID: "appZ", Description: "App Z only on remote", LatestVersion: "3.0.0",
+                Org: "orgZ", AppName: "appZ", Description: "App Z only on remote", LatestVersion: "3.0.0", // Changed fields
                 Versions: map[string]repository.PackageVersionMetadata{
                     "3.0.0": {FPMPath: "orgZ/appZ/3.0.0/appZ-3.0.0.fpm"},
                 },
@@ -208,71 +207,108 @@ func TestSearchCmd(t *testing.T) {
 
 		t.Logf("Output for TestSearch_OrderAndSources (orgA/appX):\n%s", output)
 		// Expect orgA/appX==1.0.0 from (local-store) only, due to de-duplication.
-		// Remote query to repo2 for orgA/appX should happen.
-		// Cache entry for orgA/appX from repo1 should be overridden by local-store.
-		assert.Contains(t, output, "(local-store)         com.orgA/appX") // GroupID case might change based on metadata
-		assert.Contains(t, output, "1.0.0", "Version for local appX")
-		assert.NotContains(t, output, "(cache: repo1)          orgA/appX") // Should be de-duplicated
-		assert.NotContains(t, output, "(remote: repo2)         orgA/appX") // Should be de-duplicated by local-store
+		// The mock server for repo2 should serve orgA/appX if queried.
+		mockRepoServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			serverRequests = append(serverRequests, r.URL.Path)
+			if r.URL.Path == "/metadata/orgA/appX/package-metadata.json" {
+				pkgMeta := repository.PackageMetadata{
+					Org: "orgA", AppName: "appX", Description: "App X from remote repo2", LatestVersion: "1.0.0",
+					Versions: map[string]repository.PackageVersionMetadata{"1.0.0": {FPMPath: "orgA/appX/1.0.0/appX-1.0.0.fpm"}},
+				}
+				json.NewEncoder(w).Encode(pkgMeta)
+			} else { http.NotFound(w,r) }
+		})
 
-		// Check if server was queried for orgA/appX (it should, but result de-duplicated)
+
+		output, err := executeCommand(rootCmd, "search", "orgA/appX") // Query for specific identifier
+		require.NoError(t, err)
+		t.Logf("Output for TestSearch_OrderAndSources (orgA/appX):\n%s", output)
+
+		assert.Contains(t, output, "(local-store)         orgA/appX", "Should find orgA/appX from local store")
+		assert.Contains(t, output, "1.0.0", "Version for local appX")
+		assert.NotContains(t, output, "(cache: repo1)", "orgA/appX from cache should be overridden by local-store")
+		assert.NotContains(t, output, "(remote: repo2)", "orgA/appX from remote should be overridden by local-store")
+
 		wasQueried := false
 		for _, reqPath := range serverRequests {
-			if reqPath == "/metadata/orgA/appX/package-metadata.json" { // Assuming input query case is used
-				wasQueried = true
-				break
-			}
+			if reqPath == "/metadata/orgA/appX/package-metadata.json" { wasQueried = true; break }
 		}
-		assert.True(t, wasQueried, "Mock server should have been queried for orgA/appX")
+		assert.True(t, wasQueried, "Mock server (repo2) should have been queried for orgA/appX")
 
 		// Search for all to see other distinct packages
 		serverRequests = nil
-		outputAll, errAll := executeCommand(rootCmd, "search")
+		outputAll, errAll := executeCommand(rootCmd, "search") // No query, should not hit remote for specific apps
 		require.NoError(t, errAll)
 		t.Logf("Output for TestSearch_OrderAndSources (all):\n%s", outputAll)
 		assert.Contains(t, outputAll, "(local-store)         orgA/appX")
-		assert.Contains(t, outputAll, "(cache: repo1)          orgC/appCacheOnly")
-		assert.Contains(t, outputAll, "(local-store)         orgD/appLocalOnly")
+		assert.Contains(t, outputAll, "(cache: repo1)          orgC/appCacheOnly") // Using Org field from mockData
+		assert.Contains(t, outputAll, "(local-store)         orgD/appLocalOnly") // Using Org field
+
+		wasQueriedAll := false
+        for _, reqPath := range serverRequests {
+            if strings.HasPrefix(reqPath, "/metadata/orgA/appX") || strings.HasPrefix(reqPath, "/metadata/orgC/appCacheOnly") || strings.HasPrefix(reqPath, "/metadata/orgD/appLocalOnly") {
+                wasQueriedAll = true; break
+            }
+        }
+        assert.False(t, wasQueriedAll, "Generic search should not trigger specific live remote queries")
 	})
 
 	t.Run("TestSearch_RemoteQueryOnlyWhenIdentifierIsSpecific", func(t *testing.T) {
 		serverRequests = nil
-		output, err := executeCommand(rootCmd, "search", "orgZ/appZ") // Specific query
+		// Setup mock server for orgZ/appZ for this test
+		originalHandler := mockRepoServer.Config.Handler
+		mockRepoServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			serverRequests = append(serverRequests, r.URL.Path)
+			if r.URL.Path == "/metadata/orgZ/appZ/package-metadata.json" {
+				pkgMeta := repository.PackageMetadata{ Org: "orgZ", AppName: "appZ", Description: "App Z only on remote", LatestVersion: "3.0.0",
+					Versions: map[string]repository.PackageVersionMetadata{"3.0.0": {FPMPath: "orgZ/appZ/3.0.0/appZ-3.0.0.fpm"}},
+				}
+				json.NewEncoder(w).Encode(pkgMeta)
+			} else { originalHandler.ServeHTTP(w,r) } // Fallback to original handler for other paths if needed
+		})
+
+
+		output, err := executeCommand(rootCmd, "search", "orgZ/appZ")
 		require.NoError(t, err)
 		t.Logf("Output for TestSearch_RemoteQueryOnlyWhenIdentifierIsSpecific (orgZ/appZ):\n%s", output)
 		assert.Contains(t, output, "(remote: repo2)         orgZ/appZ")
 		assert.Contains(t, output, "3.0.0", "Version for remote appZ")
 
 		wasQueried := false
-		for _, reqPath := range serverRequests {
-			if reqPath == "/metadata/orgZ/appZ/package-metadata.json" {
-				wasQueried = true; break
-			}
-		}
+		for _, reqPath := range serverRequests { if reqPath == "/metadata/orgZ/appZ/package-metadata.json" { wasQueried = true; break } }
 		assert.True(t, wasQueried, "Mock server should have been queried for specific orgZ/appZ")
 
-		serverRequests = nil // Reset for next check
-		outputGeneric, errGeneric := executeCommand(rootCmd, "search", "appZ") // Generic query
+		serverRequests = nil
+		outputGeneric, errGeneric := executeCommand(rootCmd, "search", "appZ")
 		require.NoError(t, errGeneric)
 		t.Logf("Output for TestSearch_RemoteQueryOnlyWhenIdentifierIsSpecific (appZ generic):\n%s", outputGeneric)
-		// Depending on if "appZ" is in cache from other tests, it might show up.
-		// The key is that a *new* live remote query for "orgZ/appZ" specifically should not have happened here.
+
 		wasQueriedGeneric := false
-		for _, reqPath := range serverRequests { // Check requests made for *this* command
-			if reqPath == "/metadata/orgZ/appZ/package-metadata.json" {
-				wasQueriedGeneric = true; break
-			}
-		}
+		for _, reqPath := range serverRequests { if reqPath == "/metadata/orgZ/appZ/package-metadata.json" { wasQueriedGeneric = true; break } }
 		assert.False(t, wasQueriedGeneric, "Mock server should NOT have been queried for orgZ/appZ on a generic 'appZ' search term")
-		// It might still find "orgZ/appZ" if its metadata was *cached* by the previous specific search.
-		// Let's ensure the output reflects that it's from cache if found.
-		if strings.Contains(outputGeneric, "orgZ/appZ") {
-			assert.Contains(t, outputGeneric, "(cache: repo2)          orgZ/appZ", "If appZ found via generic search after specific, it should be from cache")
+
+		if strings.Contains(outputGeneric, "orgZ/appZ") { // If found, it must be from cache (populated by previous specific query)
+			assert.Contains(t, outputGeneric, "(cache: repo2)          orgZ/appZ")
 		}
+		mockRepoServer.Config.Handler = originalHandler // Restore original handler
 	})
 
 	t.Run("TestSearch_MultipleRemoteVersionsFromLiveQuery", func(t *testing.T) {
 		serverRequests = nil
+		originalHandler := mockRepoServer.Config.Handler
+		mockRepoServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			serverRequests = append(serverRequests, r.URL.Path)
+			if r.URL.Path == "/metadata/orgB/appY/package-metadata.json" {
+				pkgMeta := repository.PackageMetadata{ Org: "orgB", AppName: "appY", Description: "App Y from remote", LatestVersion: "1.1.0",
+					Versions: map[string]repository.PackageVersionMetadata{
+						"1.0.0": {FPMPath: "orgB/appY/1.0.0/appY-1.0.0.fpm"},
+						"1.1.0": {FPMPath: "orgB/appY/1.1.0/appY-1.1.0.fpm"},
+					},
+				}
+				json.NewEncoder(w).Encode(pkgMeta)
+			} else { originalHandler.ServeHTTP(w,r) }
+		})
+
 		output, err := executeCommand(rootCmd, "search", "orgB/appY")
 		require.NoError(t, err)
 		t.Logf("Output for TestSearch_MultipleRemoteVersionsFromLiveQuery (orgB/appY):\n%s", output)
@@ -281,12 +317,9 @@ func TestSearchCmd(t *testing.T) {
 		assert.Contains(t, output, "1.1.0")
 
 		wasQueried := false
-		for _, reqPath := range serverRequests {
-			if reqPath == "/metadata/orgB/appY/package-metadata.json" {
-				wasQueried = true; break
-			}
-		}
+		for _, reqPath := range serverRequests { if reqPath == "/metadata/orgB/appY/package-metadata.json" { wasQueried = true; break } }
 		assert.True(t, wasQueried, "Mock server should have been queried for orgB/appY")
+		mockRepoServer.Config.Handler = originalHandler // Restore
 	})
 }
 

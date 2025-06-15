@@ -26,15 +26,15 @@ type PackageVersionMetadata struct {
 
 // Dependency defines a package dependency.
 type Dependency struct {
-	GroupID           string `json:"groupId"`
-	ArtifactID        string `json:"artifactId"`
+	Org               string `json:"org"`
+	AppName           string `json:"appName"`
 	VersionConstraint string `json:"version_constraint"`
 }
 
 // PackageMetadata is the structure of package-metadata.json from a repository.
 type PackageMetadata struct {
-	GroupID       string                          `json:"groupId"`
-	ArtifactID    string                          `json:"artifactId"`
+	Org           string                          `json:"org"`
+	AppName       string                          `json:"appName"`
 	Description   string                          `json:"description,omitempty"`
 	LatestVersion string                          `json:"latest_version,omitempty"`
 	Versions      map[string]PackageVersionMetadata `json:"versions"`
@@ -49,7 +49,7 @@ type DownloadedPackageInfo struct {
 }
 
 // FindPackageInRepos searches for a specific package version across configured repositories.
-func FindPackageInRepos(cfg *config.FPMConfig, groupID, artifactID, requestedVersion string) (*DownloadedPackageInfo, error) {
+func FindPackageInRepos(cfg *config.FPMConfig, org, appName, requestedVersion string) (*DownloadedPackageInfo, error) {
 	if cfg == nil || cfg.Repositories == nil {
 		return nil, fmt.Errorf("repository configuration is missing or not loaded")
 	}
@@ -64,10 +64,10 @@ func FindPackageInRepos(cfg *config.FPMConfig, groupID, artifactID, requestedVer
 	userAgent := "fpm-client/0.1.0" // Define User-Agent
 
 	for _, repo := range sortedRepos {
-		fmt.Printf("Searching for %s/%s version '%s' in repository '%s' (%s)...\n", groupID, artifactID, requestedVersion, repo.Name, repo.URL)
+		fmt.Printf("Searching for %s/%s version '%s' in repository '%s' (%s)...\n", org, appName, requestedVersion, repo.Name, repo.URL)
 
-		// Construct metadata URL: <repo.URL>/metadata/<groupID>/<artifactID>/package-metadata.json
-		metadataPath := fmt.Sprintf("metadata/%s/%s/package-metadata.json", groupID, artifactID)
+		// Construct metadata URL: <repo.URL>/metadata/<org>/<appName>/package-metadata.json
+		metadataPath := fmt.Sprintf("metadata/%s/%s/package-metadata.json", org, appName)
 		fullMetadataURL, err := url.JoinPath(repo.URL, metadataPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error constructing metadata URL for repo %s: %v\n", repo.Name, err)
@@ -110,16 +110,16 @@ func FindPackageInRepos(cfg *config.FPMConfig, groupID, artifactID, requestedVer
 		targetVersion := requestedVersion
 		if targetVersion == "" || targetVersion == "latest" {
 			if pkgMeta.LatestVersion == "" {
-				fmt.Fprintf(os.Stderr, "Latest version not specified in metadata for %s/%s in repo %s\n", groupID, artifactID, repo.Name)
+				fmt.Fprintf(os.Stderr, "Latest version not specified in metadata for %s/%s in repo %s\n", org, appName, repo.Name)
 				continue
 			}
 			targetVersion = pkgMeta.LatestVersion
-			fmt.Printf("Resolved 'latest' to version %s for %s/%s in repo %s\n", targetVersion, groupID, artifactID, repo.Name)
+			fmt.Printf("Resolved 'latest' to version %s for %s/%s in repo %s\n", targetVersion, org, appName, repo.Name)
 		}
 
 		versionMeta, ok := pkgMeta.Versions[targetVersion]
 		if !ok {
-			fmt.Printf("Version %s for %s/%s not found in repo %s metadata.\n", targetVersion, groupID, artifactID, repo.Name)
+			fmt.Printf("Version %s for %s/%s not found in repo %s metadata.\n", targetVersion, org, appName, repo.Name)
 			continue
 		}
 
@@ -128,7 +128,7 @@ func FindPackageInRepos(cfg *config.FPMConfig, groupID, artifactID, requestedVer
 			fmt.Fprintf(os.Stderr, "Error constructing FPM download URL for %s in repo %s: %v\n", versionMeta.FPMPath, repo.Name, err)
 			continue
 		}
-		fmt.Printf("Found version %s for %s/%s in repo %s. FPM URL: %s\n", targetVersion, groupID, artifactID, repo.Name, fpmDownloadURL)
+		fmt.Printf("Found version %s for %s/%s in repo %s. FPM URL: %s\n", targetVersion, org, appName, repo.Name, fpmDownloadURL)
 
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
@@ -137,10 +137,10 @@ func FindPackageInRepos(cfg *config.FPMConfig, groupID, artifactID, requestedVer
 		}
 		fpmBaseDir := filepath.Join(homeDir, ".fpm")
 		fpmFileName := filepath.Base(versionMeta.FPMPath) // Extract filename from FPMPath
-		cacheDir := filepath.Join(fpmBaseDir, "cache", repo.Name, groupID, artifactID, targetVersion)
+		cacheDir := filepath.Join(fpmBaseDir, "cache", repo.Name, org, appName, targetVersion) // Use org, appName for path
 		cachedFPMPath := filepath.Join(cacheDir, fpmFileName)
 
-		if err := os.MkdirAll(cacheDir, 0o750); err != nil { // Corrected octal
+		if err := os.MkdirAll(cacheDir, 0o750); err != nil {
 			// This could be a more serious error, maybe return it instead of continue
 			return nil, fmt.Errorf("failed to create cache directory %s: %w", cacheDir, err)
 		}
@@ -230,5 +230,5 @@ func FindPackageInRepos(cfg *config.FPMConfig, groupID, artifactID, requestedVer
 		}, nil
 	}
 
-	return nil, fmt.Errorf("package %s/%s version '%s' not found in any configured repositories", groupID, artifactID, requestedVersion)
+	return nil, fmt.Errorf("package %s/%s version '%s' not found in any configured repositories", org, appName, requestedVersion)
 }

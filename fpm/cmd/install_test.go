@@ -378,13 +378,13 @@ func TestInstallCommand_RemotePackage(t *testing.T) {
 		if strings.HasSuffix(r.URL.Path, "package-metadata.json") {
 			// Serve package-metadata.json
 			pkgMeta := repository.PackageMetadata{
-				GroupID:       "testgrp",
-				ArtifactID:    "testapp",
+				Org:           "testgrp", // Changed
+				AppName:       "testapp", // Changed
 				LatestVersion: "1.0.1",
 				Versions: map[string]repository.PackageVersionMetadata{
 					"1.0.1": {
-						FPMPath:        "artifacts/testgrp/testapp/1.0.1/testapp-1.0.1.fpm",
-						ChecksumSHA256: "dummychecksumfortestapp101", // TODO: Calculate actual checksum if serving a real file
+						FPMPath:        "artifacts/testgrp/testapp/1.0.1/testapp-1.0.1.fpm", // Path uses org/app
+						ChecksumSHA256: "dummychecksumfortestapp101",
 					},
 				},
 			}
@@ -580,7 +580,7 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 		t.Logf("Prioritization Test Mock Repo Server received request: %s", r.URL.Path)
 		if r.URL.Path == "/metadata/myorg/myapp/package-metadata.json" {
 			pkgMeta := repository.PackageMetadata{
-				GroupID:       "myorg",	ArtifactID:    "myapp", LatestVersion: "1.2.0",
+				Org:       "myorg",	AppName:    "myapp", LatestVersion: "1.2.0", // Changed
 				Versions: map[string]repository.PackageVersionMetadata{
 					"1.0.0": {FPMPath: "artifacts/myorg/myapp/1.0.0/myapp-1.0.0.fpm", ChecksumSHA256: "remote-myapp-1.0.0-checksum"},
 					"1.2.0": {FPMPath: "artifacts/myorg/myapp/1.2.0/myapp-1.2.0.fpm", ChecksumSHA256: "remote-myapp-1.2.0-checksum"},

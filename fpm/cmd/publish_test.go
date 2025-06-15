@@ -163,8 +163,8 @@ func TestPublishCommand(t *testing.T) {
 		if found {
 			var remoteMeta repository.PackageMetadata
 			require.NoError(t, json.Unmarshal(metaDataBytes.([]byte), &remoteMeta))
-			assert.Equal(t, testOrg, remoteMeta.GroupID)
-			assert.Equal(t, testAppName, remoteMeta.ArtifactID)
+			assert.Equal(t, testOrg, remoteMeta.Org) // Changed GroupID to Org
+			assert.Equal(t, testAppName, remoteMeta.AppName) // Changed ArtifactID to AppName
 			assert.Equal(t, testAppVersion, remoteMeta.LatestVersion)
 			versionInfo, ok := remoteMeta.Versions[testAppVersion]
 			require.True(t, ok, "Version info not found in remote metadata")
@@ -257,7 +257,7 @@ func TestPublishCommand(t *testing.T) {
 	t.Run("Error_VersionExistsOnRemote", func(t *testing.T) {
 		// Setup: Ensure version 1.0.0 of testOrg/pubapp already exists in remoteMeta
 		existingMeta := repository.PackageMetadata{
-			GroupID: testOrg, ArtifactID: testAppName, LatestVersion: testAppVersion,
+			Org: testOrg, AppName: testAppName, LatestVersion: testAppVersion, // Changed fields
 			Versions: map[string]repository.PackageVersionMetadata{
 				testAppVersion: {FPMPath: "path", ChecksumSHA256: "abc"},
 			},

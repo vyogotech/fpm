@@ -97,8 +97,9 @@ from the local FPM store, then from remote repositories.`,
 			if err != nil {
 				return fmt.Errorf("failed to read metadata from local FPM file %s: %w", packagePathArg, err)
 			}
+			// Use .Org and .AppName from metadata which are now the correct fields
 			if localFpmMeta.Org == "" || localFpmMeta.AppName == "" || localFpmMeta.PackageVersion == "" {
-				return fmt.Errorf("org, app_name, or package_version missing from metadata in %s", packagePathArg)
+				return fmt.Errorf("Org, AppName, or PackageVersion missing from metadata in %s", packagePathArg)
 			}
 
 			appOrg = localFpmMeta.Org
@@ -113,7 +114,7 @@ from the local FPM store, then from remote repositories.`,
 			if err := os.RemoveAll(targetAppVersionPathInStore); err != nil {
 				return fmt.Errorf("failed to clear existing content at %s: %w", targetAppVersionPathInStore, err)
 			}
-			if err := os.MkdirAll(targetAppVersionPathInStore, 0o755); err != nil { // Corrected permission
+			if err := os.MkdirAll(targetAppVersionPathInStore, 0o755); err != nil {
 				return fmt.Errorf("failed to create directory %s: %w", targetAppVersionPathInStore, err)
 			}
 			if err := extractFPMArchive(packagePathArg, targetAppVersionPathInStore); err != nil {
@@ -123,7 +124,7 @@ from the local FPM store, then from remote repositories.`,
 
 			originalFpmFilename := filepath.Base(packagePathArg)
 			storedFpmPath := filepath.Join(targetAppVersionPathInStore, "_"+originalFpmFilename)
-			if err := utils.CopyRegularFile(packagePathArg, storedFpmPath, 0o644); err != nil { // Using utils.CopyRegularFile
+			if err := utils.CopyRegularFile(packagePathArg, storedFpmPath, 0o644); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to store original .fpm package from local file in FPM store at %s: %v\n", storedFpmPath, err)
 			} else {
 				fmt.Printf("Stored original .fpm package in FPM store: %s\n", storedFpmPath)
@@ -131,24 +132,24 @@ from the local FPM store, then from remote repositories.`,
 
 		} else if os.IsNotExist(statErr) || (statInfo != nil && statInfo.IsDir()) {
 			fmt.Printf("Package '%s' not found locally or is a directory. Attempting to resolve as remote identifier...\n", packagePathArg)
-			var parsedGroupID, parsedArtifactID, parsedVersion string
+			var parsedOrg, parsedAppName, parsedVersion string // Renamed variables
 			parts := strings.Split(packagePathArg, "/")
 			if len(parts) == 2 {
-				parsedGroupID = strings.TrimSpace(parts[0])
+				parsedOrg = strings.TrimSpace(parts[0]) // Renamed variable
 				appAndVersionParts := strings.Split(parts[1], "==")
-				parsedArtifactID = strings.TrimSpace(appAndVersionParts[0])
+				parsedAppName = strings.TrimSpace(appAndVersionParts[0]) // Renamed variable
 				if len(appAndVersionParts) == 2 {
 					parsedVersion = strings.TrimSpace(appAndVersionParts[1])
 				}
 			} else {
-				return fmt.Errorf("invalid remote package identifier format: '%s'. Expected <group>/<artifact> or <group>/<artifact>==<version>", packagePathArg)
+				return fmt.Errorf("invalid remote package identifier format: '%s'. Expected <org>/<appName> or <org>/<appName>==<version>", packagePathArg)
 			}
-			if parsedGroupID == "" || parsedArtifactID == "" {
-				return fmt.Errorf("invalid remote package identifier: groupID ('%s') and artifactID ('%s') must be specified in '%s'", parsedGroupID, parsedArtifactID, packagePathArg)
+			if parsedOrg == "" || parsedAppName == "" { // Renamed variables
+				return fmt.Errorf("invalid remote package identifier: Org ('%s') and AppName ('%s') must be specified in '%s'", parsedOrg, parsedAppName, packagePathArg)
 			}
 
-			appOrg = parsedGroupID
-			appName = parsedArtifactID
+			appOrg = parsedOrg     // Use renamed variables
+			appName = parsedAppName // Use renamed variables
 			initialRequestedVersion := parsedVersion
 
 			fmt.Printf("Attempting to install %s/%s (requested version: '%s')\n", appOrg, appName, initialRequestedVersion)
