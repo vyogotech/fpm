@@ -757,6 +757,9 @@ func TestPackageCmd_LocalInstallBehavior(t *testing.T) {
 			"app_metadata.json",     // Metadata file
 		}
 		verifyAppInLocalStore(t, mockAppsBasePath, testAppOrg, testAppName, testAppVersion, true, expectedFilesInStore...)
+		// Assert that the original .fpm file is also stored
+		expectedFpmInStore := filepath.Join(mockAppsBasePath, testAppOrg, testAppName, testAppVersion, "_"+testAppName+"-"+testAppVersion+".fpm")
+		assert.FileExists(t, expectedFpmInStore, "Original .fpm file not found in local store")
 	})
 
 	t.Run("SkipLocalInstallFlag", func(t *testing.T) {

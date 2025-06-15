@@ -107,3 +107,19 @@ func CalculateDirectoryChecksum(dirPath string, ignoreFileName string) (string, 
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
+
+// CalculateFileChecksum calculates the SHA256 checksum of a single file.
+func CalculateFileChecksum(filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file %s for checksum: %w", filePath, err)
+	}
+	defer file.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", fmt.Errorf("failed to copy file content for checksum (%s): %w", filePath, err)
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}

@@ -18,6 +18,35 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// copyRegularFile copies a single regular file from src to dst.
+// It creates the destination file with specified permissions.
+// Note: This is duplicated from cmd/package.go. Consider moving to a shared utility if used more broadly.
+func copyRegularFile(src, dst string, perm os.FileMode) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("failed to open source file %s: %w", src, err)
+	}
+	defer srcFile.Close()
+
+	// Ensure destination directory exists
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { // 0o755 for parent dirs
+		return fmt.Errorf("failed to create parent directory for %s: %w", dst, err)
+	}
+
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return fmt.Errorf("failed to create destination file %s: %w", dst, err)
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	if err != nil {
+		return fmt.Errorf("failed to copy from %s to %s: %w", src, dst, err)
+	}
+	return nil
+}
+
+
 // copyDirContents recursively copies contents from src to dst.
 // Assumes dst directory already exists or can be created by MkdirAll for subdirectories.
 func copyDirContents(src, dst string) error {
@@ -128,6 +157,15 @@ from the local FPM store, then from remote repositories.`,
 			}
 			fmt.Printf("Package content installed to %s\n", targetAppVersionPathInStore)
 
+			// Store the original .fpm file
+			originalFpmFilename := filepath.Base(packagePathArg)
+			storedFpmPath := filepath.Join(targetAppVersionPathInStore, "_"+originalFpmFilename)
+			if err := copyRegularFile(packagePathArg, storedFpmPath, 0o644); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to store original .fpm package from local file in FPM store at %s: %v\n", storedFpmPath, err)
+			} else {
+				fmt.Printf("Stored original .fpm package in FPM store: %s\n", storedFpmPath)
+			}
+
 		} else if os.IsNotExist(statErr) || (statInfo != nil && statInfo.IsDir()) { // Case 2: Remote identifier
 			fmt.Printf("Package '%s' not found locally or is a directory. Attempting to resolve as remote identifier...\n", packagePathArg)
 			var parsedGroupID, parsedArtifactID, parsedVersion string
@@ -231,6 +269,15 @@ from the local FPM store, then from remote repositories.`,
 					return fmt.Errorf("failed to extract %s to %s: %w", downloadedPkgInfo.LocalPath, targetAppVersionPathInStore, err)
 				}
 				fmt.Printf("Package content installed from FPM cache to FPM store at %s\n", targetAppVersionPathInStore)
+
+				// Store the original (cached) .fpm file
+				originalFpmFilename := filepath.Base(downloadedPkgInfo.LocalPath)
+				storedFpmPath := filepath.Join(targetAppVersionPathInStore, "_"+originalFpmFilename)
+				if err := copyRegularFile(downloadedPkgInfo.LocalPath, storedFpmPath, 0o644); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to store original .fpm package from cache in FPM store at %s: %v\n", storedFpmPath, err)
+				} else {
+					fmt.Printf("Stored original .fpm package in FPM store: %s\n", storedFpmPath)
+				}
 			}
 		} else if statErr != nil {
 			return fmt.Errorf("error checking package path '%s': %w", packagePathArg, statErr)

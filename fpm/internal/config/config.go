@@ -17,8 +17,9 @@ type RepositoryConfig struct {
 
 // FPMConfig defines the structure for FPM's configuration.
 type FPMConfig struct {
-	AppsBasePath string                        `json:"apps_base_path,omitempty"`
-	Repositories map[string]RepositoryConfig `json:"repositories,omitempty"`
+	AppsBasePath             string                        `json:"apps_base_path,omitempty"`
+	Repositories             map[string]RepositoryConfig `json:"repositories,omitempty"`
+	DefaultPublishRepository string                        `json:"default_publish_repository,omitempty"`
 }
 
 // LoadConfig loads the FPM configuration from a predefined path.
@@ -168,8 +169,9 @@ func DefaultConfig() (*FPMConfig, error) {
 	}
 	defaultAppsBasePath := filepath.Join(homeDir, ".fpm", "apps")
 	return &FPMConfig{
-		AppsBasePath: defaultAppsBasePath,
-		Repositories: make(map[string]RepositoryConfig),
+		AppsBasePath:             defaultAppsBasePath,
+		Repositories:             make(map[string]RepositoryConfig),
+		DefaultPublishRepository: "", // Default is empty
 	}, nil
 }
 

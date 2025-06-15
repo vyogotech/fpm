@@ -4,6 +4,12 @@
 
 FPM aims to revolutionize Frappe application deployment by introducing a robust package management system that eliminates Git dependencies in production environments. FPM will provide Maven-like capabilities for the Frappe ecosystem, enabling reproducible builds, offline deployments, and enterprise-grade dependency management.
 
+## Overview
+
+FPM (Frappe Package Manager) is a command-line interface (CLI) tool designed to simplify the packaging, distribution, and installation of Frappe applications. It introduces a standardized `.fpm` package format and supports fetching packages from configured repositories, similar to package managers in other ecosystems like npm or Maven.
+
+A key concept in FPM is the **local FPM application store**, typically located at `~/.fpm/apps/`. When packages are created with `fpm package` (by default) or installed with `fpm install`, the application's contents along with its original `_*.fpm` package file are stored here, organized by `/<org>/<appName>/<version>/`. This local store serves as the primary source for FPM when installing packages into a Frappe bench, before attempting to download from remote repositories.
+
 ## Vision Statement
 
 To transform Frappe application deployment from a Git-centric development model into an enterprise-ready package management system that supports both traditional development workflows and modern DevOps practices.
@@ -148,6 +154,23 @@ community            https://community.fpm.io/repo                      20
 
 *(Future commands: `fpm repo remove <name>` and `fpm repo update <name | --all>`).*
 
+### `fpm repo default [repo_name]`
+
+Sets or shows the default FPM repository to be used for `fpm publish` operations when no `--repo` flag is specified.
+
+*   `[repo_name]`: (Optional) The name of a configured repository to set as the default.
+    *   If provided, FPM will set this repository as the default for publishing. The repository must already exist in the configuration.
+    *   If omitted, FPM will display the currently configured default publish repository, or indicate if none is set.
+
+**Examples:**
+```bash
+# Set 'mycorp-releases' as the default publish repository
+fpm repo default mycorp-releases
+
+# Show the current default publish repository
+fpm repo default
+```
+
 ## Package Search
 
 ### `fpm search [query]`
@@ -206,3 +229,50 @@ An FPM repository is a web server (or local directory structure) that serves pac
         ```
 
 FPM clients use this metadata to find available packages and their download URLs. The `fpm_path` in `package-metadata.json` is relative to the repository's base URL.
+
+To support `fpm publish`, a repository server must be able to:
+1.  Receive `.fpm` package files via HTTP PUT requests at the defined package file path (e.g., `/<groupID>/<artifactID>/<version>/<artifactID>-<version>.fpm`).
+2.  Receive `package-metadata.json` files via HTTP PUT requests at the defined metadata path (e.g., `/metadata/<groupID>/<artifactID>/package-metadata.json`).
+This can be a simple static file server with PUT-to-create/update capabilities or a more sophisticated package registry application.
+
+## Publishing Packages
+
+### `fpm publish [<group>/<artifact>[==<version>]] [--from-file <filepath>] [--repo <repo_name>]`
+
+Publishes a Frappe application package to a configured FPM repository.
+
+The command can publish a package in two ways:
+1.  **From the local FPM app store**: By specifying the package identifier `[<group>/<artifact>[==<version>]]`.
+    *   If the version is omitted or specified as "latest", FPM resolves the lexicographically latest version found in the local store (`~/.fpm/apps/<group>/<artifact>/*`).
+    *   It looks for the corresponding `_*.fpm` file within the resolved version's directory in the store.
+2.  **From a direct `.fpm` file**: By using the `--from-file <filepath>` flag.
+
+**Arguments & Flags:**
+*   `[<group>/<artifact>[==<version>]]`: (Optional) The identifier of the package in the local FPM app store.
+*   `--from-file <filepath>`: (Optional) Path to the `.fpm` package file to publish directly.
+*   `--repo <repo_name>`: (Optional) The name of the configured repository to publish to. If not specified, FPM will use the default publish repository set by `fpm repo default <repo_name>`.
+
+**Publishing Process:**
+1.  The specified `.fpm` file (either from the local store or via `--from-file`) is located.
+2.  Metadata (`app_metadata.json`) is read from this `.fpm` file to determine `Org`, `AppName`, and `PackageVersion`.
+3.  The target repository is determined (via `--repo` or default).
+4.  The existing `package-metadata.json` for the app (`<org>/<appName>`) is fetched from the remote repository. If it doesn't exist, new metadata is initialized.
+5.  The command checks if the version being published already exists in the remote metadata. If so, it currently errors out (a `--force` flag might be added in the future).
+6.  The `.fpm` package file is uploaded to the repository (typically via HTTP PUT) to its structured path (e.g., `/<org>/<appName>/<version>/<appName>-<version>.fpm`).
+7.  The SHA256 checksum of the local `.fpm` file is calculated.
+8.  A new version entry is added/updated in the `PackageMetadata` structure (including the FPM path on the server, checksum, and release date).
+9.  The `LatestVersion` field in the `PackageMetadata` is updated if the current version is newer (currently uses lexicographical comparison; TODO: SemVer).
+10. The updated `package-metadata.json` is uploaded back to the repository (typically via HTTP PUT).
+
+**Examples:**
+
+```bash
+# Publish version 1.2.3 of myorg/my-app from the local FPM store to 'mycorp-releases' repo
+fpm publish myorg/my-app==1.2.3 --repo mycorp-releases
+
+# Publish the latest version of myorg/my-app found in the local store to the default repo
+fpm publish myorg/my-app
+
+# Publish directly from a .fpm file to the 'mycorp-releases' repo
+fpm publish --from-file ./my-app-1.2.4.fpm --repo mycorp-releases
+```

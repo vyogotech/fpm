@@ -49,6 +49,51 @@ var repoAddCmd = &cobra.Command{
 	},
 }
 
+var repoSetDefaultCmd = &cobra.Command{
+	Use:   "default [repo_name]",
+	Short: "Set or show the default FPM repository for publishing",
+	Long: `Sets the specified repository name as the default for 'fpm publish' operations.
+If no repository name is provided, it displays the current default publish repository.`,
+	Args: cobra.MaximumNArgs(1), // 0 or 1 argument
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.InitConfig()
+		if err != nil {
+			return fmt.Errorf("failed to initialize FPM configuration: %w", err)
+		}
+
+		if len(args) == 1 { // repo_name is provided, set it
+			repoName := args[0]
+			// Check if the repo exists
+			if _, exists := cfg.Repositories[repoName]; !exists {
+				// Suggest listing available repositories
+				return fmt.Errorf("repository '%s' not found. Use 'fpm repo list' to see available repositories or 'fpm repo add %s <url>' to add it first", repoName, repoName)
+			}
+			cfg.DefaultPublishRepository = repoName
+			if err := config.SaveConfig(cfg); err != nil {
+				return fmt.Errorf("failed to save updated FPM configuration: %w", err)
+			}
+			fmt.Printf("Default publish repository set to '%s'.\n", repoName)
+		} else { // No repo_name provided, show current default
+			if cfg.DefaultPublishRepository == "" {
+				fmt.Println("No default publish repository is currently set.")
+				fmt.Println("Use 'fpm repo default <repo_name>' to set one.")
+			} else {
+				// Verify the currently set default repository still exists
+				if _, exists := cfg.Repositories[cfg.DefaultPublishRepository]; !exists {
+					fmt.Printf("Warning: The currently set default repository '%s' no longer exists in the configuration.\n", cfg.DefaultPublishRepository)
+					fmt.Println("Please set a new default using 'fpm repo default <repo_name>'.")
+					// Optionally, clear the invalid default here:
+					// cfg.DefaultPublishRepository = ""
+					// config.SaveConfig(cfg) // Persist the clearing
+				} else {
+					fmt.Printf("Current default publish repository: %s\n", cfg.DefaultPublishRepository)
+				}
+			}
+		}
+		return nil
+	},
+}
+
 // repoListCmd represents the repo list command
 var repoListCmd = &cobra.Command{
 	Use:   "list",
@@ -87,7 +132,8 @@ func init() {
 
 	// Add subcommands to repoCmd
 	repoCmd.AddCommand(repoAddCmd)
-	repoCmd.AddCommand(repoListCmd) // Add the list command
+	repoCmd.AddCommand(repoListCmd)
+	repoCmd.AddCommand(repoSetDefaultCmd) // Add the new 'default' subcommand
 
 	// Add repoCmd to rootCmd (this was already here, ensuring it stays)
 	rootCmd.AddCommand(repoCmd)
