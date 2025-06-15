@@ -257,7 +257,7 @@ By default, it also installs the packaged app to the local FPM app store.`,
 					return fmt.Errorf("illegal file path in FPM archive: '%s' (targets outside '%s')", f.Name, targetAppPathInStore)
 				}
 				if f.FileInfo().IsDir() {
-					if err := os.MkdirAll(extractedFilePath, f.Mode()); err != nil {
+					if err := os.MkdirAll(extractedFilePath, 0o755); err != nil { // Standardized permission
 						return fmt.Errorf("failed to create directory structure %s during local install: %w", extractedFilePath, err)
 					}
 					continue
@@ -265,7 +265,7 @@ By default, it also installs the packaged app to the local FPM app store.`,
 				if err := os.MkdirAll(filepath.Dir(extractedFilePath), os.ModePerm); err != nil {
 					return fmt.Errorf("failed to create parent directory for %s during local install: %w", extractedFilePath, err)
 				}
-				outFile, err := os.OpenFile(extractedFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+				outFile, err := os.OpenFile(extractedFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644) // Standardized file permission
 				if err != nil {
 					return fmt.Errorf("failed to open file for writing %s during local install: %w", extractedFilePath, err)
 				}
