@@ -10,10 +10,11 @@ import (
 	"sort"
 	"strings"
 
+	"fpm/internal/appstore" // Added for app store management
 	"fpm/internal/config"
 	"fpm/internal/metadata"
 	"fpm/internal/repository"
-	"fpm/internal/utils" // For utils.CopyRegularFile
+	// "fpm/internal/utils" // utils.CopyRegularFile is now handled by appstore package for this flow
 	"os/exec"
 
 	"github.com/spf13/cobra"
@@ -107,28 +108,18 @@ from the local FPM store, then from remote repositories.`,
 			appVersion = localFpmMeta.PackageVersion
 			fmt.Printf("Installing from local file: %s/%s version %s\n", appOrg, appName, appVersion)
 
-			targetAppVersionPathInStore := filepath.Join(cfg.AppsBasePath, appOrg, appName, appVersion)
-			appModulePathInFPMStore = filepath.Join(targetAppVersionPathInStore, appName)
-
-			fmt.Printf("Ensuring package is installed to local FPM store: %s\n", targetAppVersionPathInStore)
-			if err := os.RemoveAll(targetAppVersionPathInStore); err != nil {
-				return fmt.Errorf("failed to clear existing content at %s: %w", targetAppVersionPathInStore, err)
+			// Use appstore.ManageAppInLocalStore
+			fmt.Printf("Ensuring package '%s' is installed to local FPM store...\n", packagePathArg)
+			resolvedOrg, resolvedAppName, resolvedVersion, _, resolvedAppModulePathInStore, storeErr := appstore.ManageAppInLocalStore(packagePathArg, cfg)
+			if storeErr != nil {
+				return fmt.Errorf("failed to manage package %s in local FPM store: %w", packagePathArg, storeErr)
 			}
-			if err := os.MkdirAll(targetAppVersionPathInStore, 0o755); err != nil {
-				return fmt.Errorf("failed to create directory %s: %w", targetAppVersionPathInStore, err)
-			}
-			if err := extractFPMArchive(packagePathArg, targetAppVersionPathInStore); err != nil {
-				return fmt.Errorf("failed to extract %s to %s: %w", packagePathArg, targetAppVersionPathInStore, err)
-			}
-			fmt.Printf("Package content installed to %s\n", targetAppVersionPathInStore)
-
-			originalFpmFilename := filepath.Base(packagePathArg)
-			storedFpmPath := filepath.Join(targetAppVersionPathInStore, "_"+originalFpmFilename)
-			if err := utils.CopyRegularFile(packagePathArg, storedFpmPath, 0o644); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to store original .fpm package from local file in FPM store at %s: %v\n", storedFpmPath, err)
-			} else {
-				fmt.Printf("Stored original .fpm package in FPM store: %s\n", storedFpmPath)
-			}
+			// Update appOrg, appName, appVersion based on what ManageAppInLocalStore resolved from metadata
+			appOrg = resolvedOrg
+			appName = resolvedAppName
+			appVersion = resolvedVersion
+			appModulePathInFPMStore = resolvedAppModulePathInStore // This is the path to the app module, e.g. .../apporg/appname/version/appname
+			fmt.Printf("Package %s/%s version %s successfully managed in local store. App module at: %s\n", appOrg, appName, appVersion, appModulePathInFPMStore)
 
 		} else if os.IsNotExist(statErr) || (statInfo != nil && statInfo.IsDir()) {
 			fmt.Printf("Package '%s' not found locally or is a directory. Attempting to resolve as remote identifier...\n", packagePathArg)
@@ -219,28 +210,18 @@ from the local FPM store, then from remote repositories.`,
 					return fmt.Errorf("org, app_name, or package_version missing from metadata in downloaded package %s", downloadedPkgInfo.LocalPath)
 				}
 
-				targetAppVersionPathInStore := filepath.Join(cfg.AppsBasePath, appOrg, appName, appVersion)
-				appModulePathInFPMStore = filepath.Join(targetAppVersionPathInStore, appName)
-
-				fmt.Printf("Installing downloaded package to local FPM store: %s\n", targetAppVersionPathInStore)
-				if err := os.RemoveAll(targetAppVersionPathInStore); err != nil {
-					return fmt.Errorf("failed to clear existing content at %s: %w", targetAppVersionPathInStore, err)
+				// Use appstore.ManageAppInLocalStore for the downloaded/cached file
+				fmt.Printf("Ensuring downloaded package '%s' is installed to local FPM store...\n", downloadedPkgInfo.LocalPath)
+				resolvedOrg, resolvedAppName, resolvedVersion, _, resolvedAppModulePathInStore, storeErr := appstore.ManageAppInLocalStore(downloadedPkgInfo.LocalPath, cfg)
+				if storeErr != nil {
+					return fmt.Errorf("failed to manage downloaded package %s in local FPM store: %w", downloadedPkgInfo.LocalPath, storeErr)
 				}
-				if err := os.MkdirAll(targetAppVersionPathInStore, 0o755); err != nil { // Corrected permission
-					return fmt.Errorf("failed to create directory %s: %w", targetAppVersionPathInStore, err)
-				}
-				if err := extractFPMArchive(downloadedPkgInfo.LocalPath, targetAppVersionPathInStore); err != nil {
-					return fmt.Errorf("failed to extract %s to %s: %w", downloadedPkgInfo.LocalPath, targetAppVersionPathInStore, err)
-				}
-				fmt.Printf("Package content installed from FPM cache to FPM store at %s\n", targetAppVersionPathInStore)
-
-				originalFpmFilename := filepath.Base(downloadedPkgInfo.LocalPath)
-				storedFpmPath := filepath.Join(targetAppVersionPathInStore, "_"+originalFpmFilename)
-				if err := utils.CopyRegularFile(downloadedPkgInfo.LocalPath, storedFpmPath, 0o644); err != nil { // Using utils.CopyRegularFile
-					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to store original .fpm package from cache in FPM store at %s: %v\n", storedFpmPath, err)
-				} else {
-					fmt.Printf("Stored original .fpm package in FPM store: %s\n", storedFpmPath)
-				}
+				// Update appOrg, appName, appVersion based on what ManageAppInLocalStore resolved
+				appOrg = resolvedOrg
+				appName = resolvedAppName
+				appVersion = resolvedVersion
+				appModulePathInFPMStore = resolvedAppModulePathInStore
+				fmt.Printf("Package %s/%s version %s (from remote) successfully managed in local store. App module at: %s\n", appOrg, appName, appVersion, appModulePathInFPMStore)
 			}
 		} else if statErr != nil {
 			return fmt.Errorf("error checking package path '%s': %w", packagePathArg, statErr)
@@ -410,58 +391,7 @@ func readMetadataFromFPMStore(installedAppVersionPath string) (*metadata.AppMeta
 	return metadata.LoadAppMetadata(installedAppVersionPath)
 }
 
-// Helper function to extract an FPM archive to a target directory
-func extractFPMArchive(fpmPath string, targetDir string) error {
-	r, err := zip.OpenReader(fpmPath)
-	if err != nil {
-		return fmt.Errorf("failed to open FPM package %s for extraction: %w", fpmPath, err)
-	}
-	defer r.Close()
-
-	for _, f := range r.File {
-		extractedFilePath := filepath.Join(targetDir, f.Name)
-		if !strings.HasPrefix(extractedFilePath, filepath.Clean(targetDir)+string(os.PathSeparator)) {
-			return fmt.Errorf("illegal file path in zip: '%s' (targets outside '%s')", f.Name, targetDir)
-		}
-
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(extractedFilePath, 0o755); err != nil { // Standardized directory permission
-				return fmt.Errorf("failed to create directory %s during extraction: %w", extractedFilePath, err)
-			}
-			continue
-		}
-
-		if err := os.MkdirAll(filepath.Dir(extractedFilePath), os.ModePerm); err != nil { // Parent dirs can use broader perm
-			return fmt.Errorf("failed to create parent directory for %s during extraction: %w", extractedFilePath, err)
-		}
-
-		outFile, err := os.OpenFile(extractedFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644) // Standardized file permission
-		if err != nil {
-			return fmt.Errorf("failed to open file for writing %s during extraction: %w", extractedFilePath, err)
-		}
-
-		rc, err := f.Open()
-		if err != nil {
-			outFile.Close()
-			return fmt.Errorf("failed to open file in zip %s during extraction: %w", f.Name, err)
-		}
-
-		_, copyErr := io.Copy(outFile, rc)
-		closeRcErr := rc.Close()
-		closeOutFileErr := outFile.Close()
-
-		if copyErr != nil {
-			return fmt.Errorf("failed to copy content of %s to %s during extraction: %w", f.Name, extractedFilePath, copyErr)
-		}
-		if closeRcErr != nil {
-			return fmt.Errorf("failed to close zip entry %s after copying: %w", f.Name, closeRcErr)
-		}
-		if closeOutFileErr != nil {
-			return fmt.Errorf("failed to close output file %s after copying: %w", extractedFilePath, closeOutFileErr)
-		}
-	}
-	return nil
-}
+// extractFPMArchive function removed as its functionality is now in appstore.ManageAppInLocalStore
 
 func init() {
 	installCmd.Flags().String("bench-path", "", "Path to the Frappe bench directory")

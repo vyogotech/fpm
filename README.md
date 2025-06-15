@@ -105,7 +105,7 @@ fpm install myorg/my-custom-app==1.2.3 --bench-path /path/to/bench --site mysite
         # You can then copy/upload erpnext-13.0.1.fpm to your production server.
         # Alternatively, publish it to a private FPM repository (see Repository Management).
         ```
-    *   Or, if packages are hosted on an FPM repository, they can be directly installed on the production server.
+    *   Or, if packages are hosted on an FPM repository, they can be directly installed on the production server. You can also use `fpm get-app <repo_name>/<org>/<appName>:<version>` to download packages to the server's local FPM store first, then use `fpm install` from the local store. This can be useful for pre-staging packages.
 
 2.  **Deploy to Production Server**:
     *   Ensure FPM is configured on the production server (see Repository Management if using remote repos).
@@ -295,3 +295,40 @@ fpm publish myorg/my-app
 # Publish directly from a .fpm file to the 'mycorp-releases' repo
 fpm publish --from-file ./my-app-1.2.4.fpm --repo mycorp-releases
 ```
+
+## Getting Packages into Local Store
+
+### `fpm get-app <repository_name>/<org>/<app_name>[:<version>]`
+
+Downloads a specific application package from a named remote repository and installs it directly into the local FPM application store (typically `~/.fpm/apps/...`).
+
+**Key Distinction:** This command populates your local FPM app store. It does *not* install the application into any Frappe bench or make it available to a site. To make the app available in a bench after using `get-app`, you would typically use `fpm install <org>/<appName>==<version> --bench-path ...`.
+
+**Argument Breakdown:**
+*   `<repository_name>`: The name of a configured FPM repository (as defined by `fpm repo add`).
+*   `<org>`: The organization of the application.
+*   `<app_name>`: The name of the application.
+*   `[:<version>]`: (Optional) The specific version of the application to fetch. If omitted, or if `:latest` is used, FPM will attempt to fetch the version marked as "latest" in the repository's metadata for that application.
+
+**Example Usage:**
+
+1.  **Fetch a specific app version into your local FPM store:**
+    ```bash
+    # Assuming 'mycorp-repo' is a configured repository
+    fpm get-app mycorp-repo/myorg/mycustomapp:1.5.2
+    # This downloads mycustomapp-1.5.2.fpm from mycorp-repo
+    # and installs it to ~/.fpm/apps/myorg/mycustomapp/1.5.2/
+    ```
+
+2.  **Fetch the latest version:**
+    ```bash
+    fpm get-app mycorp-repo/myorg/anotherapp
+    # This looks for the 'latest_version' of anotherapp in mycorp-repo's metadata
+    # and installs it to the corresponding versioned path in ~/.fpm/apps/
+    ```
+
+3.  **Subsequently install into a bench:**
+    Once an app is in your local FPM store (either via `fpm package` or `fpm get-app`), you can install it into a bench:
+    ```bash
+    fpm install myorg/mycustomapp==1.5.2 --bench-path /path/to/your/bench
+    ```

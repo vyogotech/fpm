@@ -204,3 +204,157 @@ func UploadPackageMetadata(repoBaseURL, org, appName string, metaToUpload *Packa
 	fmt.Printf("Metadata for %s/%s uploaded successfully to %s.\n", org, appName, fullMetadataURL) // Log with path identifiers
 	return nil
 }
+
+// FindPackageInSpecificRepo attempts to find and download a specific package version from a single named repository.
+// If requestedVersion is empty or "latest", it resolves to the latest version available.
+// It handles fetching metadata, resolving version, downloading the FPM to cache, and verifying checksums (TODO: checksum verification).
+func FindPackageInSpecificRepo(
+	repoName string, // Name of the repo (for cache path)
+	repoBaseURL string, // Base URL of the repo
+	org string, // Package organization
+	appName string, // Package app name
+	requestedVersion string, // Specific version or "" or "latest"
+	client *http.Client,
+) (*DownloadedPackageInfo, error) {
+	if client == nil {
+		client = &http.Client{Timeout: time.Second * 120} // Default timeout for this operation
+	}
+
+	fmt.Printf("Attempting to find package %s/%s version '%s' in repository %s (%s)\n", org, appName, requestedVersion, repoName, repoBaseURL)
+
+	pkgMeta, metadataFound, err := FetchRemotePackageMetadata(repoBaseURL, org, appName, client)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch package metadata for %s/%s from %s: %w", org, appName, repoName, err)
+	}
+	if !metadataFound {
+		return nil, fmt.Errorf("package %s/%s not found in repository %s (metadata missing)", org, appName, repoName)
+	}
+	if pkgMeta == nil { // Should not happen if metadataFound is true and err is nil
+		return nil, fmt.Errorf("internal error: metadata found but was nil for package %s/%s in repository %s", org, appName, repoName)
+	}
+
+	resolvedVersion := requestedVersion
+	if resolvedVersion == "" || resolvedVersion == "latest" {
+		if pkgMeta.LatestVersion == "" {
+			return nil, fmt.Errorf("repository %s does not specify a latest version for package %s/%s", repoName, org, appName)
+		}
+		resolvedVersion = pkgMeta.LatestVersion
+		fmt.Printf("Resolved 'latest' for %s/%s to version %s from repository %s metadata\n", org, appName, resolvedVersion, repoName)
+	}
+
+	versionMeta, ok := pkgMeta.Versions[resolvedVersion]
+	if !ok {
+		return nil, fmt.Errorf("version %s for package %s/%s not found in repository %s metadata", resolvedVersion, org, appName, repoName)
+	}
+
+	if versionMeta.FPMPath == "" {
+		return nil, fmt.Errorf("FPM path for version %s of package %s/%s is not defined in repository %s metadata", resolvedVersion, org, appName, repoName)
+	}
+
+	fpmDownloadURL, err := url.JoinPath(repoBaseURL, versionMeta.FPMPath)
+	if err != nil {
+		return nil, fmt.Errorf("error constructing FPM download URL for %s (path: %s) on repo %s: %w", versionMeta.FPMPath, repoBaseURL, err)
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user home directory for cache path: %w", err)
+	}
+	// Cache path: ~/.fpm/cache/<repoName>/<org>/<appName>/<resolvedVersion>/<filename.fpm>
+	// filename.fpm is the base of versionMeta.FPMPath
+	fpmFilename := filepath.Base(versionMeta.FPMPath)
+	cacheDir := filepath.Join(homeDir, ".fpm", "cache", repoName, org, appName, resolvedVersion)
+	localCachePath := filepath.Join(cacheDir, fpmFilename)
+
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create cache directory %s: %w", cacheDir, err)
+	}
+
+	// TODO: Implement more robust caching (e.g., check checksum of cached file)
+	if _, err := os.Stat(localCachePath); err == nil {
+		fmt.Printf("Found cached FPM package at %s. Verifying checksum (TODO)...\n", localCachePath)
+		// For now, assume cached is valid if it exists.
+		// Checksum verification should be added here. If checksum matches versionMeta.ChecksumSHA256, return.
+		// If it doesn't match, proceed to download.
+		// For now, we'll just return the cached path if it exists.
+		// This needs to be enhanced with actual checksum verification.
+		// if versionMeta.ChecksumSHA256 != "" {
+		//     cachedFileChecksum, checksumErr := utils.CalculateFileChecksum(localCachePath)
+		//     if checksumErr == nil && cachedFileChecksum == versionMeta.ChecksumSHA256 {
+		//         fmt.Printf("Checksum for cached FPM %s matches. Using cached file.\n", localCachePath)
+		//         return &DownloadedPackageInfo{
+		//				LocalPath:      localCachePath,
+		//				RepositoryName: repoName,
+		//				Org:            pkgMeta.Org, // From metadata, canonical
+		//				AppName:        pkgMeta.AppName, // From metadata, canonical
+		//				Version:        resolvedVersion,
+		//				Checksum:       versionMeta.ChecksumSHA256,
+		//			}, nil
+		//     }
+		//     fmt.Printf("Checksum mismatch for cached file %s or error calculating checksum. Will re-download.\n", localCachePath)
+		// }
+		// Fall-through to download if no checksum in metadata or if it mismatches (once implemented)
+		// For now, simplified: if exists, use it.
+		fmt.Printf("Using existing cached file (checksum verification not yet implemented): %s\n", localCachePath)
+		return &DownloadedPackageInfo{
+			LocalPath:      localCachePath,
+			RepositoryName: repoName,
+			Org:            pkgMeta.Org,
+			AppName:        pkgMeta.AppName,
+			Version:        resolvedVersion,
+			Checksum:       versionMeta.ChecksumSHA256, // Might be empty if not in remote meta
+		}, nil
+	}
+
+
+	fmt.Printf("Downloading FPM package from %s to %s...\n", fpmDownloadURL, localCachePath)
+	resp, err := client.Get(fpmDownloadURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download FPM from %s: %w", fpmDownloadURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to download FPM from %s (status: %s)", fpmDownloadURL, resp.Status)
+	}
+
+	outFile, err := os.Create(localCachePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create file for FPM download %s: %w", localCachePath, err)
+	}
+	defer outFile.Close()
+
+	_, err = io.Copy(outFile, resp.Body)
+	if err != nil {
+		// Attempt to remove partially downloaded file
+		os.Remove(localCachePath)
+		return nil, fmt.Errorf("failed to write downloaded FPM to %s: %w", localCachePath, err)
+	}
+	outFile.Close() // Ensure file is closed before checksum calculation (if any)
+
+	// TODO: Verify checksum of downloaded file against versionMeta.ChecksumSHA256
+	// if versionMeta.ChecksumSHA256 != "" {
+	//     downloadedFileChecksum, checksumErr := utils.CalculateFileChecksum(localCachePath)
+	//     if checksumErr != nil {
+	//         os.Remove(localCachePath) // Remove if checksum fails
+	//         return nil, fmt.Errorf("failed to calculate checksum for downloaded file %s: %w", localCachePath, checksumErr)
+	//     }
+	//     if downloadedFileChecksum != versionMeta.ChecksumSHA256 {
+	//         os.Remove(localCachePath) // Remove if checksum fails
+	//         return nil, fmt.Errorf("checksum mismatch for downloaded file %s (expected %s, got %s)", localCachePath, versionMeta.ChecksumSHA256, downloadedFileChecksum)
+	//     }
+	//     fmt.Printf("Checksum verified for downloaded file: %s\n", downloadedFileChecksum)
+	// } else {
+	//     fmt.Printf("No checksum provided in repository metadata for %s/%s version %s. Skipping verification.\n", org, appName, resolvedVersion)
+	// }
+
+	fmt.Printf("Successfully downloaded FPM package to %s\n", localCachePath)
+	return &DownloadedPackageInfo{
+		LocalPath:      localCachePath,
+		RepositoryName: repoName,
+		Org:            pkgMeta.Org,     // Canonical org from metadata
+		AppName:        pkgMeta.AppName, // Canonical appName from metadata
+		Version:        resolvedVersion,
+		Checksum:       versionMeta.ChecksumSHA256,
+	}, nil
+}
