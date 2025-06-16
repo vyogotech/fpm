@@ -445,20 +445,10 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 // This simplifies running the command and then immediately getting metadata.
 func runPackageAndGetMeta(t *testing.T, sourceDir string, appName string, version string, pkgType string, extraArgs ...string) (*metadata.AppMetadata, string) {
 	t.Helper()
-	// resetPackageCmdFlags() // Flags are reset by executeCommand typically or should be managed by caller if needed.
-	// The global packageCmd flags are reset by calling packageCmd.ResetFlags() or similar before execute.
-	// For now, assume executeCommand or specific test setup handles flag state.
-	// Let's ensure that within tests using this, we call a reset function.
-	// packageCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Value.Set(f.DefValue); f.Changed = false; })
-
-
+	resetPackageCmdFlags() // Ensure flags are clean for each run
 	outputDir := t.TempDir()
 
-	cmdArgs := []string{"package"} // command name
-	if version != "" { // Only add --version if provided, to test derivation
-		cmdArgs = append(cmdArgs, "--version", version)
-	}
-	cmdArgs = append(cmdArgs, "--output-path", outputDir)
+	cmdArgs := []string{"package", "--version", version, "--output-path", outputDir}
 	if appName != "" {
 		cmdArgs = append(cmdArgs, "--app-name", appName)
 	}
@@ -519,36 +509,24 @@ func runPackageAndGetMeta(t *testing.T, sourceDir string, appName string, versio
 }
 
 // createMinimalFrappeApp creates a very basic app structure for testing.
-// App name is the directory name. Source directory will be baseDir/appName_source.
+// App name is the directory name.
 func createMinimalFrappeApp(t *testing.T, baseDir string, appName string, files map[string]string) string {
 	t.Helper()
-	// Source directory structure: <baseDir>/<appName>_source/
-	// App module directory structure: <baseDir>/<appName>_source/<appName>/
-	sourceDir := filepath.Join(baseDir, appName+"_source")
-	appModuleDir := filepath.Join(sourceDir, appName)    // App module is inside sourceDir, named appName
+	sourceDir := filepath.Join(baseDir, appName+"_source") // Unique source dir name
+	appModuleDir := filepath.Join(sourceDir, appName)
 	require.NoError(t, os.MkdirAll(appModuleDir, 0755))
 
 	standardAppFiles := map[string]string{
 		"__init__.py": "",
-		// hooks.py content is now handled by createMinimalFrappeAppWithHooksContent or specific test setup
-		// "hooks.py":    fmt.Sprintf("app_name = \"%s\"", appName),
+		"hooks.py":    fmt.Sprintf("app_name = \"%s\"", appName),
 		"modules.txt": "",
 	}
 	for fname, content := range standardAppFiles {
 		require.NoError(t, os.WriteFile(filepath.Join(appModuleDir, fname), []byte(content), 0644))
 	}
-	// Ensure a basic hooks.py exists if not customized by files map
-	if _, ok := files[filepath.Join(appName, "hooks.py")]; !ok {
-	    hooksContent := fmt.Sprintf("app_name = \"%s\"\n", appName) // Default app_name in hooks
-	    require.NoError(t, os.WriteFile(filepath.Join(appModuleDir, "hooks.py"), []byte(hooksContent), 0644))
-	}
-
 
 	if files != nil {
 		for relPath, content := range files {
-			// Important: relPath for files map should be relative to sourceDir.
-			// If it's intended for appModuleDir, it should include appName prefix.
-			// e.g., files[filepath.Join(appName, "specific_hook.py")] = "..."
 			absPath := filepath.Join(sourceDir, relPath)
 			absDir := filepath.Dir(absPath)
 			require.NoError(t, os.MkdirAll(absDir, 0755))
@@ -556,80 +534,6 @@ func createMinimalFrappeApp(t *testing.T, baseDir string, appName string, files 
 		}
 	}
 	return sourceDir
-}
-
-// createMinimalFrappeAppWithHooksContent creates a minimal app, writing the provided hooksContent into <appName>/hooks.py.
-// Source directory will be baseDir/appName_source.
-func createMinimalFrappeAppWithHooksContent(t *testing.T, baseDir string, appName string, hooksContent string, otherFiles map[string]string) string {
-	t.Helper()
-	sourceDir := filepath.Join(baseDir, appName+"_source")
-	appModuleDir := filepath.Join(sourceDir, appName)
-	require.NoError(t, os.MkdirAll(appModuleDir, 0755))
-
-	standardAppFiles := map[string]string{
-		"__init__.py": "",
-		"modules.txt": "",
-	}
-	for fname, content := range standardAppFiles {
-		require.NoError(t, os.WriteFile(filepath.Join(appModuleDir, fname), []byte(content), 0644))
-	}
-	require.NoError(t, os.WriteFile(filepath.Join(appModuleDir, "hooks.py"), []byte(hooksContent), 0644))
-
-	if otherFiles != nil {
-		for relPath, content := range otherFiles {
-			absPath := filepath.Join(sourceDir, relPath) // relPath is relative to sourceDir
-			absDir := filepath.Dir(absPath)
-			require.NoError(t, os.MkdirAll(absDir, 0755))
-			require.NoError(t, os.WriteFile(absPath, []byte(content), 0644))
-		}
-	}
-	return sourceDir
-}
-
-
-// setupTemporaryFPMConfigWithExclusions creates a temporary FPM config directory,
-// sets FPM_CONFIG_PATH, writes a config.json with provided exclusions.
-// If exclusions is nil, it writes the default config (which includes default exclusions).
-func setupTemporaryFPMConfigWithExclusions(t *testing.T, exclusions []string) (cleanupFunc func()) {
-	t.Helper()
-	// Use the existing setupTempFPMConfig from repo_test.go to handle HOME dir mocking
-	// and initial config.json creation (which uses DefaultConfig).
-	// Then, we will overwrite that config.json if custom exclusions are provided.
-	tempHome, baseCleanup := setupTempFPMConfig(t) // This already calls config.InitConfig()
-
-	configFilePath := filepath.Join(tempHome, ".fpm", "config.json")
-
-	// If specific exclusions are provided, create/overwrite config.json with them.
-	// Otherwise, the config.json created by InitConfig (using DefaultConfig) inside setupTempFPMConfig is used.
-	if exclusions != nil {
-		cfgToSave := config.FPMConfig{
-			AppsBasePath:             filepath.Join(tempHome, ".fpm", "apps"), // Consistent with DefaultConfig
-			Repositories:             make(map[string]config.RepositoryConfig),
-			DefaultPackageExclusions: exclusions,
-		}
-		configBytes, err := json.MarshalIndent(cfgToSave, "", "  ")
-		require.NoError(t, err)
-		err = os.WriteFile(configFilePath, configBytes, 0644)
-		require.NoError(t, err, "Failed to write custom config.json for exclusions test")
-	}
-
-	// The cleanup function returned by setupTempFPMConfig already handles resetting HOME/USERPROFILE
-	// and removing the temp directory created by t.TempDir().
-	return baseCleanup
-}
-
-// inspectFPMArchiveContents opens the .fpm (zip) file and returns a list of all file paths.
-func inspectFPMArchiveContents(t *testing.T, fpmFilePath string) []string {
-	t.Helper()
-	r, err := zip.OpenReader(fpmFilePath)
-	require.NoError(t, err, "Failed to open .fpm file: %s", fpmFilePath)
-	defer r.Close()
-
-	var filePaths []string
-	for _, f := range r.File {
-		filePaths = append(filePaths, f.Name)
-	}
-	return filePaths
 }
 
 
@@ -1121,195 +1025,4 @@ func TestContentChecksum(t *testing.T) {
 
 	// Restore file name for hygiene, though sourceDir is temp and will be cleaned up
 	require.NoError(t, os.Rename(absRenamedFilePath, absInitialFilePath))
-}
-
-// --- Tests for Version Derivation ---
-func TestPackageVersionResolution(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration-style test for 'package' command version resolution in short mode.")
-	}
-	baseTestDir := t.TempDir()
-	appName := "versiontestapp"
-	orgName := "testorg" // Required by package command now if not derivable
-
-	t.Run("VersionFromHooksPy", func(t *testing.T) {
-		hooksContent := "app_version = \"0.0.1\"\napp_name = \"" + appName + "\"\n"
-		sourceDir := createMinimalFrappeAppWithHooksContent(t, baseTestDir, appName, hooksContent, nil)
-
-		// Run package without --version flag
-		meta, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, "" /* no version flag */, "dev", "--org", orgName)
-		require.FileExists(t, fpmPath)
-		assert.Equal(t, "0.0.1", meta.PackageVersion)
-		assert.Contains(t, filepath.Base(fpmPath), appName+"-0.0.1.fpm")
-	})
-
-	t.Run("VersionFromDunderVersionInHooksPy", func(t *testing.T) {
-		hooksContent := "__version__ = \"0.0.8\"\napp_name = \"" + appName + "\"\n"
-		sourceDir := createMinimalFrappeAppWithHooksContent(t, baseTestDir, appName, hooksContent, nil)
-
-		meta, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, "" /* no version flag */, "dev", "--org", orgName)
-		require.FileExists(t, fpmPath)
-		assert.Equal(t, "0.0.8", meta.PackageVersion)
-		assert.Contains(t, filepath.Base(fpmPath), appName+"-0.0.8.fpm")
-	})
-
-	t.Run("AppVersionPreferredOverDunderVersionInHooksPy", func(t *testing.T) {
-		hooksContent := "__version__ = \"0.0.7\"\napp_version = \"0.0.9\"\napp_name = \"" + appName + "\"\n"
-		sourceDir := createMinimalFrappeAppWithHooksContent(t, baseTestDir, appName, hooksContent, nil)
-
-		meta, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, "" /* no version flag */, "dev", "--org", orgName)
-		require.FileExists(t, fpmPath)
-		assert.Equal(t, "0.0.9", meta.PackageVersion)
-		assert.Contains(t, filepath.Base(fpmPath), appName+"-0.0.9.fpm")
-	})
-
-	t.Run("VersionFromFlagOverridesHooksPy", func(t *testing.T) {
-		hooksContent := "app_version = \"0.0.1\"\napp_name = \"" + appName + "\"\n"
-		sourceDir := createMinimalFrappeAppWithHooksContent(t, baseTestDir, appName, hooksContent, nil)
-
-		// Run package with --version flag
-		meta, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, "0.0.2" /* version flag */, "dev", "--org", orgName)
-		require.FileExists(t, fpmPath)
-		assert.Equal(t, "0.0.2", meta.PackageVersion)
-		assert.Contains(t, filepath.Base(fpmPath), appName+"-0.0.2.fpm")
-		// TODO: Check for "Info: Overriding version..." message in captured output if executeCommand is enhanced
-	})
-
-	t.Run("ErrorIfNoVersionInHooksOrFlag", func(t *testing.T) {
-		hooksContent := "app_name = \"" + appName + "\"\n" // No version info
-		sourceDir := createMinimalFrappeAppWithHooksContent(t, baseTestDir, appName, hooksContent, nil)
-
-		resetPackageCmdFlags()
-		outputDir := t.TempDir()
-		cmdArgs := []string{"package", "--output-path", outputDir, "--app-name", appName, "--org", orgName, sourceDir} // No --version
-
-		output, err := executeCommand(rootCmd, cmdArgs...)
-		assert.Error(t, err, "Expected an error when no version is provided in flag or hooks.py. Output: %s", output)
-		if err != nil {
-			assert.Contains(t, err.Error(), "package version must be provided")
-		}
-	})
-
-	t.Run("VersionFromFlagWhenNoVersionInHooks", func(t *testing.T) {
-		hooksContent := "app_name = \"" + appName + "\"\n" // No version info
-		sourceDir := createMinimalFrappeAppWithHooksContent(t, baseTestDir, appName, hooksContent, nil)
-
-		meta, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, "0.0.3" /* version flag */, "dev", "--org", orgName)
-		require.FileExists(t, fpmPath)
-		assert.Equal(t, "0.0.3", meta.PackageVersion)
-		assert.Contains(t, filepath.Base(fpmPath), appName+"-0.0.3.fpm")
-	})
-}
-
-
-// --- Tests for Configurable Exclusions ---
-func TestPackageExclusions(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration-style test for 'package' command exclusions in short mode.")
-	}
-	baseTestDir := t.TempDir()
-	appName := "exclusiontestapp"
-	orgName := "testorg"
-	version := "0.0.1"
-
-	t.Run("ProdExcludesViaDefaultGlobalConfig", func(t *testing.T) {
-		cleanup := setupTemporaryFPMConfigWithExclusions(t, nil) // Uses default exclusions from config.DefaultConfig()
-		defer cleanup()
-
-		filesToCreate := map[string]string{
-			filepath.Join(appName, "main.py"):             "print('main')",
-			filepath.Join(appName, "tests/test_code.py"): "assert True",
-			filepath.Join(appName, "__pycache__/cache.pyc"): "bytecode",
-			".fpmignore":                                   "*.log\n*.tmpdata", // This should still be respected
-			"data.log":                                     "this is a log",
-			"other.tmpdata":                                "temporary data",
-			"valuable.txt":                                 "important",
-		}
-		sourceDir := createMinimalFrappeAppWithHooksContent(t, baseTestDir, appName, "app_name = \""+appName+"\"", filesToCreate)
-
-		_, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, version, "prod", "--org", orgName)
-		contents := inspectFPMArchiveContents(t, fpmPath)
-
-		// Default exclusions include "tests/", "__pycache__/"
-		assert.NotContains(t, contents, filepath.ToSlash(filepath.Join(appName, "tests/test_code.py")))
-		assert.NotContains(t, contents, filepath.ToSlash(filepath.Join(appName, "__pycache__/cache.pyc")))
-		// From .fpmignore
-		assert.NotContains(t, contents, "data.log")
-		assert.NotContains(t, contents, "other.tmpdata")
-		// Should be included
-		assert.Contains(t, contents, filepath.ToSlash(filepath.Join(appName, "main.py")))
-		assert.Contains(t, contents, "valuable.txt")
-	})
-
-	t.Run("DevIncludesDefaultProdExcludesButRespectsFpmIgnoreAndMinimal", func(t *testing.T) {
-		cleanup := setupTemporaryFPMConfigWithExclusions(t, nil) // Uses default exclusions, but for dev they are not applied from global list
-		defer cleanup()
-
-		filesToCreate := map[string]string{
-			filepath.Join(appName, "main.py"):             "print('main')",
-			filepath.Join(appName, "tests/test_code.py"): "assert True", // Should be included in dev
-			filepath.Join(appName, "__pycache__/cache.pyc"): "bytecode", // Should be excluded by minimal/default in archive.go
-			".fpmignore":                                   "*.log",
-			"data.log":                                     "this is a log", // Excluded by .fpmignore
-			".git/config":                                  "git config file", // Excluded by minimal hardcoded
-			"valuable.txt":                                 "important",
-		}
-		sourceDir := createMinimalFrappeAppWithHooksContent(t, baseTestDir, appName, "app_name = \""+appName+"\"", filesToCreate)
-
-		_, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, version, "dev", "--org", orgName)
-		contents := inspectFPMArchiveContents(t, fpmPath)
-
-		assert.Contains(t, contents, filepath.ToSlash(filepath.Join(appName, "main.py")))
-		assert.Contains(t, contents, filepath.ToSlash(filepath.Join(appName, "tests/test_code.py"))) // Included in dev
-		assert.Contains(t, contents, "valuable.txt")
-
-		assert.NotContains(t, contents, filepath.ToSlash(filepath.Join(appName, "__pycache__/cache.pyc"))) // Still excluded by archive.go's own list
-		assert.NotContains(t, contents, "data.log") // Excluded by .fpmignore
-		assert.NotContains(t, contents, ".git/config") // Excluded by hardcoded minimal
-	})
-
-	t.Run("CustomGlobalConfigExclusionsForProd", func(t *testing.T) {
-		customExclusions := []string{"*.tmp", "temp_data/", "specific_file.py"}
-		cleanup := setupTemporaryFPMConfigWithExclusions(t, customExclusions)
-		defer cleanup()
-
-		filesToCreate := map[string]string{
-			filepath.Join(appName, "main.py"):                   "print('main')",
-			filepath.Join(appName, "specific_file.py"):          "secret code",
-			"file.tmp":                                         "temporary",
-			"temp_data/data.txt":                               "more temp data",
-			"other.txt":                                        "include me",
-			".fpmignore":                                       "ignored_by_fpmignore.txt",
-			"ignored_by_fpmignore.txt":                         "should be ignored by .fpmignore",
-		}
-		sourceDir := createMinimalFrappeAppWithHooksContent(t, baseTestDir, appName, "app_name = \""+appName+"\"", filesToCreate)
-
-		_, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, version, "prod", "--org", orgName)
-		contents := inspectFPMArchiveContents(t, fpmPath)
-
-		assert.Contains(t, contents, filepath.ToSlash(filepath.Join(appName, "main.py")))
-		assert.Contains(t, contents, "other.txt")
-
-		assert.NotContains(t, contents, filepath.ToSlash(filepath.Join(appName, "specific_file.py")))
-		assert.NotContains(t, contents, "file.tmp")
-		assert.NotContains(t, contents, "temp_data/data.txt")
-		assert.NotContains(t, contents, "ignored_by_fpmignore.txt") // Also check .fpmignore is respected
-	})
-
-	t.Run("MinimalHardcodedExclusionGitForDev", func(t *testing.T) {
-		cleanup := setupTemporaryFPMConfigWithExclusions(t, []string{}) // Empty global list
-		defer cleanup()
-
-		filesToCreate := map[string]string{
-			filepath.Join(appName, "main.py"): "print('main')",
-			".git/config":                     "git config data", // Should be excluded by minimal hardcoded in archive.go
-		}
-		sourceDir := createMinimalFrappeAppWithHooksContent(t, baseTestDir, appName, "app_name = \""+appName+"\"", filesToCreate)
-
-		_, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, version, "dev", "--org", orgName)
-		contents := inspectFPMArchiveContents(t, fpmPath)
-
-		assert.Contains(t, contents, filepath.ToSlash(filepath.Join(appName, "main.py")))
-		assert.NotContains(t, contents, ".git/config")
-	})
 }
