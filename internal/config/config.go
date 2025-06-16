@@ -20,7 +20,6 @@ type FPMConfig struct {
 	AppsBasePath             string                        `json:"apps_base_path,omitempty"`
 	Repositories             map[string]RepositoryConfig `json:"repositories,omitempty"`
 	DefaultPublishRepository string                        `json:"default_publish_repository,omitempty"`
-	DefaultPackageExclusions []string                      `json:"default_package_exclusions,omitempty"`
 }
 
 // LoadConfig loads the FPM configuration from a predefined path.
@@ -173,64 +172,6 @@ func DefaultConfig() (*FPMConfig, error) {
 		AppsBasePath:             defaultAppsBasePath,
 		Repositories:             make(map[string]RepositoryConfig),
 		DefaultPublishRepository: "", // Default is empty
-		DefaultPackageExclusions: []string{
-			// Common VCS (though .git/ might be hardcoded too)
-			// ".git/",
-			// ".hg/",
-			// ".svn/",
-
-			// Python specific
-			"__pycache__/",
-			"*.pyc",
-			"*.pyo",
-			"*.pyd",
-			".Python",
-			"build/",
-			"develop-eggs/",
-			"dist/",
-			"downloads/",
-			"eggs/",
-			".eggs/",
-			"lib/",
-			"lib64/",
-			"parts/",
-			"sdist/",
-			"var/",
-			"wheels/",
-			"share/python-wheels/",
-			"*.egg-info/",
-			".installed.cfg",
-			"*.egg",
-			"MANIFEST",
-
-			// Common OS generated files
-			".DS_Store",
-			".DS_Store?",
-			"._*",
-			".Spotlight-V100",
-			".Trashes",
-			"ehthumbs.db",
-			"Thumbs.db",
-
-			// Editor specific
-			".vscode/",
-			".idea/",
-			"*.swp",
-			"*.swo",
-
-			// FPM specific (example, if output dir is inside source)
-			// "fpm_packages/",
-
-			// Common dev/test setup files
-			"tests/",
-			"test/",
-			"*.test.js",
-			"*.spec.js",
-			"compose.yml",
-			"docker-compose.yml",
-			".devcontainer/",
-			"node_modules/",
-		},
 	}, nil
 }
 
