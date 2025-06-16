@@ -17,34 +17,13 @@ import (
 	"github.com/sabhiram/go-gitignore" // For .fpmignore
 )
 
-var defaultIgnorePatterns = []string{
-	".git/",
-	"*.pyc",
-	"__pycache__/",
-	".DS_Store",
-	"*.swp",
-	"*.swo",
-	"*.bak",
-	"*.tmp",
-	".idea/",
-	".vscode/",
-	"*.log",
-}
-
-var productionExclusionPatterns = []string{
-	"/.git/",       // Matches .git directory only at the root of the app source path
-	"__pycache__/", // Matches __pycache__ directories anywhere
-	"*.pyc",        // Matches .pyc files anywhere
-	"tests/",       // Matches directories named "tests" anywhere and their contents
-	"test_*",       // Matches files or directories starting with "test_" anywhere
-}
-
 // CreateFPMArchive creates an .fpm package from the app source.
 // appSourcePath: Path to the Frappe app's source directory.
 // outputPath: Directory where the .fpm file should be saved.
 // meta: The AppMetadata for the package.
 // version: The specific version string for this package.
-func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.AppMetadata, version string) error {
+// globalExclusionPatterns: A list of patterns to exclude, typically from FPM config (e.g. for "prod" builds).
+func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.AppMetadata, version string, globalExclusionPatterns []string) error {
 	if meta == nil {
 		return errors.New("metadata cannot be nil")
 	}
@@ -70,55 +49,48 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 
 	// --- Prepare .fpmignore ---
 	ignoreFilePath := filepath.Join(absAppSourcePath, ".fpmignore")
-	var ignorer *ignore.GitIgnore // Declare ignorer once
+	var ignorer *ignore.GitIgnore
 
-	// Start with default ignore patterns
-	combinedIgnorePatterns := make([]string, len(defaultIgnorePatterns))
-	copy(combinedIgnorePatterns, defaultIgnorePatterns)
+	// Start with minimal non-configurable patterns
+	allPatterns := []string{".git/"} // Always ignore .git
+
+	// Add global exclusion patterns if provided (e.g., from fpm config for "prod" type)
+	if globalExclusionPatterns != nil {
+		allPatterns = append(allPatterns, globalExclusionPatterns...)
+	}
 
 	// Add patterns from .fpmignore if it exists
-	// Use a new variable for os.Stat error to avoid shadowing function-scoped err
 	if _, statErr := os.Stat(ignoreFilePath); statErr == nil {
-		fpmIgnoreBytes, readErr := os.ReadFile(ignoreFilePath) // Use new variable for ReadFile error
+		fpmIgnoreBytes, readErr := os.ReadFile(ignoreFilePath)
 		if readErr != nil {
 			return fmt.Errorf("failed to read .fpmignore file %s: %w", ignoreFilePath, readErr)
 		}
 		fpmIgnoreLines := strings.Split(string(fpmIgnoreBytes), "\n")
 		for _, line := range fpmIgnoreLines {
 			trimmedLine := strings.TrimSpace(line)
-			if trimmedLine != "" && !strings.HasPrefix(trimmedLine, "#") { // Ignore empty lines and comments
-				// Check for duplicates before appending, though CompileIgnoreLines might handle it
-				alreadyExists := false
-				for _, existingPattern := range combinedIgnorePatterns {
-					if trimmedLine == existingPattern {
-						alreadyExists = true
+			// Ensure not empty and not a comment
+			if trimmedLine != "" && !strings.HasPrefix(trimmedLine, "#") {
+				// Basic duplicate check (CompileIgnoreLines might also handle this)
+				isDuplicate := false
+				for _, p := range allPatterns {
+					if p == trimmedLine {
+						isDuplicate = true
 						break
 					}
 				}
-				if !alreadyExists {
-					combinedIgnorePatterns = append(combinedIgnorePatterns, trimmedLine)
+				if !isDuplicate {
+					allPatterns = append(allPatterns, trimmedLine)
 				}
 			}
 		}
+	} else if !os.IsNotExist(statErr) { // Report error only if it's not "file not found"
+		return fmt.Errorf("error checking .fpmignore file %s: %w", ignoreFilePath, statErr)
 	}
 
-	// If package type is "prod", add production-specific exclusion patterns
-	if meta.PackageType == "prod" {
-		for _, prodPattern := range productionExclusionPatterns {
-			alreadyExists := false
-			for _, existingPattern := range combinedIgnorePatterns {
-				if prodPattern == existingPattern {
-					alreadyExists = true
-					break
-				}
-			}
-			if !alreadyExists {
-				combinedIgnorePatterns = append(combinedIgnorePatterns, prodPattern)
-			}
-		}
-	}
-
-	ignorer = ignore.CompileIgnoreLines(combinedIgnorePatterns...)
+	// Compile all collected patterns
+	// Note: The go-gitignore library might have its own way of handling duplicate patterns,
+	// but a simple pre-check doesn't hurt.
+	ignorer = ignore.CompileIgnoreLines(allPatterns...)
 
 
 	// --- Copy app source files ---
