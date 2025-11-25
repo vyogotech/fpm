@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: [ '1.21.x' ] # Specify your project's Go version
+        go-version: [ '1.22.x' ] # Match go.mod requirement
         platform:
           - {os: 'linux', arch: 'amd64'}
           - {os: 'linux', arch: 'arm64'}
@@ -68,12 +68,46 @@ jobs:
             ${{ steps.set_name.outputs.binary_name }}.sha256
           retention-days: 7
 
+  package_repository:
+    name: Package Repository Deployment Files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create repository deployment package
+        run: |
+          mkdir -p fpm-repository-${{ github.ref_name }}
+          cp compose.yml fpm-repository-${{ github.ref_name }}/
+          cp .env.example fpm-repository-${{ github.ref_name }}/
+          cp -r nginx fpm-repository-${{ github.ref_name }}/
+          cp -r scripts fpm-repository-${{ github.ref_name }}/
+          cp fpm-repo-README.md fpm-repository-${{ github.ref_name }}/README.md
+          cp QUICK_START.md fpm-repository-${{ github.ref_name }}/
+          cp DEPLOYMENT_TEST_RESULTS.md fpm-repository-${{ github.ref_name }}/
+          tar -czf fpm-repository-${{ github.ref_name }}.tar.gz fpm-repository-${{ github.ref_name }}/
+          sha256sum fpm-repository-${{ github.ref_name }}.tar.gz > fpm-repository-${{ github.ref_name }}.tar.gz.sha256
+          echo "Repository package created"
+          ls -lh fpm-repository-*.tar.gz*
+
+      - name: Upload repository package
+        uses: actions/upload-artifact@v4
+        with:
+          name: fpm-repository-deployment
+          path: |
+            fpm-repository-*.tar.gz
+            fpm-repository-*.tar.gz.sha256
+          retention-days: 7
+
   create_release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, package_repository]
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -82,6 +116,63 @@ jobs:
       - name: List downloaded artifacts for debugging
         run: ls -R fpm-release-assets/
 
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          cat << 'EOF' > release_notes.md
+          # FPM Release ${{ github.ref_name }}
+
+          ## 📦 Installation
+
+          ### FPM CLI Tool
+
+          Download the appropriate binary for your platform:
+          - **Linux AMD64**: `fpm-linux-amd64`
+          - **Linux ARM64**: `fpm-linux-arm64`
+          - **macOS Intel**: `fpm-darwin-amd64`
+          - **macOS Apple Silicon**: `fpm-darwin-arm64`
+          - **Windows**: `fpm-windows-amd64.exe`
+
+          Make it executable (Unix/macOS):
+          ```bash
+          chmod +x fpm-*
+          sudo mv fpm-* /usr/local/bin/fpm
+          ```
+
+          Verify installation:
+          ```bash
+          fpm --help
+          ```
+
+          ### FPM Repository Server
+
+          Download `fpm-repository-${{ github.ref_name }}.tar.gz` and extract:
+          ```bash
+          tar -xzf fpm-repository-${{ github.ref_name }}.tar.gz
+          cd fpm-repository-${{ github.ref_name }}
+          ./scripts/setup.sh
+          podman compose up -d
+          ```
+
+          ## 📚 Documentation
+
+          - [Repository Setup Guide](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/fpm-repo-README.md)
+          - [Quick Start Guide](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/QUICK_START.md)
+          - [Full Changelog](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md)
+
+          ## ✅ Checksums
+
+          SHA256 checksums are provided for all binaries and packages. Verify with:
+          ```bash
+          sha256sum -c fpm-*.sha256
+          ```
+
+          ## 🐛 Known Issues
+
+          See [DEPLOYMENT_TEST_RESULTS.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/DEPLOYMENT_TEST_RESULTS.md) for known limitations and workarounds.
+          EOF
+          cat release_notes.md
+
       - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v2
         env:
@@ -89,7 +180,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
-          body: "Automated release of FPM version ${{ github.ref_name }}. Please see CHANGELOG.md for details."
+          body_path: release_notes.md
           draft: false
           prerelease: false
           files: |
