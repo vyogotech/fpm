@@ -79,6 +79,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No TLS/SSL by default (HTTP only, can be configured)
 - Metadata endpoint temporarily has no authentication for testing
 
+## [1.1.0] - 2026-01-22
+
+### Added
+- **Standardized Build System**: Added a `Makefile` for consistent builds, tests, formatting, and cross-compilation.
+- **Dynamic Vyogo Branding**: Integrated `go-figure` for professional "Vyogo FPM" ASCII art in the CLI.
+- **Improved CI/CD**:
+  - Enforced code formatting and simplification (`gofmt -s`) in the pipeline.
+  - Enhanced unit test reporting with `gotestsum`.
+  - Standardized multi-arch binary releases (Linux, macOS, Windows) using the Makefile.
+
+### Fixed
+- Fixed all pending unit test failures across the CLI command packages.
+- Resolved compilation issues in `internal/repository` and `internal/config`.
+- Improved search logic to correctly handle `<org>/<app>` identifiers in local and cache searches.
+- Fixed environment variable precedence for `FPM_APPS_BASE_PATH`.
+
 ## [Unreleased]
 
 ### Planned Features
