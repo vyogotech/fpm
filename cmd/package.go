@@ -79,10 +79,10 @@ func validateFrappeAppStructure(sourceDir string, appName string) error {
 
 var (
 	// packageSourcePath string // This was commented out in original, keeping it that way.
-	packageOutputPath string
-	packageVersion    string
-	packageOverwrite      bool
-	packageType           string
+	packageOutputPath       string
+	packageVersion          string
+	packageOverwrite        bool
+	packageType             string
 	packageSkipLocalInstall bool
 )
 
@@ -127,7 +127,9 @@ By default, it also installs the packaged app to the local FPM app store.`,
 		orgFromGit, repoNameFromGit, errGit := gitutils.GetGitRemoteOriginInfo(absSourcePath)
 		if errGit != nil {
 			unwrappedErr := errors.Unwrap(errGit)
-			if unwrappedErr == nil { unwrappedErr = errGit }
+			if unwrappedErr == nil {
+				unwrappedErr = errGit
+			}
 			if !strings.Contains(unwrappedErr.Error(), "not found") && !strings.Contains(unwrappedErr.Error(), "no such file or directory") {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not determine org/repo from git: %v\n", errGit)
 			} else {
@@ -148,8 +150,10 @@ By default, it also installs the packaged app to the local FPM app store.`,
 				fmt.Fprintf(cmd.OutOrStdout(), "Info: Inferred app_name '%s' from hooks.py\n", derivedAppName)
 			} else if errHooks != nil {
 				unwrappedErr := errors.Unwrap(errHooks)
-				if unwrappedErr == nil { unwrappedErr = errHooks }
-				if !strings.Contains(unwrappedErr.Error(), "not found") && !strings.Contains(unwrappedErr.Error(), "no such file or directory"){
+				if unwrappedErr == nil {
+					unwrappedErr = errHooks
+				}
+				if !strings.Contains(unwrappedErr.Error(), "not found") && !strings.Contains(unwrappedErr.Error(), "no such file or directory") {
 					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not determine app_name from %s: %v\n", hooksFilePath, errHooks)
 				} else {
 					fmt.Fprintf(cmd.ErrOrStderr(), "Info: hooks.py not found at %s or app_name not in it.\n", hooksFilePath)
@@ -195,7 +199,9 @@ By default, it also installs the packaged app to the local FPM app store.`,
 		fullGitURL, errGitURL := gitutils.GetFullGitRemoteOriginURL(absSourcePath)
 		if errGitURL != nil {
 			unwrappedErr := errors.Unwrap(errGitURL)
-			if unwrappedErr == nil { unwrappedErr = errGitURL }
+			if unwrappedErr == nil {
+				unwrappedErr = errGitURL
+			}
 			if !strings.Contains(unwrappedErr.Error(), "not found") && !strings.Contains(unwrappedErr.Error(), "no such file or directory") {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not determine full git remote URL: %v\n", errGitURL)
 			}

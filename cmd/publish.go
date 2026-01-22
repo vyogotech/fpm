@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"fpm/internal/config"
-	"fpm/internal/metadata"      // For metadata.ReadMetadataFromFPMArchive
+	"fpm/internal/metadata"   // For metadata.ReadMetadataFromFPMArchive
 	"fpm/internal/repository" // For repository.FetchRemotePackageMetadata, etc.
 	"fpm/internal/utils"      // For utils.CalculateFileChecksum
 
@@ -71,7 +71,7 @@ to publish from the local FPM app store.`,
 				return fmt.Errorf("invalid package identifier: Org and AppName must be specified in '%s'", packageIdentifier)
 			}
 
-			appOrg = parsedOrg     // Use renamed variables
+			appOrg = parsedOrg      // Use renamed variables
 			appName = parsedAppName // Use renamed variables
 			appVersion = parsedVersion
 
@@ -111,7 +111,6 @@ to publish from the local FPM app store.`,
 		if appOrg == "" || appName == "" || appVersion == "" {
 			return fmt.Errorf("package metadata in %s is incomplete (missing Org, AppName, or PackageVersion)", fpmFilePathToPublish)
 		}
-
 
 		var targetRepo config.RepositoryConfig
 		if publishRepoName != "" {
@@ -185,7 +184,7 @@ to publish from the local FPM app store.`,
 			return fmt.Errorf("failed to calculate checksum for %s: %w", fpmFilePathToPublish, err)
 		}
 		if currentAppMeta.ContentChecksum != "" && currentAppMeta.ContentChecksum != checksum {
-		    fmt.Fprintf(os.Stderr, "Warning: checksum in app_metadata.json (%s) of the FPM file being published does not match its calculated content checksum (%s). Using calculated checksum for remote metadata.\n", currentAppMeta.ContentChecksum, checksum)
+			fmt.Fprintf(os.Stderr, "Warning: checksum in app_metadata.json (%s) of the FPM file being published does not match its calculated content checksum (%s). Using calculated checksum for remote metadata.\n", currentAppMeta.ContentChecksum, checksum)
 		}
 
 		versionEntry := repository.PackageVersionMetadata{

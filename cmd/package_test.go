@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"os/exec"
+	"path/filepath"
+	"runtime" // For OS-specific HOME for setupTempFPMConfig
 	"strings"
 	"testing"
-	"runtime" // For OS-specific HOME for setupTempFPMConfig
 
-	"fpm/internal/metadata"
 	"fpm/internal/config" // For FPM_APPS_BASE_PATH logic
+	"fpm/internal/metadata"
 
 	"github.com/spf13/pflag" // For resetting flags
 	"github.com/stretchr/testify/assert"
@@ -128,7 +128,7 @@ func TestValidateFrappeAppStructure(t *testing.T) {
 	})
 
 	testCasesIsDirectory := []struct {
-		name         string
+		name          string
 		fileToMakeDir string
 	}{
 		{"__init__.py is a directory", "__init__.py"},
@@ -254,13 +254,19 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 		cmdArgs := []string{"package", "--version", "0.0.1", "--output-path", outputDir, sourceDir}
 		rootCmd.SetArgs(cmdArgs)
 
-		oldStdout := os.Stdout; oldStderr := os.Stderr
-		rOut, wOut, _ := os.Pipe(); rErr, wErr, _ := os.Pipe()
-		os.Stdout = wOut; os.Stderr = wErr
+		oldStdout := os.Stdout
+		oldStderr := os.Stderr
+		rOut, wOut, _ := os.Pipe()
+		rErr, wErr, _ := os.Pipe()
+		os.Stdout = wOut
+		os.Stderr = wErr
 		executeErr := rootCmd.Execute()
-		wOut.Close(); wErr.Close()
-		outBytes, _ := io.ReadAll(rOut); errBytes, _ := io.ReadAll(rErr)
-		os.Stdout = oldStdout; os.Stderr = oldStderr
+		wOut.Close()
+		wErr.Close()
+		outBytes, _ := io.ReadAll(rOut)
+		errBytes, _ := io.ReadAll(rErr)
+		os.Stdout = oldStdout
+		os.Stderr = oldStderr
 		t.Logf("Captured Stdout:\n%s", string(outBytes))
 		t.Logf("Captured Stderr:\n%s", string(errBytes))
 
@@ -451,7 +457,6 @@ func runPackageAndGetMeta(t *testing.T, sourceDir string, appName string, versio
 		}
 	}
 
-
 	fpmFileName := fmt.Sprintf("%s-%s.fpm", finalAppName, version)
 	expectedFpmFilePath := filepath.Join(outputDir, fpmFileName)
 	require.FileExists(t, expectedFpmFilePath, "Expected .fpm file was not created at %s", expectedFpmFilePath)
@@ -464,7 +469,6 @@ func runPackageAndGetMeta(t *testing.T, sourceDir string, appName string, versio
 // createMinimalFrappeApp creates a very basic app structure for testing.
 // App name is the directory name.
 // createMinimalFrappeApp is now SharedCreateMinimalAppForPackage in common_test.go
-
 
 func TestPackageSourceControlURL(t *testing.T) {
 	if testing.Short() {
@@ -490,7 +494,6 @@ func TestPackageSourceControlURL(t *testing.T) {
 	cmdInGitRepo("config", "user.email", "test@example.com")
 	cmdInGitRepo("config", "user.name", "Test User")
 	cmdInGitRepo("commit", "-m", "initial commit")
-
 
 	meta, _ := runPackageAndGetMeta(t, sourceDir, appName, version, "" /* pkgType */)
 	assert.Equal(t, gitRemoteURL, meta.SourceControlURL)
@@ -587,7 +590,6 @@ func verifyAppInLocalStore(t *testing.T, appsBasePath, org, appName, version str
 	}
 }
 
-
 func TestPackageCmd_LocalInstallBehavior(t *testing.T) {
 	origHome, homeSet := os.LookupEnv("HOME")
 	if runtime.GOOS == "windows" {
@@ -627,7 +629,6 @@ func TestPackageCmd_LocalInstallBehavior(t *testing.T) {
 	// Ensure this base path itself is created, as InitConfig might only create the .fpm dir, not .fpm/apps
 	require.NoError(t, os.MkdirAll(mockAppsBasePath, 0o755))
 
-
 	sourceAppDir, err := os.MkdirTemp("", "sourceapp-pkglocal-*")
 	require.NoError(t, err)
 	defer os.RemoveAll(sourceAppDir)
@@ -646,17 +647,15 @@ func TestPackageCmd_LocalInstallBehavior(t *testing.T) {
 	// Correct sourceAppDir to use the returned path
 	sourceAppDir = actualSourceDir
 
-
 	t.Run("DefaultInstallsToLocalStore", func(t *testing.T) {
 		packageOutputDir, err := os.MkdirTemp("", "fpmoutput-defaultinstall-*")
 		require.NoError(t, err)
 		defer os.RemoveAll(packageOutputDir)
 
 		// Reset flags for packageCmd
-		packageCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Value.Set(f.DefValue); f.Changed = false; })
+		packageCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Value.Set(f.DefValue); f.Changed = false })
 		// Manually reset package-level flag variables to their defaults
 		packageSkipLocalInstall = false
-
 
 		args := []string{
 			"package", sourceAppDir,
@@ -676,8 +675,8 @@ func TestPackageCmd_LocalInstallBehavior(t *testing.T) {
 			filepath.Join(testAppName, "hooks.py"), // App module files
 			filepath.Join(testAppName, "__init__.py"),
 			filepath.Join(testAppName, "modules.txt"),
-			"requirements.txt",      // Root files from package
-			"app_metadata.json",     // Metadata file
+			"requirements.txt",  // Root files from package
+			"app_metadata.json", // Metadata file
 		}
 		verifyAppInLocalStore(t, mockAppsBasePath, testAppOrg, testAppName, testAppVersion, true, expectedFilesInStore...)
 		// Assert that the original .fpm file is also stored
@@ -694,12 +693,10 @@ func TestPackageCmd_LocalInstallBehavior(t *testing.T) {
 		appVersionPathInStore := filepath.Join(mockAppsBasePath, testAppOrg, testAppName, testAppVersion)
 		os.RemoveAll(appVersionPathInStore)
 
-
 		// Reset flags for packageCmd
-		packageCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Value.Set(f.DefValue); f.Changed = false; })
+		packageCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Value.Set(f.DefValue); f.Changed = false })
 		// Manually reset package-level flag variables
 		packageSkipLocalInstall = false // Reset before setting for this test specifically
-
 
 		args := []string{
 			"package", sourceAppDir,
@@ -721,7 +718,6 @@ func TestPackageCmd_LocalInstallBehavior(t *testing.T) {
 	})
 }
 
-
 func TestProductionExclusions(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration-style test in short mode.")
@@ -732,16 +728,16 @@ func TestProductionExclusions(t *testing.T) {
 
 	// Files that should always be included (unless .fpmignore says otherwise, not tested here)
 	alwaysIncludeFiles := map[string]string{
-		filepath.Join(appName, "main.py"):      "print('hello')",
+		filepath.Join(appName, "main.py"):              "print('hello')",
 		filepath.Join(appName, "module_utils/util.py"): "def helper(): pass",
-		"assets/important_asset.txt":         "important data",
+		"assets/important_asset.txt":                   "important data",
 	}
 
 	// Files that should be excluded only in production mode
 	prodOnlyExcludeFiles := map[string]string{
-		".git/config":                                     "[remote \"origin\"]\nurl = someurl",
-		filepath.Join(appName, "__pycache__/some.pyc"):          "bytecode",
-		filepath.Join(appName, "tests/test_main.py"):            "import main",
+		".git/config": "[remote \"origin\"]\nurl = someurl",
+		filepath.Join(appName, "__pycache__/some.pyc"):     "bytecode",
+		filepath.Join(appName, "tests/test_main.py"):       "import main",
 		filepath.Join(appName, "test_specific_feature.py"): "def test_feat(): pass",
 		// A file directly in app module matching test*
 		filepath.Join(appName, "test_another.py"): "test code",
@@ -751,8 +747,12 @@ func TestProductionExclusions(t *testing.T) {
 
 	// Create all files for the source directory
 	allFilesForSource := make(map[string]string)
-	for k, v := range alwaysIncludeFiles { allFilesForSource[k] = v }
-	for k, v := range prodOnlyExcludeFiles { allFilesForSource[k] = v }
+	for k, v := range alwaysIncludeFiles {
+		allFilesForSource[k] = v
+	}
+	for k, v := range prodOnlyExcludeFiles {
+		allFilesForSource[k] = v
+	}
 
 	sourceDir := SharedCreateMinimalAppForPackage(t, baseTestDir, appName, allFilesForSource)
 	// createMinimalFrappeApp already creates appName/__init__.py, hooks.py, modules.txt
@@ -794,8 +794,8 @@ func TestProductionExclusions(t *testing.T) {
 			for relPath := range prodOnlyExcludeFiles {
 				normalizedPath := filepath.ToSlash(relPath)
 				isActuallyExcludedByDefaultForDev := strings.HasPrefix(normalizedPath, ".git/") ||
-				                                   strings.Contains(normalizedPath, "__pycache__/") ||
-				                                   strings.HasSuffix(normalizedPath, ".pyc")
+					strings.Contains(normalizedPath, "__pycache__/") ||
+					strings.HasSuffix(normalizedPath, ".pyc")
 
 				if isActuallyExcludedByDefaultForDev {
 					assert.NotContains(t, filesInArchive, normalizedPath, "File '%s' should be ABSENT in DEV due to default ignores", normalizedPath)
@@ -818,8 +818,8 @@ func TestArchiveStructure(t *testing.T) {
 
 	files := map[string]string{
 		filepath.Join(appName, "models/item.py"): "class Item:",
-		"assets/css/style.css":                 ".body {}",
-		"requirements.txt":                     "frappe-sdk",
+		"assets/css/style.css":                   ".body {}",
+		"requirements.txt":                       "frappe-sdk",
 		// Ensure a file that might be accidentally put in app_source by old logic is tested
 		"file_at_root.txt": "should be at root",
 	}
@@ -865,7 +865,7 @@ func TestContentChecksum(t *testing.T) {
 	}
 	baseTestDir := t.TempDir()
 	appName := "sample_checksum_app" // Renamed to avoid conflict
-	version := "1.0.0" // Base version
+	version := "1.0.0"               // Base version
 
 	initialFileRelPath := filepath.Join(appName, "file_to_check.txt") // Relative to sourceDir
 	initialContent := "original checksum content"
@@ -919,7 +919,6 @@ func TestContentChecksum(t *testing.T) {
 	// Also check against meta4.ContentChecksum which was derived directly from runPackageAndGetMeta
 	assert.Equal(t, meta1.ContentChecksum, meta4.ContentChecksum, "ContentChecksum from runPackageAndGetMeta should match original (meta1).")
 
-
 	// Package 5: Add a new file. Checksum should change.
 	newFileRelPath := filepath.Join(appName, "newly_added_file.txt")
 	absNewFilePath := filepath.Join(sourceDir, newFileRelPath)
@@ -932,11 +931,10 @@ func TestContentChecksum(t *testing.T) {
 	// Cleanup the added file for subsequent tests in this function
 	require.NoError(t, os.Remove(absNewFilePath))
 
-
 	// Package 6: Rename a file. Checksum should change.
 	// Ensure back to original state first (no newFileRelPath, initialFileRelPath has initialContent)
 	// This is already the state as newFileRelPath was removed, and initialFileRelPath content is initialContent.
-	renamedFileRelPath := filepath.Join(appName, "renamed_" + filepath.Base(initialFileRelPath))
+	renamedFileRelPath := filepath.Join(appName, "renamed_"+filepath.Base(initialFileRelPath))
 	absRenamedFilePath := filepath.Join(sourceDir, renamedFileRelPath)
 	require.NoError(t, os.Rename(absInitialFilePath, absRenamedFilePath)) // Rename initialFileRelPath
 

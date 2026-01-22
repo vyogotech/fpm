@@ -3,11 +3,11 @@ package utils
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt" // Added fmt import
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
-	"fmt" // Added fmt import
 )
 
 // CalculateDirectoryChecksum calculates a SHA256 checksum for the contents of a directory.

@@ -120,12 +120,11 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 
 	ignorer = ignore.CompileIgnoreLines(combinedIgnorePatterns...)
 
-
 	// --- Copy app source files ---
-// appSourceStagePath := filepath.Join(stagingDir, "app_source") // No longer using app_source intermediate dir
-// if err := os.MkdirAll(appSourceStagePath, 0755); err != nil { // Not needed anymore
-// 	return fmt.Errorf("failed to create app_source in staging: %w", err)
-// }
+	// appSourceStagePath := filepath.Join(stagingDir, "app_source") // No longer using app_source intermediate dir
+	// if err := os.MkdirAll(appSourceStagePath, 0755); err != nil { // Not needed anymore
+	// 	return fmt.Errorf("failed to create app_source in staging: %w", err)
+	// }
 
 	// This is the main WalkDir for copying app source files
 	err = filepath.WalkDir(absAppSourcePath, func(path string, d fs.DirEntry, err error) error {
@@ -183,7 +182,6 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 	if err != nil {
 		return fmt.Errorf("failed to walk and copy app source directory: %w", err)
 	}
-
 
 	// --- Calculate checksum before saving metadata ---
 	// meta.PackageVersion is expected to be set by the caller (e.g., cmd/package.go)
@@ -269,14 +267,14 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 
 		info, err := d.Info()
 		if err != nil {
-		    return err
+			return err
 		}
 
 		header, err := zip.FileInfoHeader(info)
 		if err != nil {
-		    return err
+			return err
 		}
-		header.Name = zipPath // Ensure correct name in archive
+		header.Name = zipPath       // Ensure correct name in archive
 		header.Method = zip.Deflate // Use compression
 
 		writer, err := zipWriter.CreateHeader(header)
@@ -319,7 +317,7 @@ func copyFile(src, dst string) error {
 	defer destination.Close()
 
 	if _, err := io.Copy(destination, source); err != nil {
-	    return err
+		return err
 	}
 	// Set standard permissions for staged files
 	return os.Chmod(dst, 0644)
@@ -328,41 +326,40 @@ func copyFile(src, dst string) error {
 // copyDir recursively copies a directory from src to dst, respecting ignore rules
 // ignorer and ignoreRootPath are used for .fpmignore checks
 func copyDir(srcDir, dstDir string, ignorer *ignore.GitIgnore, ignoreRootPath string) error { // Changed gitignore to ignore
-    return filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
-        if err != nil {
-            return err
-        }
+	return filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
 
-        relPathFromSrcRoot, err := filepath.Rel(srcDir, path)
-        if err != nil {
-            return fmt.Errorf("failed to get relative path for %s from %s: %w", path, srcDir, err)
-        }
+		relPathFromSrcRoot, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return fmt.Errorf("failed to get relative path for %s from %s: %w", path, srcDir, err)
+		}
 
-        // For ignore checks, we need the path relative to where .fpmignore would be (appSourcePath)
-        pathRelativeToIgnoreRoot, err := filepath.Rel(ignoreRootPath, path)
-        if err != nil {
-             // This might happen if compiled_assets is outside appSourcePath, handle as needed
-             // For now, assume it's inside or at same level and ignore check won't apply if outside
-        }
+		// For ignore checks, we need the path relative to where .fpmignore would be (appSourcePath)
+		pathRelativeToIgnoreRoot, err := filepath.Rel(ignoreRootPath, path)
+		if err != nil {
+			// This might happen if compiled_assets is outside appSourcePath, handle as needed
+			// For now, assume it's inside or at same level and ignore check won't apply if outside
+		}
 
+		if relPathFromSrcRoot == "." { // Skip the root itself for processing, but ensure dstDir is created
+			return os.MkdirAll(dstDir, 0755)
+		}
 
-        if relPathFromSrcRoot == "." { // Skip the root itself for processing, but ensure dstDir is created
-             return os.MkdirAll(dstDir, 0755)
-        }
+		// Check against ignorer if pathRelativeToIgnoreRoot is valid
+		if ignorer != nil && pathRelativeToIgnoreRoot != "" && ignorer.MatchesPath(pathRelativeToIgnoreRoot) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 
-        // Check against ignorer if pathRelativeToIgnoreRoot is valid
-        if ignorer != nil && pathRelativeToIgnoreRoot != "" && ignorer.MatchesPath(pathRelativeToIgnoreRoot) {
-            if d.IsDir() {
-                return filepath.SkipDir
-            }
-            return nil
-        }
+		targetPath := filepath.Join(dstDir, relPathFromSrcRoot)
 
-        targetPath := filepath.Join(dstDir, relPathFromSrcRoot)
-
-        if d.IsDir() {
-            return os.MkdirAll(targetPath, 0755) // Use fixed permissions for staging directories
-        }
-        return copyFile(path, targetPath) // copyFile will handle file permissions
-    })
+		if d.IsDir() {
+			return os.MkdirAll(targetPath, 0755) // Use fixed permissions for staging directories
+		}
+		return copyFile(path, targetPath) // copyFile will handle file permissions
+	})
 }

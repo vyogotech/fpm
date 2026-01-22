@@ -3,7 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"io/fs" // For filepath.WalkDir
+	"io/fs"    // For filepath.WalkDir
 	"net/http" // For targeted remote query
 	"os"
 	"path/filepath"
@@ -24,7 +24,7 @@ type SearchResultItem struct {
 	AppName     string // Renamed from ArtifactID
 	Version     string // Specific version found
 	Description string
-	SourceRank  int    // 1 for local-store, 2 for remote-live, 3 for cache
+	SourceRank  int // 1 for local-store, 2 for remote-live, 3 for cache
 }
 
 var searchCmd = &cobra.Command{
@@ -75,7 +75,9 @@ If no query is provided, it lists all packages found in the local store and cach
 					versionDir := filepath.Dir(path)
 					appDir := filepath.Dir(versionDir)
 					orgDir := filepath.Dir(appDir)
-					if filepath.Base(orgDir) == "apps" || orgDir == localAppStoreDir || appDir == localAppStoreDir { return nil }
+					if filepath.Base(orgDir) == "apps" || orgDir == localAppStoreDir || appDir == localAppStoreDir {
+						return nil
+					}
 
 					version := filepath.Base(versionDir)
 					appNameFromFilePath := filepath.Base(appDir)
@@ -87,8 +89,8 @@ If no query is provided, it lists all packages found in the local store and cach
 						return nil
 					}
 					if appMeta.Org != orgNameFromFilePath || appMeta.AppName != appNameFromFilePath || appMeta.PackageVersion != version {
-						 fmt.Fprintf(os.Stderr, "Warning: Metadata mismatch for FPM file %s. Path: %s/%s/%s, Meta: %s/%s/%s. Using metadata values.\n",
-							 path, orgNameFromFilePath, appNameFromFilePath, version, appMeta.Org, appMeta.AppName, appMeta.PackageVersion)
+						fmt.Fprintf(os.Stderr, "Warning: Metadata mismatch for FPM file %s. Path: %s/%s/%s, Meta: %s/%s/%s. Using metadata values.\n",
+							path, orgNameFromFilePath, appNameFromFilePath, version, appMeta.Org, appMeta.AppName, appMeta.PackageVersion)
 					}
 
 					match := false
@@ -114,9 +116,9 @@ If no query is provided, it lists all packages found in the local store and cach
 				}
 				return nil
 			})
-		} else if !os.IsNotExist(statErr){
-            fmt.Fprintf(os.Stderr, "Warning: Could not access local app store at %s: %v\n", localAppStoreDir, statErr)
-        }
+		} else if !os.IsNotExist(statErr) {
+			fmt.Fprintf(os.Stderr, "Warning: Could not access local app store at %s: %v\n", localAppStoreDir, statErr)
+		}
 
 		// 2. Search Repository Metadata Cache (~/.fpm/cache) - SourceRank = 3
 		if _, statErr := os.Stat(cacheBaseDir); statErr == nil {
@@ -129,14 +131,20 @@ If no query is provided, it lists all packages found in the local store and cach
 				if !d.IsDir() && d.Name() == "package-metadata.json" {
 					relPath, _ := filepath.Rel(cacheBaseDir, path)
 					parts := strings.Split(filepath.ToSlash(relPath), "/")
-					if len(parts) != 5 || parts[1] != "metadata" { return nil }
+					if len(parts) != 5 || parts[1] != "metadata" {
+						return nil
+					}
 					repoNameFromPath := parts[0]
 
 					fileBytes, readErr := os.ReadFile(path)
-					if readErr != nil { fmt.Fprintf(os.Stderr, "Error reading metadata file %s: %v\n", path, readErr); return nil }
+					if readErr != nil {
+						fmt.Fprintf(os.Stderr, "Error reading metadata file %s: %v\n", path, readErr)
+						return nil
+					}
 					var pkgMeta repository.PackageMetadata
 					if unmarshalErr := json.Unmarshal(fileBytes, &pkgMeta); unmarshalErr != nil {
-						fmt.Fprintf(os.Stderr, "Error parsing metadata file %s: %v\n", path, unmarshalErr); return nil
+						fmt.Fprintf(os.Stderr, "Error parsing metadata file %s: %v\n", path, unmarshalErr)
+						return nil
 					}
 
 					pkgMatch := false
@@ -168,9 +176,9 @@ If no query is provided, it lists all packages found in the local store and cach
 				}
 				return nil
 			})
-		} else if !os.IsNotExist(statErr){
-            fmt.Fprintf(os.Stderr, "Warning: Could not access cache directory at %s: %v\n", cacheBaseDir, statErr)
-        }
+		} else if !os.IsNotExist(statErr) {
+			fmt.Fprintf(os.Stderr, "Warning: Could not access cache directory at %s: %v\n", cacheBaseDir, statErr)
+		}
 
 		// 3. Targeted Remote Query if query is <org>/<appName> - SourceRank = 2
 		var queryOrg, queryAppName string // Renamed variables

@@ -70,7 +70,6 @@ func TestGetGitRemoteOriginInfo(t *testing.T) {
 		assert.Equal(t, "repo.with.dots", repo)
 	})
 
-
 	t.Run("no .git/config file", func(t *testing.T) {
 		tmpDir := t.TempDir() // No .git/config created
 		_, _, err := GetGitRemoteOriginInfo(tmpDir)

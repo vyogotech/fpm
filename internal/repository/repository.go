@@ -17,11 +17,11 @@ import (
 
 // PackageVersionMetadata holds metadata for a specific version of a package.
 type PackageVersionMetadata struct {
-	FPMPath          string       `json:"fpm_path"`
-	ChecksumSHA256   string       `json:"checksum_sha256"`
-	ReleaseDate      string       `json:"release_date,omitempty"`
-	Dependencies     []Dependency `json:"dependencies,omitempty"`
-	Notes            string       `json:"notes,omitempty"`
+	FPMPath        string       `json:"fpm_path"`
+	ChecksumSHA256 string       `json:"checksum_sha256"`
+	ReleaseDate    string       `json:"release_date,omitempty"`
+	Dependencies   []Dependency `json:"dependencies,omitempty"`
+	Notes          string       `json:"notes,omitempty"`
 }
 
 // Dependency defines a package dependency.
@@ -33,10 +33,10 @@ type Dependency struct {
 
 // PackageMetadata is the structure of package-metadata.json from a repository.
 type PackageMetadata struct {
-	Org           string                          `json:"org"`
-	AppName       string                          `json:"appName"`
-	Description   string                          `json:"description,omitempty"`
-	LatestVersion string                          `json:"latest_version,omitempty"`
+	Org           string                            `json:"org"`
+	AppName       string                            `json:"appName"`
+	Description   string                            `json:"description,omitempty"`
+	LatestVersion string                            `json:"latest_version,omitempty"`
 	Versions      map[string]PackageVersionMetadata `json:"versions"`
 }
 
@@ -138,7 +138,7 @@ func FindPackageInRepos(cfg *config.FPMConfig, org, appName, requestedVersion st
 			return nil, fmt.Errorf("failed to get user home directory: %w", err)
 		}
 		fpmBaseDir := filepath.Join(homeDir, ".fpm")
-		fpmFileName := filepath.Base(versionMeta.FPMPath) // Extract filename from FPMPath
+		fpmFileName := filepath.Base(versionMeta.FPMPath)                                      // Extract filename from FPMPath
 		cacheDir := filepath.Join(fpmBaseDir, "cache", repo.Name, org, appName, targetVersion) // Use org, appName for path
 		cachedFPMPath := filepath.Join(cacheDir, fpmFileName)
 
@@ -200,7 +200,6 @@ func FindPackageInRepos(cfg *config.FPMConfig, org, appName, requestedVersion st
 		closeOutErr := outFile.Close()
 		closeBodyErr := fpmResp.Body.Close()
 
-
 		if copyErr != nil {
 			fmt.Fprintf(os.Stderr, "Failed to write FPM file to cache %s: %v\n", cachedFPMPath, copyErr)
 			os.Remove(cachedFPMPath) // Attempt to clean up partial download
@@ -212,8 +211,8 @@ func FindPackageInRepos(cfg *config.FPMConfig, org, appName, requestedVersion st
 			// For now, we'll proceed but this could be made a hard error.
 		}
 		if closeBodyErr != nil {
-             fmt.Fprintf(os.Stderr, "Failed to close FPM download response body for %s: %v\n", fpmDownloadURL, closeBodyErr)
-        }
+			fmt.Fprintf(os.Stderr, "Failed to close FPM download response body for %s: %v\n", fpmDownloadURL, closeBodyErr)
+		}
 
 		fmt.Printf("Successfully downloaded %s.\n", fpmFileName)
 

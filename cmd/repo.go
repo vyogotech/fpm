@@ -8,7 +8,7 @@ import (
 
 var repoCmd = &cobra.Command{
 	Use:   "repo",
-	Short: "Manage FPM repositories", // Updated short description
+	Short: "Manage FPM repositories",                                // Updated short description
 	Long:  `Add, list, remove, or update FPM package repositories.`, // Updated long description
 	// No Run function for the base 'repo' command itself, it's a group.
 }

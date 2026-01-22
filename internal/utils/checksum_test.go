@@ -76,7 +76,7 @@ func TestCalculateDirectoryChecksum(t *testing.T) {
 	t.Run("directory with nested files", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		files := map[string]string{
-			"file1.txt":     "hello world",
+			"file1.txt":        "hello world",
 			"subdir/file2.txt": "foo bar",
 			"subdir/file3.txt": "another file",
 		}
@@ -133,17 +133,16 @@ func TestCalculateDirectoryChecksum(t *testing.T) {
 	t.Run("ignoreFileName directory works", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		files := map[string]string{
-			"file1.txt":        "hello world",
+			"file1.txt":                       "hello world",
 			"ignored_dir/file_in_ignored.txt": "content",
-			"ignored_dir/sub/another.txt": "more content",
-			"subdir/file2.txt": "foo bar",
+			"ignored_dir/sub/another.txt":     "more content",
+			"subdir/file2.txt":                "foo bar",
 		}
 		// explicitly create ignored_dir as a directory, even if createTestDir might infer it
 		createTestDir(t, files, tmpDir)
 		if err := os.MkdirAll(filepath.Join(tmpDir, "ignored_dir"), 0755); err != nil {
 			t.Fatal(err)
 		}
-
 
 		checksumWithIgnore, err := CalculateDirectoryChecksum(tmpDir, "ignored_dir")
 		if err != nil {
@@ -164,7 +163,6 @@ func TestCalculateDirectoryChecksum(t *testing.T) {
 			t.Errorf("Expected checksum with ignore to be %s, got %s", checksumExpected, checksumWithIgnore)
 		}
 	})
-
 
 	t.Run("changing file content changes checksum", func(t *testing.T) {
 		tmpDir := t.TempDir()
@@ -283,11 +281,10 @@ func TestCalculateDirectoryChecksum(t *testing.T) {
 		}
 	})
 
-
 	t.Run("symlink handling", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		files := map[string]string{
-			"target.txt": "this is the target",
+			"target.txt":          "this is the target",
 			"realdir/another.txt": "real file",
 		}
 		createTestDir(t, files, tmpDir)
@@ -310,7 +307,6 @@ func TestCalculateDirectoryChecksum(t *testing.T) {
 			return
 		}
 
-
 		checksum1, err := CalculateDirectoryChecksum(tmpDir, "")
 		if err != nil {
 			t.Fatalf("CalculateDirectoryChecksum failed for symlink case: %v", err)
@@ -322,8 +318,8 @@ func TestCalculateDirectoryChecksum(t *testing.T) {
 		// Create same structure but change symlink target path
 		tmpDir2 := t.TempDir()
 		files2 := map[string]string{
-			"target.txt": "this is the target", // Content is the same
-			"target_new.txt": "new target",    // Symlink will point here
+			"target.txt":          "this is the target", // Content is the same
+			"target_new.txt":      "new target",         // Symlink will point here
 			"realdir/another.txt": "real file",
 		}
 		createTestDir(t, files2, tmpDir2)
@@ -335,7 +331,6 @@ func TestCalculateDirectoryChecksum(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create dir symlink in tmpDir2: %v", err)
 		}
-
 
 		checksum2, err := CalculateDirectoryChecksum(tmpDir2, "")
 		if err != nil {
@@ -352,7 +347,7 @@ func TestCalculateDirectoryChecksum(t *testing.T) {
 		// Current implementation hashes link target path, so it should NOT change.
 		tmpDir3 := t.TempDir()
 		files3 := map[string]string{
-			"target.txt": "content has changed here", // Symlink still points to "target.txt" by name
+			"target.txt":          "content has changed here", // Symlink still points to "target.txt" by name
 			"realdir/another.txt": "real file",
 		}
 		createTestDir(t, files3, tmpDir3)
@@ -392,7 +387,9 @@ func TestCalculateDirectoryChecksum(t *testing.T) {
 		}
 		createTestDir(t, files1, tmpDir1)
 		checksum1, err := CalculateDirectoryChecksum(tmpDir1, "")
-		if err != nil {t.Fatalf("Error calc checksum1: %v", err)}
+		if err != nil {
+			t.Fatalf("Error calc checksum1: %v", err)
+		}
 
 		tmpDir2 := t.TempDir()
 		// Order: a, then b
@@ -402,7 +399,9 @@ func TestCalculateDirectoryChecksum(t *testing.T) {
 		}
 		createTestDir(t, files2, tmpDir2)
 		checksum2, err := CalculateDirectoryChecksum(tmpDir2, "")
-		if err != nil {t.Fatalf("Error calc checksum2: %v", err)}
+		if err != nil {
+			t.Fatalf("Error calc checksum2: %v", err)
+		}
 
 		if checksum1 != checksum2 {
 			t.Errorf("Checksums differed based on file creation order. Got %s and %s. Paths should be sorted.", checksum1, checksum2)

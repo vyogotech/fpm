@@ -139,7 +139,7 @@ from the local FPM store, then from remote repositories.`,
 				return fmt.Errorf("invalid remote package identifier: Org ('%s') and AppName ('%s') must be specified in '%s'", parsedOrg, parsedAppName, packagePathArg)
 			}
 
-			appOrg = parsedOrg     // Use renamed variables
+			appOrg = parsedOrg      // Use renamed variables
 			appName = parsedAppName // Use renamed variables
 			initialRequestedVersion := parsedVersion
 
@@ -165,8 +165,8 @@ from the local FPM store, then from remote repositories.`,
 						foundLocally = true
 					}
 				} else if !os.IsNotExist(readDirErr) {
-                    fmt.Fprintf(os.Stderr, "Warning: could not read local versions for %s/%s: %v\n", appOrg, appName, readDirErr)
-                }
+					fmt.Fprintf(os.Stderr, "Warning: could not read local versions for %s/%s: %v\n", appOrg, appName, readDirErr)
+				}
 				if !foundLocally {
 					fmt.Printf("No suitable version for %s/%s found in local store. Will try remote repositories with version hint '%s'.\n", appOrg, appName, initialRequestedVersion)
 				}
@@ -189,7 +189,7 @@ from the local FPM store, then from remote repositories.`,
 
 				searchVersionForRemote := initialRequestedVersion
 				if initialRequestedVersion == "" {
-				    searchVersionForRemote = "latest"
+					searchVersionForRemote = "latest"
 				}
 
 				downloadedPkgInfo, findErr := repository.FindPackageInRepos(cfg, appOrg, appName, searchVersionForRemote)
@@ -273,11 +273,11 @@ from the local FPM store, then from remote repositories.`,
 		if info, err := os.Stat(compiledAssetsInStore); err == nil && info.IsDir() {
 			fmt.Printf("Detected 'compiled_assets' in package. Deploying to bench assets...\n")
 			targetAssetsPath := filepath.Join(absBenchPath, "sites", "assets", appName)
-			
+
 			if err := os.MkdirAll(targetAssetsPath, 0755); err != nil {
 				return fmt.Errorf("failed to create target assets directory '%s': %w", targetAssetsPath, err)
 			}
-			
+
 			if err := copyDirContents(compiledAssetsInStore, targetAssetsPath); err != nil {
 				return fmt.Errorf("failed to deploy compiled assets to '%s': %w", targetAssetsPath, err)
 			}

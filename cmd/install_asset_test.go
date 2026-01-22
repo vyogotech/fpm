@@ -48,12 +48,14 @@ func TestInstallCommand_AssetDeployment(t *testing.T) {
 	mockBenchPath := filepath.Join(tempBaseDir, "mockbench")
 	require.NoError(t, os.MkdirAll(filepath.Join(mockBenchPath, "apps"), 0755))
 	require.NoError(t, os.MkdirAll(filepath.Join(mockBenchPath, "sites", "assets"), 0755))
-	
+
 	// Mock Pip
 	mockPipDir := filepath.Join(mockBenchPath, "env", "bin")
 	require.NoError(t, os.MkdirAll(mockPipDir, 0755))
 	mockPipPath := filepath.Join(mockPipDir, "pip")
-	if runtime.GOOS == "windows" { mockPipPath += ".exe" }
+	if runtime.GOOS == "windows" {
+		mockPipPath += ".exe"
+	}
 	require.NoError(t, os.WriteFile(mockPipPath, []byte("#!/bin/sh\nexit 0"), 0755))
 
 	// Mock FPM Storage
@@ -71,7 +73,7 @@ func TestInstallCommand_AssetDeployment(t *testing.T) {
 
 	// --- Verification ---
 	deployedAssetsPath := filepath.Join(mockBenchPath, "sites", "assets", testAppName)
-	
+
 	// Check main.min.js
 	jsFile := filepath.Join(deployedAssetsPath, "js", "main.min.js")
 	_, err = os.Stat(jsFile)

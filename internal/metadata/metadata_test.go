@@ -34,11 +34,11 @@ func TestLoadAppMetadata(t *testing.T) {
 		PackageName:         "test_app",
 		PackageVersion:      "0.0.1",
 		Dependencies:        map[string]string{"frappe": "13.0.0"},
-		FrappeCompatibility: make([]string, 0), // Should match initialized empty slice
+		FrappeCompatibility: make([]string, 0),       // Should match initialized empty slice
 		Hooks:               make(map[string]string), // Should match initialized empty map
-		SourceControlURL:    "", // Expect zero value if not in JSON
-		PackageType:         "", // Expect zero value if not in JSON
-		ContentChecksum:     "", // Expect zero value if not in JSON
+		SourceControlURL:    "",                      // Expect zero value if not in JSON
+		PackageType:         "",                      // Expect zero value if not in JSON
+		ContentChecksum:     "",                      // Expect zero value if not in JSON
 	}
 	if !reflect.DeepEqual(loadedMeta, expectedMeta) {
 		t.Errorf("Loaded metadata mismatch. Got %#v, want %#v", loadedMeta, expectedMeta) // Using %#v for more detail
@@ -58,22 +58,21 @@ func TestLoadAppMetadata(t *testing.T) {
 	if emptyMeta.PackageName != "" || emptyMeta.PackageVersion != "" { // Should be empty
 		t.Errorf("Expected empty metadata for non-existent file, got %+v", emptyMeta)
 	}
-    if emptyMeta.Dependencies == nil { // Should be initialized map, not nil
-        t.Errorf("Expected initialized Dependencies map, got nil")
-    }
-
+	if emptyMeta.Dependencies == nil { // Should be initialized map, not nil
+		t.Errorf("Expected initialized Dependencies map, got nil")
+	}
 
 	// Case 3: app_metadata.json is malformed
 	malformedMetadataContent := `{"packageName": "test_malformed",` // Missing closing brace
 	// Need to create a new dir for this specific test, or ensure LoadAppMetadata loads by specific filename
-    // For simplicity, let's assume LoadAppMetadata loads "app_metadata.json" from the given dir.
-    // So, we'll create a new temp dir for this test.
-    malformedDir, err := os.MkdirTemp("", "test-malformed-")
-    if err != nil {
-        t.Fatalf("Failed to create temp dir for malformed test: %v", err)
-    }
-    defer os.RemoveAll(malformedDir)
-    malformedFilePath := filepath.Join(malformedDir, "app_metadata.json")
+	// For simplicity, let's assume LoadAppMetadata loads "app_metadata.json" from the given dir.
+	// So, we'll create a new temp dir for this test.
+	malformedDir, err := os.MkdirTemp("", "test-malformed-")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir for malformed test: %v", err)
+	}
+	defer os.RemoveAll(malformedDir)
+	malformedFilePath := filepath.Join(malformedDir, "app_metadata.json")
 
 	if err := os.WriteFile(malformedFilePath, []byte(malformedMetadataContent), 0644); err != nil {
 		t.Fatalf("Failed to write malformed metadata file: %v", err)
@@ -105,15 +104,15 @@ func TestGenerateAppMetadata(t *testing.T) {
 	if generatedMeta.PackageVersion != version {
 		t.Errorf("Generated package version mismatch. Got %s, want %s", generatedMeta.PackageVersion, version)
 	}
-    if generatedMeta.Dependencies == nil {
-        t.Errorf("Generated metadata Dependencies should not be nil")
-    }
-    if generatedMeta.FrappeCompatibility == nil {
-        t.Errorf("Generated metadata FrappeCompatibility should not be nil")
-    }
-    if generatedMeta.Hooks == nil {
-        t.Errorf("Generated metadata Hooks should not be nil")
-    }
+	if generatedMeta.Dependencies == nil {
+		t.Errorf("Generated metadata Dependencies should not be nil")
+	}
+	if generatedMeta.FrappeCompatibility == nil {
+		t.Errorf("Generated metadata FrappeCompatibility should not be nil")
+	}
+	if generatedMeta.Hooks == nil {
+		t.Errorf("Generated metadata Hooks should not be nil")
+	}
 }
 
 func TestSaveAndLoadAppMetadata(t *testing.T) {
@@ -124,15 +123,15 @@ func TestSaveAndLoadAppMetadata(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	metaToSave := &AppMetadata{
-		PackageName:    "saved_app",
-		PackageVersion: "1.0.0",
-		Description:    "A test app",
-		Dependencies:   map[string]string{"frappe": "14.0.0"},
-        FrappeCompatibility: []string{"14.x.x"},
-        Hooks: map[string]string{"install": "install.py"},
-        SourceControlURL: "https://github.com/test/app.git",
-        PackageType: "prod",
-        ContentChecksum: "dummychecksum123abc",
+		PackageName:         "saved_app",
+		PackageVersion:      "1.0.0",
+		Description:         "A test app",
+		Dependencies:        map[string]string{"frappe": "14.0.0"},
+		FrappeCompatibility: []string{"14.x.x"},
+		Hooks:               map[string]string{"install": "install.py"},
+		SourceControlURL:    "https://github.com/test/app.git",
+		PackageType:         "prod",
+		ContentChecksum:     "dummychecksum123abc",
 	}
 
 	err = SaveAppMetadata(tmpDir, metaToSave)

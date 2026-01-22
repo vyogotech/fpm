@@ -10,16 +10,16 @@ import (
 
 // RepositoryConfig defines the structure for a single FPM repository configuration.
 type RepositoryConfig struct {
-	Name     string `json:"name"`      // User-defined unique name for the repository
-	URL      string `json:"url"`       // Base URL of the FPM repository
-	Priority int    `json:"priority"`  // Lower numbers mean higher priority
+	Name     string `json:"name"`     // User-defined unique name for the repository
+	URL      string `json:"url"`      // Base URL of the FPM repository
+	Priority int    `json:"priority"` // Lower numbers mean higher priority
 }
 
 // FPMConfig defines the structure for FPM's configuration.
 type FPMConfig struct {
-	AppsBasePath             string                        `json:"apps_base_path,omitempty"`
+	AppsBasePath             string                      `json:"apps_base_path,omitempty"`
 	Repositories             map[string]RepositoryConfig `json:"repositories,omitempty"`
-	DefaultPublishRepository string                        `json:"default_publish_repository,omitempty"`
+	DefaultPublishRepository string                      `json:"default_publish_repository,omitempty"`
 }
 
 // LoadConfig loads the FPM configuration from a predefined path.

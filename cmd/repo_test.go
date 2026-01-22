@@ -33,7 +33,6 @@ func setupTempFPMConfig(t *testing.T) (string, func()) {
 		currentHome = os.Getenv("USERPROFILE")
 	}
 
-
 	// Ensure config is initialized within this new temp home
 	// This will create ~/.fpm/config.json in the temp home dir
 	_, err := config.InitConfig()
@@ -66,33 +65,31 @@ func setupTempFPMConfig(t *testing.T) (string, func()) {
 
 // executeCommand is now SharedExecuteCommand in common_test.go
 
-
 func TestRepoAddCmd(t *testing.T) {
 	tempHome, cleanup := setupTempFPMConfig(t)
 	defer cleanup()
 
 	t.Logf("TestRepoAddCmd using temp home: %s", tempHome)
 
-
 	testCases := []struct {
-		name        string
-		args        []string
-		expectedOut string
-		expectErr   bool
+		name         string
+		args         []string
+		expectedOut  string
+		expectErr    bool
 		repoToVerify *config.RepositoryConfig // For verification after successful add
 	}{
 		{
-			name:        "add new repo",
-			args:        []string{"repo", "add", "central", "http://localhost:8080/fpm-repo", "--priority", "10"},
-			expectedOut: "Repository 'central' (http://localhost:8080/fpm-repo) added successfully with priority 10.",
-			expectErr:   false,
+			name:         "add new repo",
+			args:         []string{"repo", "add", "central", "http://localhost:8080/fpm-repo", "--priority", "10"},
+			expectedOut:  "Repository 'central' (http://localhost:8080/fpm-repo) added successfully with priority 10.",
+			expectErr:    false,
 			repoToVerify: &config.RepositoryConfig{Name: "central", URL: "http://localhost:8080/fpm-repo", Priority: 10},
 		},
 		{
-			name:        "add repo with default priority",
-			args:        []string{"repo", "add", "local", "file:///var/tmp/fpm-repo"},
-			expectedOut: "Repository 'local' (file:///var/tmp/fpm-repo) added successfully with priority 0.",
-			expectErr:   false,
+			name:         "add repo with default priority",
+			args:         []string{"repo", "add", "local", "file:///var/tmp/fpm-repo"},
+			expectedOut:  "Repository 'local' (file:///var/tmp/fpm-repo) added successfully with priority 0.",
+			expectErr:    false,
 			repoToVerify: &config.RepositoryConfig{Name: "local", URL: "file:///var/tmp/fpm-repo", Priority: 0},
 		},
 		{
@@ -117,14 +114,13 @@ func TestRepoAddCmd(t *testing.T) {
 			// Reset package-level variable repoAddPriority before each relevant command execution
 			// This is crucial because it's not reset automatically by Cobra for package-level vars.
 			originalRepoAddPriority := repoAddPriority // Save to restore if needed, though not strictly necessary here
-			repoAddPriority = 0 // Reset to its default value (as defined by its flag)
+			repoAddPriority = 0                        // Reset to its default value (as defined by its flag)
 
 			// Also reset the flag value in the command's flagset to its default.
 			// This ensures that if a previous test case set it, it doesn't persist for cases that don't set it.
 			if repoAddCmd.Flags().Lookup("priority") != nil {
 				repoAddCmd.Flags().Lookup("priority").Value.Set(repoAddCmd.Flags().Lookup("priority").DefValue)
 			}
-
 
 			output, err := SharedExecuteCommand(rootCmd, tc.args...)
 
@@ -156,7 +152,6 @@ func TestRepoListCmd(t *testing.T) {
 	defer cleanup()
 	t.Logf("TestRepoListCmd using temp home: %s", tempHome)
 
-
 	// Initial list: should be empty
 	output, err := SharedExecuteCommand(rootCmd, "repo", "list")
 	require.NoError(t, err)
@@ -182,7 +177,6 @@ func TestRepoListCmd(t *testing.T) {
 	resetAddCmd()
 	_, err = SharedExecuteCommand(rootCmd, "repo", "add", "repo3", "url3") // Default priority 0
 	require.NoError(t, err)
-
 
 	// List again
 	output, err = SharedExecuteCommand(rootCmd, "repo", "list")
