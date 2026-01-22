@@ -161,7 +161,7 @@ If no query is provided, it lists all packages found in the local store and cach
 					}
 
 					if pkgMatch {
-						for ver, _ := range pkgMeta.Versions { // verMeta not used here
+						for ver := range pkgMeta.Versions { // verMeta not used here
 							newItem := SearchResultItem{
 								Source: fmt.Sprintf("(cache: %s)", repoNameFromPath), Org: pkgMeta.Org, AppName: pkgMeta.AppName, // Use new fields
 								Version: ver, Description: pkgMeta.Description,
@@ -208,7 +208,7 @@ If no query is provided, it lists all packages found in the local store and cach
 					continue
 				}
 				if metadataFound && remotePkgMeta != nil { // Metadata found and parsed
-					for versionStr, _ := range remotePkgMeta.Versions {
+					for versionStr := range remotePkgMeta.Versions {
 						newItem := SearchResultItem{
 							Source:      fmt.Sprintf("(remote: %s)", repo.Name),
 							Org:         remotePkgMeta.Org,     // Use new field

@@ -20,8 +20,8 @@ endif
 all: fmt test build
 
 fmt:
-	@echo "Formatting code..."
-	go fmt ./...
+	@echo "Formatting and simplifying code..."
+	@gofmt -s -w .
 
 build:
 	@echo "Building FPM binary for $(GOOS)/$(GOARCH)..."
