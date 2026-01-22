@@ -10,11 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync" // For safely accessing receivedTestData
 	"testing"
-	"time"
 
 	"fpm/internal/config"
 	"fpm/internal/metadata"
@@ -56,7 +54,9 @@ func createDummyFPMForPublishing(t *testing.T, targetDir, appOrg, appName, appVe
 
 	// Add app module directory and a file in it
 	appModuleDirEntry := fmt.Sprintf("%s/", appName)
-	_, err = zipWriter.CreateHeader(&zip.FileHeader{Name: appModuleDirEntry, Mode: 0o755 | os.ModeDir})
+	header := &zip.FileHeader{Name: appModuleDirEntry}
+	header.SetMode(0o755 | os.ModeDir)
+	_, err = zipWriter.CreateHeader(header)
 	require.NoError(t, err)
 
 	hooksContent := fmt.Sprintf("app_name = \"%s\"\n", appName)
@@ -109,8 +109,8 @@ func TestPublishCommand(t *testing.T) {
 	defer mockRepoServer.Close()
 
 	// Add mock repo to config
-	resetRepoCmdFlags()
-	_, err = executeCommand(rootCmd, "repo", "add", "mockpublishrepo", mockRepoServer.URL)
+	SharedResetRepoCmdFlags()
+	_, err = SharedExecuteCommand(rootCmd, "repo", "add", "mockpublishrepo", mockRepoServer.URL)
 	require.NoError(t, err)
 
 	// --- Test Cases ---
@@ -144,7 +144,7 @@ func TestPublishCommand(t *testing.T) {
 
 
 		args := []string{"publish", "--from-file", dummyFPMPath, "--repo", "mockpublishrepo"}
-		output, err := executeCommand(rootCmd, args...)
+		output, err := SharedExecuteCommand(rootCmd, args...)
 		t.Logf("PublishFromFile output: %s", output)
 		require.NoError(t, err)
 		assert.Contains(t, output, "Successfully published package")
@@ -179,14 +179,14 @@ func TestPublishCommand(t *testing.T) {
 		// 1. Package and install to local store first
 		sourceAppDir, _ := os.MkdirTemp("", "sourceapp-publocal-*")
 		defer os.RemoveAll(sourceAppDir)
-		createMinimalFrappeApp(t, sourceAppDir, testAppName, testAppVersion, testOrg) // Using helper from install_test
+		SharedCreateMinimalAppForInstall(t, sourceAppDir, testAppName, testAppVersion, testOrg) // Using helper from install_test
 
 		packageOutputDir, _ := os.MkdirTemp("", "fpmoutput-publocal-*")
 		defer os.RemoveAll(packageOutputDir)
 
 		resetPackageCmdFlags()
 		packageSkipLocalInstall = false // Ensure it installs locally
-		_, err := executeCommand(rootCmd, "package", sourceAppDir, "--output-path", packageOutputDir, "--version", testAppVersion, "--org", testOrg, "--app-name", testAppName)
+		_, err := SharedExecuteCommand(rootCmd, "package", sourceAppDir, "--output-path", packageOutputDir, "--version", testAppVersion, "--org", testOrg, "--app-name", testAppName)
 		require.NoError(t, err)
 
 		// Clear server state for this app
@@ -208,7 +208,7 @@ func TestPublishCommand(t *testing.T) {
 		}
 
 		args := []string{"publish", fmt.Sprintf("%s/%s==%s", testOrg, testAppName, testAppVersion), "--repo", "mockpublishrepo"}
-		output, err := executeCommand(rootCmd, args...)
+		output, err := SharedExecuteCommand(rootCmd, args...)
 		t.Logf("PublishFromLocalStore output: %s", output)
 		require.NoError(t, err)
 		assert.Contains(t, output, "Successfully published package")
@@ -222,7 +222,7 @@ func TestPublishCommand(t *testing.T) {
 		if found {
 			var remoteMeta repository.PackageMetadata
 			json.Unmarshal(metaDataBytes.([]byte), &remoteMeta)
-			assert.Equal(t, testAppVersion, remoteMeta.Versions[testAppVersion].FPMPath.Split('/')[2])
+			assert.Equal(t, testAppVersion, strings.Split(remoteMeta.Versions[testAppVersion].FPMPath, "/")[2])
 		}
 	})
 
@@ -232,8 +232,8 @@ func TestPublishCommand(t *testing.T) {
 		dummyFPMPath := createDummyFPMForPublishing(t, tempPackageDir, testOrg, "defaultrepoapp", "1.0.0", "dummychecksum_default")
 
 		// Set default repo
-		resetRepoCmdFlags()
-		_, err := executeCommand(rootCmd, "repo", "default", "mockpublishrepo")
+		SharedResetRepoCmdFlags()
+		_, err := SharedExecuteCommand(rootCmd, "repo", "default", "mockpublishrepo")
 		require.NoError(t, err)
 
 		// Publish without --repo flag
@@ -247,7 +247,7 @@ func TestPublishCommand(t *testing.T) {
 			publishCmd.Flags().Lookup("from-file").Value.Set("")
 		}
 		args := []string{"publish", "--from-file", dummyFPMPath}
-		output, err := executeCommand(rootCmd, args...)
+		output, err := SharedExecuteCommand(rootCmd, args...)
 		t.Logf("PublishToDefaultRepo output: %s", output)
 		require.NoError(t, err)
 		assert.Contains(t, output, "Successfully published package")
@@ -279,7 +279,7 @@ func TestPublishCommand(t *testing.T) {
 			publishCmd.Flags().Lookup("from-file").Value.Set("")
 		}
 		args := []string{"publish", "--from-file", dummyFPMPath, "--repo", "mockpublishrepo"}
-		output, err := executeCommand(rootCmd, args...)
+		output, err := SharedExecuteCommand(rootCmd, args...)
 		t.Logf("Error_VersionExistsOnRemote output: %s", output)
 		assert.Error(t, err)
 		if err != nil {

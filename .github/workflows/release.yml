@@ -43,13 +43,16 @@ jobs:
           fi
           echo "binary_name=${binary_name}" >> $GITHUB_OUTPUT
 
-      - name: Build FPM for ${{ matrix.platform.os }}/${{ matrix.platform.arch }}
+      - name: Build FPM for ${{ matrix.platform.os }}/${{ matrix.platform.arch }} using Makefile
         env:
           GOOS: ${{ matrix.platform.os }}
           GOARCH: ${{ matrix.platform.arch }}
+          BUILD_DIR: .
+          BINARY_NAME: ${{ steps.set_name.outputs.binary_name }}
         run: |
           echo "Building for $GOOS/$GOARCH..."
-          go build -v -o ${{ steps.set_name.outputs.binary_name }} ./cmd/fpm/main.go
+          make build
+          # Makefile might add .exe to binary_name if GOOS is windows, but set_name already handled it
           echo "Build complete: ${{ steps.set_name.outputs.binary_name }}"
 
       - name: Generate SHA256 checksum

@@ -1,0 +1,62 @@
+[
+    {
+        "org": "frappe",
+        "name": "erpnext",
+        "url": "https://github.com/frappe/erpnext",
+        "version": "15.0.0"
+    },
+    {
+        "org": "frappe",
+        "name": "frappe",
+        "url": "https://github.com/frappe/frappe",
+        "version": "15.0.0"
+    },
+    {
+        "org": "frappe",
+        "name": "hrms",
+        "url": "https://github.com/frappe/hrms",
+        "version": "15.0.0"
+    },
+    {
+        "org": "frappe",
+        "name": "payments",
+        "url": "https://github.com/frappe/payments",
+        "version": "1.0.0"
+    },
+    {
+        "org": "frappe",
+        "name": "builder",
+        "url": "https://github.com/frappe/builder",
+        "version": "1.0.0"
+    },
+    {
+        "org": "frappe",
+        "name": "gameplan",
+        "url": "https://github.com/frappe/gameplan",
+        "version": "1.0.0"
+    },
+    {
+        "org": "frappe",
+        "name": "insights",
+        "url": "https://github.com/frappe/insights",
+        "version": "1.0.0"
+    },
+    {
+        "org": "frappe",
+        "name": "wiki",
+        "url": "https://github.com/frappe/wiki",
+        "version": "1.0.0"
+    },
+    {
+        "org": "frappe",
+        "name": "helpdesk",
+        "url": "https://github.com/frappe/helpdesk",
+        "version": "1.0.0"
+    },
+    {
+        "org": "frappe",
+        "name": "crm",
+        "url": "https://github.com/frappe/crm",
+        "version": "1.0.0"
+    }
+]

@@ -42,6 +42,11 @@ func LoadConfig() (*FPMConfig, error) {
 		Repositories: make(map[string]RepositoryConfig),
 	}
 
+	// Override with environment variable if present
+	if envPath := os.Getenv("FPM_APPS_BASE_PATH"); envPath != "" {
+		conf.AppsBasePath = envPath
+	}
+
 	// Check if config file exists
 	_, err = os.Stat(configFilePath)
 	if os.IsNotExist(err) {
@@ -71,12 +76,14 @@ func LoadConfig() (*FPMConfig, error) {
 	}
 
 	// Post-unmarshal checks: if critical fields are empty, revert to default.
-	if conf.AppsBasePath == "" {
-		conf.AppsBasePath = defaultAppsBasePath
-	}
 	// Ensure Repositories map is not nil if it was missing in JSON
 	if conf.Repositories == nil {
 		conf.Repositories = make(map[string]RepositoryConfig)
+	}
+
+	// Environment variable takes precedence over config file
+	if envPath := os.Getenv("FPM_APPS_BASE_PATH"); envPath != "" {
+		conf.AppsBasePath = envPath
 	}
 
 	return conf, nil

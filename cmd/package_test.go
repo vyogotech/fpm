@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 	"runtime" // For OS-specific HOME for setupTempFPMConfig
-	"bytes"   // For executeCommand buffer
 
 	"fpm/internal/metadata"
 	"fpm/internal/config" // For FPM_APPS_BASE_PATH logic
@@ -215,46 +214,7 @@ func createMockHooksFile(t *testing.T, appModuleDir, appNameVarContent string) {
 	require.NoError(t, os.WriteFile(filepath.Join(appModuleDir, "hooks.py"), []byte(hooksContent), 0644), "Failed to write hooks.py")
 }
 
-func readMetadataFromFpm(t *testing.T, fpmFilePath string) (*metadata.AppMetadata, error) {
-	t.Helper()
-	unzipDir := t.TempDir()
-
-	r, err := zip.OpenReader(fpmFilePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open fpm package %s: %w", fpmFilePath, err)
-	}
-	defer r.Close()
-
-	for _, f := range r.File {
-		fpath := filepath.Join(unzipDir, f.Name)
-		if !strings.HasPrefix(fpath, filepath.Clean(unzipDir)+string(os.PathSeparator)) {
-			return nil, fmt.Errorf("illegal file path in zip: %s", f.Name)
-		}
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(fpath, os.ModePerm)
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
-			return nil, fmt.Errorf("failed to create directory for %s: %w", fpath, err)
-		}
-		outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-		if err != nil {
-			return nil, fmt.Errorf("failed to open file for writing %s: %w", fpath, err)
-		}
-		rc, err := f.Open()
-		if err != nil {
-			outFile.Close()
-			return nil, fmt.Errorf("failed to open file in zip %s: %w", f.Name, err)
-		}
-		_, err = io.Copy(outFile, rc)
-		outFile.Close()
-		rc.Close()
-		if err != nil {
-			return nil, fmt.Errorf("failed to copy content of %s: %w", f.Name, err)
-		}
-	}
-	return metadata.LoadAppMetadata(unzipDir)
-}
+// readMetadataFromFpm is now SharedReadMetadataFromFpm in common_test.go
 
 func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 	if testing.Short() {
@@ -307,7 +267,7 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 		require.NoError(t, executeErr, "fpm package command failed")
 		expectedFpmFilePath := filepath.Join(outputDir, "app_from_hooks-0.0.1.fpm")
 		assert.FileExists(t, expectedFpmFilePath)
-		meta, err := readMetadataFromFpm(t, expectedFpmFilePath)
+		meta, err := SharedReadMetadataFromFpm(t, expectedFpmFilePath)
 		require.NoError(t, err)
 		assert.Equal(t, "test-derived-org", meta.Org)
 		assert.Equal(t, "app_from_hooks", meta.AppName)
@@ -340,7 +300,7 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 		require.NoError(t, executeErr)
 		expectedFpmFilePath := filepath.Join(outputDir, "actual-repo-name-0.0.2.fpm")
 		assert.FileExists(t, expectedFpmFilePath)
-		meta, err := readMetadataFromFpm(t, expectedFpmFilePath)
+		meta, err := SharedReadMetadataFromFpm(t, expectedFpmFilePath)
 		require.NoError(t, err)
 		assert.Equal(t, "test-org", meta.Org)
 		assert.Equal(t, "actual-repo-name", meta.AppName)
@@ -372,7 +332,7 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 		require.NoError(t, executeErr)
 		expectedFpmFilePath := filepath.Join(outputDir, "flag-app-0.0.3.fpm")
 		assert.FileExists(t, expectedFpmFilePath)
-		meta, err := readMetadataFromFpm(t, expectedFpmFilePath)
+		meta, err := SharedReadMetadataFromFpm(t, expectedFpmFilePath)
 		require.NoError(t, err)
 		assert.Equal(t, "flag-org", meta.Org)
 		assert.Equal(t, "flag-app", meta.AppName)
@@ -428,7 +388,7 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 		require.NoError(t, executeErr)
 		expectedFpmFilePath := filepath.Join(outputDir, "flag-appname-0.0.5.fpm")
 		assert.FileExists(t, expectedFpmFilePath)
-		meta, err := readMetadataFromFpm(t, expectedFpmFilePath)
+		meta, err := SharedReadMetadataFromFpm(t, expectedFpmFilePath)
 		require.NoError(t, err)
 		assert.Equal(t, "derived-org-for-flagtest", meta.Org)
 		assert.Equal(t, "flag-appname", meta.AppName)
@@ -443,12 +403,14 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 
 // Helper to run package command and return metadata
 // This simplifies running the command and then immediately getting metadata.
+// Helper to run package command and return metadata
+// This simplifies running the command and then immediately getting metadata.
 func runPackageAndGetMeta(t *testing.T, sourceDir string, appName string, version string, pkgType string, extraArgs ...string) (*metadata.AppMetadata, string) {
 	t.Helper()
 	resetPackageCmdFlags() // Ensure flags are clean for each run
 	outputDir := t.TempDir()
 
-	cmdArgs := []string{"package", "--version", version, "--output-path", outputDir}
+	cmdArgs := []string{"package", "--version", version, "--output-path", outputDir, "--org", "testorg"}
 	if appName != "" {
 		cmdArgs = append(cmdArgs, "--app-name", appName)
 	}
@@ -481,19 +443,10 @@ func runPackageAndGetMeta(t *testing.T, sourceDir string, appName string, versio
 	}
 	require.NoError(t, executeErr, "fpm package command failed")
 
-	// Determine appName for filename construction (app_name from flag, or inferred from source dir if flag not used)
-	// The actual app name used for the .fpm file name and metadata.PackageName
-	// is determined by complex logic (flag > hooks > git > dir).
-	// For these tests, we typically provide --app-name.
+	// Determine appName for filename construction
 	finalAppName := appName
-	if finalAppName == "" { // If --app-name not provided, it's harder to predict filename here without replicating logic.
-		// Fallback to predicting from sourceDir, but this might not match if hooks/git changed it.
-		// This part is tricky. For robust testing, we should probably try to find the generated .fpm file.
-		// Or, ensure --app-name is always passed in tests for predictability.
-		// For now, assume appName is passed if predictability is key for filename.
-		// If appName is not passed, the command might succeed but we might not find the file easily.
-		// Let's assume `appName` arg to this helper is the one that will be in the filename.
-		if appName == "" { // If appName is not passed to helper, this will fail.
+	if finalAppName == "" {
+		if appName == "" {
 			t.Fatal("appName must be provided to runPackageAndGetMeta for predictable FPM filename")
 		}
 	}
@@ -503,38 +456,14 @@ func runPackageAndGetMeta(t *testing.T, sourceDir string, appName string, versio
 	expectedFpmFilePath := filepath.Join(outputDir, fpmFileName)
 	require.FileExists(t, expectedFpmFilePath, "Expected .fpm file was not created at %s", expectedFpmFilePath)
 
-	meta, err := readMetadataFromFpm(t, expectedFpmFilePath)
+	meta, err := SharedReadMetadataFromFpm(t, expectedFpmFilePath)
 	require.NoError(t, err, "Failed to read metadata from FPM package")
 	return meta, expectedFpmFilePath
 }
 
 // createMinimalFrappeApp creates a very basic app structure for testing.
 // App name is the directory name.
-func createMinimalFrappeApp(t *testing.T, baseDir string, appName string, files map[string]string) string {
-	t.Helper()
-	sourceDir := filepath.Join(baseDir, appName+"_source") // Unique source dir name
-	appModuleDir := filepath.Join(sourceDir, appName)
-	require.NoError(t, os.MkdirAll(appModuleDir, 0755))
-
-	standardAppFiles := map[string]string{
-		"__init__.py": "",
-		"hooks.py":    fmt.Sprintf("app_name = \"%s\"", appName),
-		"modules.txt": "",
-	}
-	for fname, content := range standardAppFiles {
-		require.NoError(t, os.WriteFile(filepath.Join(appModuleDir, fname), []byte(content), 0644))
-	}
-
-	if files != nil {
-		for relPath, content := range files {
-			absPath := filepath.Join(sourceDir, relPath)
-			absDir := filepath.Dir(absPath)
-			require.NoError(t, os.MkdirAll(absDir, 0755))
-			require.NoError(t, os.WriteFile(absPath, []byte(content), 0644))
-		}
-	}
-	return sourceDir
-}
+// createMinimalFrappeApp is now SharedCreateMinimalAppForPackage in common_test.go
 
 
 func TestPackageSourceControlURL(t *testing.T) {
@@ -546,7 +475,7 @@ func TestPackageSourceControlURL(t *testing.T) {
 	version := "0.0.1"
 	gitRemoteURL := "https://github.com/test_org/test_repo.git"
 
-	sourceDir := createMinimalFrappeApp(t, baseTestDir, appName, nil)
+	sourceDir := SharedCreateMinimalAppForPackage(t, baseTestDir, appName, nil)
 	createMockGitConfig(t, sourceDir, gitRemoteURL) // This creates .git/config
 
 	// Need to init and commit for GetFullGitRemoteOriginURL to work as it might read from actual git commands or HEAD
@@ -574,7 +503,7 @@ func TestPackageTypeFlag(t *testing.T) {
 	baseTestDir := t.TempDir()
 	appName := "test_pkg_type_app"
 	version := "1.0.0"
-	sourceDir := createMinimalFrappeApp(t, baseTestDir, appName, nil)
+	sourceDir := SharedCreateMinimalAppForPackage(t, baseTestDir, appName, nil)
 
 	testCases := []struct {
 		name            string
@@ -637,16 +566,7 @@ func resetPackageCmdFlags() {
 
 // executeCommand is a helper to execute Cobra commands and capture their output.
 // Copied/adapted from repo_test.go for use here.
-func executeCommand(root *cobra.Command, args ...string) (string, error) {
-	buf := new(bytes.Buffer)
-	root.SetOut(buf)
-	root.SetErr(buf)
-	root.SetArgs(args)
-
-	err := root.Execute()
-	output := buf.String()
-	return output, err
-}
+// executeCommand is now SharedExecuteCommand in common_test.go
 
 // verifyAppInLocalStore checks if an app is correctly installed in the local FPM store.
 func verifyAppInLocalStore(t *testing.T, appsBasePath, org, appName, version string, expectExists bool, expectedFiles ...string) {
@@ -716,12 +636,15 @@ func TestPackageCmd_LocalInstallBehavior(t *testing.T) {
 	testAppVersion := "0.0.1"
 	testAppOrg := "testorg"
 
-	// Using the existing createMinimalFrappeApp from this file (package_test.go)
-	// It creates source structure like: <sourceAppDir>/<testAppName>/hooks.py
-	// This is correct for `fpm package <sourceAppDir> --app-name <testAppName>`
-	createMinimalFrappeApp(t, sourceAppDir, testAppName, map[string]string{
+	// Using the existing SharedCreateMinimalAppForPackage from common_test.go
+	// It creates source structure like: <sourceAppDir>/<testAppName>_source/<testAppName>/hooks.py
+	// We need to use the actual source directory returned by the helper.
+	actualSourceDir := SharedCreateMinimalAppForPackage(t, sourceAppDir, testAppName, map[string]string{
 		"requirements.txt": "requests", // A root file
 	})
+
+	// Correct sourceAppDir to use the returned path
+	sourceAppDir = actualSourceDir
 
 
 	t.Run("DefaultInstallsToLocalStore", func(t *testing.T) {
@@ -742,7 +665,7 @@ func TestPackageCmd_LocalInstallBehavior(t *testing.T) {
 			"--org", testAppOrg,
 			"--app-name", testAppName,
 		}
-		output, err := executeCommand(rootCmd, args...)
+		output, err := SharedExecuteCommand(rootCmd, args...)
 		t.Logf("fpm package (default install) output: %s", output)
 		require.NoError(t, err, "fpm package command failed for default local install")
 
@@ -786,7 +709,7 @@ func TestPackageCmd_LocalInstallBehavior(t *testing.T) {
 			"--app-name", testAppName,
 			"--skip-local-install", // Crucial flag for this test
 		}
-		output, err := executeCommand(rootCmd, args...)
+		output, err := SharedExecuteCommand(rootCmd, args...)
 		t.Logf("fpm package (--skip-local-install) output: %s", output)
 		require.NoError(t, err, "fpm package command failed with --skip-local-install")
 
@@ -831,7 +754,7 @@ func TestProductionExclusions(t *testing.T) {
 	for k, v := range alwaysIncludeFiles { allFilesForSource[k] = v }
 	for k, v := range prodOnlyExcludeFiles { allFilesForSource[k] = v }
 
-	sourceDir := createMinimalFrappeApp(t, baseTestDir, appName, allFilesForSource)
+	sourceDir := SharedCreateMinimalAppForPackage(t, baseTestDir, appName, allFilesForSource)
 	// createMinimalFrappeApp already creates appName/__init__.py, hooks.py, modules.txt
 
 	t.Run("prod mode applies exclusions", func(t *testing.T) {
@@ -900,7 +823,7 @@ func TestArchiveStructure(t *testing.T) {
 		// Ensure a file that might be accidentally put in app_source by old logic is tested
 		"file_at_root.txt": "should be at root",
 	}
-	sourceDir := createMinimalFrappeApp(t, baseTestDir, appName, files)
+	sourceDir := SharedCreateMinimalAppForPackage(t, baseTestDir, appName, files)
 
 	_, fpmPath := runPackageAndGetMeta(t, sourceDir, appName, version, "prod" /* any type */)
 
@@ -949,7 +872,7 @@ func TestContentChecksum(t *testing.T) {
 	modifiedContent := "new checksum content"
 
 	// Create initial app state
-	sourceDir := createMinimalFrappeApp(t, baseTestDir, appName, map[string]string{
+	sourceDir := SharedCreateMinimalAppForPackage(t, baseTestDir, appName, map[string]string{
 		initialFileRelPath:                   initialContent,
 		filepath.Join(appName, "another.py"): "some consistent code",
 	})
@@ -989,7 +912,7 @@ func TestContentChecksum(t *testing.T) {
 
 	// Verify meta4 from FPM (after packaging) has the new version, but ContentChecksum matches original (meta1)
 	// This uses the readMetadataFromFpm helper defined in this test file.
-	fpmMeta4Data, err := readMetadataFromFpm(t, fpmPath4)
+	fpmMeta4Data, err := SharedReadMetadataFromFpm(t, fpmPath4)
 	require.NoError(t, err, "Failed to read metadata from FPM for meta4 check")
 	assert.Equal(t, versionDifferentMeta, fpmMeta4Data.PackageVersion, "PackageVersion in app_metadata.json should be the new one.")
 	assert.Equal(t, meta1.ContentChecksum, fpmMeta4Data.ContentChecksum, "ContentChecksum in app_metadata.json should match original (meta1) despite other metadata changes.")

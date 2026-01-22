@@ -92,11 +92,16 @@ If no query is provided, it lists all packages found in the local store and cach
 					}
 
 					match := false
-					if query == "" { match = true
+					if query == "" {
+						match = true
 					} else {
-						if strings.Contains(strings.ToLower(appMeta.Org), query) { match = true }
-						if !match && strings.Contains(strings.ToLower(appMeta.AppName), query) { match = true }
-						if !match && strings.Contains(strings.ToLower(appMeta.Description), query) { match = true }
+						fullID := strings.ToLower(fmt.Sprintf("%s/%s", appMeta.Org, appMeta.AppName))
+						if strings.Contains(strings.ToLower(appMeta.Org), query) ||
+							strings.Contains(strings.ToLower(appMeta.AppName), query) ||
+							strings.Contains(strings.ToLower(appMeta.Description), query) ||
+							strings.Contains(fullID, query) {
+							match = true
+						}
 					}
 
 					if match {
@@ -135,11 +140,16 @@ If no query is provided, it lists all packages found in the local store and cach
 					}
 
 					pkgMatch := false
-					if query == "" { pkgMatch = true
+					if query == "" {
+						pkgMatch = true
 					} else {
-						if strings.Contains(strings.ToLower(pkgMeta.Org), query) { pkgMatch = true } // Use new field
-						if !pkgMatch && strings.Contains(strings.ToLower(pkgMeta.AppName), query) { pkgMatch = true } // Use new field
-						if !pkgMatch && strings.Contains(strings.ToLower(pkgMeta.Description), query) { pkgMatch = true }
+						fullID := strings.ToLower(fmt.Sprintf("%s/%s", pkgMeta.Org, pkgMeta.AppName))
+						if strings.Contains(strings.ToLower(pkgMeta.Org), query) ||
+							strings.Contains(strings.ToLower(pkgMeta.AppName), query) ||
+							strings.Contains(strings.ToLower(pkgMeta.Description), query) ||
+							strings.Contains(fullID, query) {
+							pkgMatch = true
+						}
 					}
 
 					if pkgMatch {

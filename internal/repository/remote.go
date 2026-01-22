@@ -253,7 +253,7 @@ func FindPackageInSpecificRepo(
 
 	fpmDownloadURL, err := url.JoinPath(repoBaseURL, versionMeta.FPMPath)
 	if err != nil {
-		return nil, fmt.Errorf("error constructing FPM download URL for %s (path: %s) on repo %s: %w", versionMeta.FPMPath, repoBaseURL, err)
+		return nil, fmt.Errorf("error constructing FPM download URL for %s (path: %s) on repo %s: %w", appName, versionMeta.FPMPath, repoBaseURL, err)
 	}
 
 	homeDir, err := os.UserHomeDir()
