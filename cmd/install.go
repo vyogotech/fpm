@@ -266,6 +266,26 @@ from the local FPM store, then from remote repositories.`,
 		}
 		fmt.Printf("Successfully symlinked app '%s' into bench.\n", appName)
 
+		// --- Automatic Asset Deployment ---
+		// Check if compiled_assets exist in the local FPM store for this version
+		baseVersionPath := filepath.Dir(appModulePathInFPMStore)
+		compiledAssetsInStore := filepath.Join(baseVersionPath, "compiled_assets")
+		if info, err := os.Stat(compiledAssetsInStore); err == nil && info.IsDir() {
+			fmt.Printf("Detected 'compiled_assets' in package. Deploying to bench assets...\n")
+			targetAssetsPath := filepath.Join(absBenchPath, "sites", "assets", appName)
+			
+			if err := os.MkdirAll(targetAssetsPath, 0755); err != nil {
+				return fmt.Errorf("failed to create target assets directory '%s': %w", targetAssetsPath, err)
+			}
+			
+			if err := copyDirContents(compiledAssetsInStore, targetAssetsPath); err != nil {
+				return fmt.Errorf("failed to deploy compiled assets to '%s': %w", targetAssetsPath, err)
+			}
+			fmt.Printf("Successfully deployed assets for app '%s' to bench.\n", appName)
+		} else {
+			fmt.Printf("No 'compiled_assets' found in package, skipping asset deployment.\n")
+		}
+
 		currentWD, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("failed to get current working directory: %w", err)

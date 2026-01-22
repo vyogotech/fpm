@@ -11,8 +11,10 @@ import (
 	"net/http"         // For httptest
 	"net/http/httptest" // For mock server
 	"encoding/json"    // For serving JSON metadata
+	"runtime"
 	"fpm/internal/repository" // For PackageMetadata struct
 	"fpm/internal/config" // For config.LoadConfig() to find AppsBasePath
+	"github.com/spf13/pflag"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -223,46 +225,8 @@ func getTestRootCmd() *cobra.Command {
 
 // End of Skip_TestInstallCmd_OldPackageStructure_ExpectedToFail
 
-// createMinimalFrappeApp creates a basic Frappe app structure for testing.
-// This helper is for the new TestInstallCommand_NewPackageStructure.
-func createMinimalFrappeApp(t *testing.T, basePath, appName, appVersion, appOrg string) {
-	appModulePath := filepath.Join(basePath, appName)
-	require.NoError(t, os.MkdirAll(appModulePath, 0o755))
+// createMinimalFrappeApp and runFPMCommand are now in common_test.go
 
-	hooksContent := fmt.Sprintf("app_name = \"%s\"\napp_version = \"%s\"\napp_publisher = \"%s\"\n", appName, appVersion, appOrg)
-	require.NoError(t, os.WriteFile(filepath.Join(appModulePath, "hooks.py"), []byte(hooksContent), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(appModulePath, "__init__.py"), []byte("# init"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(appModulePath, "modules.txt"), []byte("mymodule"), 0o644))
-}
-
-// runFPMCommand executes the main FPM binary (via go run) with given arguments.
-// This helper is for the new TestInstallCommand_NewPackageStructure.
-func runFPMCommand(t *testing.T, verbose bool, args ...string) ([]byte, error) {
-	// Ensure that the path to main.go is correct relative to fpm/cmd/ where this test file is.
-	// If main.go is in fpm/, then "../main.go" is correct.
-	cmdArgs := append([]string{"run", "../main.go"}, args...)
-	cmd := exec.Command("go", cmdArgs...)
-
-	var output []byte
-	var cmdErr error
-
-	if verbose {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmdErr = cmd.Run()
-	} else {
-		output, cmdErr = cmd.CombinedOutput()
-	}
-
-	if cmdErr != nil {
-		errorMsg := fmt.Sprintf("error running 'go run ../main.go %s': %v", strings.Join(args, " "), cmdErr)
-		if !verbose && len(output) > 0 {
-			errorMsg += fmt.Sprintf("\nCommand output:\n%s", string(output))
-		}
-		return output, fmt.Errorf(errorMsg)
-	}
-	return output, nil
-}
 
 func TestInstallCommand_NewPackageStructure(t *testing.T) {
 	// --- Setup Phase ---
@@ -274,7 +238,7 @@ func TestInstallCommand_NewPackageStructure(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(sourceAppDir)
 
-	createMinimalFrappeApp(t, sourceAppDir, testAppName, testAppVersion, testAppOrg)
+	SharedCreateMinimalAppForInstall(t, sourceAppDir, testAppName, testAppVersion, testAppOrg)
 	dummyReqTxtPath := filepath.Join(sourceAppDir, "requirements.txt")
 	err = os.WriteFile(dummyReqTxtPath, []byte("requests==2.25.1"), 0o644)
 	require.NoError(t, err)
@@ -295,7 +259,7 @@ func TestInstallCommand_NewPackageStructure(t *testing.T) {
 		"--org", testAppOrg,
 		"--app-name", testAppName, // Ensure consistent app naming
 	}
-	_, err = runFPMCommand(t, false, packageArgs...)
+	_, err = SharedRunFPMCommand(t, false, packageArgs...)
 	require.NoError(t, err, "fpm package command failed")
 
 	packagedFPMFile := filepath.Join(packageOutputDir, testAppName+"-"+testAppVersion+".fpm")
@@ -330,7 +294,7 @@ func TestInstallCommand_NewPackageStructure(t *testing.T) {
 		"install", packagedFPMFile,
 		"--bench-path", mockBenchPath,
 	}
-	installCmdOutput, err := runFPMCommand(t, false, installArgs...)
+	installCmdOutput, err := SharedRunFPMCommand(t, false, installArgs...)
 	require.NoError(t, err, "fpm install command failed. Output: %s", string(installCmdOutput))
 
 	expectedFpmStorageAppPath := filepath.Join(mockAppsBasePath, testAppOrg, testAppName, testAppVersion)
@@ -409,7 +373,7 @@ func TestInstallCommand_RemotePackage(t *testing.T) {
 			defer os.RemoveAll(appSourceDirForDummyFPM)
 			// Use the same createMinimalFrappeApp helper. The paths it creates inside appSourceDirForDummyFPM
 			// will be relative to that directory, which is what we need for zipping.
-			createMinimalFrappeApp(t, appSourceDirForDummyFPM, "testapp", "1.0.1", "testgrp")
+			SharedCreateMinimalAppForInstall(t, appSourceDirForDummyFPM, "testapp", "1.0.1", "testgrp")
 
 
 			archiveFile, err := os.Create(dummyFpmPath)
@@ -466,7 +430,7 @@ func TestInstallCommand_RemotePackage(t *testing.T) {
 	if repoAddCmd.Flags().Lookup("priority") != nil {
 		repoAddCmd.Flags().Lookup("priority").Value.Set("0")
 	}
-	_, err := executeCommand(rootCmd, addRepoArgs...) // Uses helper from repo_test.go
+	_, err := SharedExecuteCommand(rootCmd, addRepoArgs...) // Uses helper from repo_test.go
 	require.NoError(t, err, "Failed to add mock repository")
 
 	// 3. Setup Mock Bench
@@ -495,11 +459,11 @@ func TestInstallCommand_RemotePackage(t *testing.T) {
 		"--bench-path", mockBenchPath,
 	}
 	// Reset installCmd flags if any (though it doesn't have persistent ones like repoAddCmd)
-	installCmd.Flags().VisitAll(func(f *cobra.Flag) { // Use actual installCmd var
+	installCmd.Flags().VisitAll(func(f *pflag.Flag) { // Use actual installCmd var
 		f.Value.Set(f.DefValue)
 		f.Changed = false
 	})
-	installCmdOutput, err := executeCommand(rootCmd, installArgs...)
+	installCmdOutput, err := SharedExecuteCommand(rootCmd, installArgs...)
 	require.NoError(t, err, "fpm install command failed for remote package. Output: %s", string(installCmdOutput))
 
 	// --- Assertion Phase ---
@@ -557,7 +521,7 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 	defer baseCleanup()
 	t.Logf("TestInstallCommand_PrioritizationAndLatestResolution using temp home: %s", tempHome)
 
-	cfg, err := config.LoadConfig() // Load config to get AppsBasePath
+	cfg, err := config.LoadConfig() // get AppsBasePath
 	require.NoError(t, err)
 	mockAppsBasePath := cfg.AppsBasePath // This is where local FPM store will be (e.g. tempHome/.fpm/apps)
 	require.NoError(t, os.MkdirAll(mockAppsBasePath, 0o755)) // Ensure it exists
@@ -580,7 +544,7 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 		t.Logf("Prioritization Test Mock Repo Server received request: %s", r.URL.Path)
 		if r.URL.Path == "/metadata/myorg/myapp/package-metadata.json" {
 			pkgMeta := repository.PackageMetadata{
-				Org:       "myorg",	AppName:    "myapp", LatestVersion: "1.2.0", // Changed
+				Org:       "myorg",	AppName:    "myapp", LatestVersion: "1.2.0",
 				Versions: map[string]repository.PackageVersionMetadata{
 					"1.0.0": {FPMPath: "artifacts/myorg/myapp/1.0.0/myapp-1.0.0.fpm", ChecksumSHA256: "remote-myapp-1.0.0-checksum"},
 					"1.2.0": {FPMPath: "artifacts/myorg/myapp/1.2.0/myapp-1.2.0.fpm", ChecksumSHA256: "remote-myapp-1.2.0-checksum"},
@@ -600,7 +564,7 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 			appMetaContent := fmt.Sprintf(`{"org":"myorg", "app_name":"myapp", "package_name":"myapp", "package_version":"%s", "content_checksum":"remote-myapp-%s-checksum"}`, versionFromFile, versionFromFile)
 			fWriter, _ := zipWriter.Create("app_metadata.json")
 			io.WriteString(fWriter, appMetaContent)
-			zipWriter.Mkdir("myapp/", 0o755)
+			_, _ = zipWriter.Create("myapp/")
 			fHooks, _ := zipWriter.Create("myapp/hooks.py")
 			io.WriteString(fHooks, fmt.Sprintf("# Remote version %s marker", versionFromFile)) // Unique marker
 			zipWriter.Close()
@@ -613,8 +577,8 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 	defer mockRepoServer.Close()
 
 	// Add mock repo to config
-	resetRepoCmdFlags() // Assuming this helper exists or is defined in this package
-	_, err = executeCommand(rootCmd, "repo", "add", "mockremoterepo", mockRepoServer.URL)
+	SharedResetRepoCmdFlags() // Assuming this helper exists or is defined in this package
+	_, err = SharedExecuteCommand(rootCmd, "repo", "add", "mockremoterepo", mockRepoServer.URL)
 	require.NoError(t, err)
 
 
@@ -623,7 +587,7 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 
 		installArgs := []string{"install", "myorg/myapp==1.0.0", "--bench-path", mockBenchPath}
 		resetInstallCmdFlags()
-		_, err := executeCommand(rootCmd, installArgs...)
+		_, err := SharedExecuteCommand(rootCmd, installArgs...)
 		require.NoError(t, err)
 
 		// Verify symlink target contains the local store marker
@@ -639,7 +603,7 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 
 		installArgs := []string{"install", "myorg/myapp==1.2.0", "--bench-path", mockBenchPath}
 		resetInstallCmdFlags()
-		_, err := executeCommand(rootCmd, installArgs...)
+		_, err := SharedExecuteCommand(rootCmd, installArgs...)
 		require.NoError(t, err)
 
 		// Verify symlink target points to a path that now should exist in local store,
@@ -655,18 +619,18 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 
 	t.Run("InstallsLatestFromLocalStore", func(t *testing.T) {
 		populateAppInLocalStore(t, mockAppsBasePath, "myorg", "myapp", "1.0.0", "local_v1.0.0")
-		populateAppInLocalStore(t, mockAppsBasePath, "myorg", "myapp", "1.1.0", "local_v1.1.0_latest") // This should be chosen
+		populateAppInLocalStore(t, mockAppsBasePath, "myorg", "myapp", "1.3.0", "local_v1.3.0_latest") // Higher than remote 1.2.0
 
 		installArgs := []string{"install", "myorg/myapp", "--bench-path", mockBenchPath} // Request "latest"
 		resetInstallCmdFlags()
-		_, err := executeCommand(rootCmd, installArgs...)
+		_, err := SharedExecuteCommand(rootCmd, installArgs...)
 		require.NoError(t, err)
 
 		linkPath := filepath.Join(mockBenchPath, "apps", "myapp")
 		linkTarget, _ := os.Readlink(linkPath)
 		initPyContent, _ := os.ReadFile(filepath.Join(linkTarget, "__init__.py"))
-		assert.Contains(t, string(initPyContent), "local_v1.1.0_latest")
-		assert.Contains(t, linkTarget, "1.1.0") // Check path contains the version
+		assert.Contains(t, string(initPyContent), "local_v1.3.0_latest")
+		assert.Contains(t, linkTarget, "1.3.0") // Check path contains the version
 	})
 
 	t.Run("FallsBackToRemoteForLatestIfNotLocal", func(t *testing.T) {
@@ -675,7 +639,7 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 
 		installArgs := []string{"install", "myorg/myapp", "--bench-path", mockBenchPath} // Request "latest"
 		resetInstallCmdFlags()
-		_, err := executeCommand(rootCmd, installArgs...)
+		_, err := SharedExecuteCommand(rootCmd, installArgs...)
 		require.NoError(t, err)
 
 		// Remote server's latest is 1.2.0
@@ -688,14 +652,11 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 }
 
 // resetRepoCmdFlags is a placeholder for a helper that might be needed if repoCmd itself had flags.
-func resetRepoCmdFlags() {
-	// repoCmd.Flags().VisitAll(...)
-}
 // resetInstallCmdFlags is a placeholder for a helper that might be needed if installCmd itself had flags
 // that are not handled by rootCmd.SetArgs for each call.
 // The flags --bench-path and --site are parsed by Cobra for each run.
 func resetInstallCmdFlags() {
-	installCmd.Flags().VisitAll(func(f *cobra.Flag) {
+	installCmd.Flags().VisitAll(func(f *pflag.Flag) {
 		f.Value.Set(f.DefValue)
 		f.Changed = false
 	})

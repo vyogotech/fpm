@@ -1,19 +1,13 @@
 package cmd
 
 import (
-	"bytes"
-	// "encoding/json" // Not used directly in these tests
-	"fmt"
-	// "io" // Not used directly
 	"os"
-	"path/filepath"
 	"runtime" // For OS-specific HOME env var
 	"strings"
 	"testing"
 
 	"fpm/internal/config"
 
-	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -70,19 +64,7 @@ func setupTempFPMConfig(t *testing.T) (string, func()) {
 	return currentHome, cleanup
 }
 
-// executeCommand is a helper to execute Cobra commands and capture their output.
-func executeCommand(root *cobra.Command, args ...string) (string, error) {
-	buf := new(bytes.Buffer)
-	root.SetOut(buf)
-	root.SetErr(buf) // Capture stderr as well, useful for errors from cobra itself
-	root.SetArgs(args)
-
-	err := root.Execute()
-	output := buf.String()
-	// For debugging:
-	// fmt.Printf("Executing command: %s %s\nOutput:\n%s\nError: %v\n", root.Use, strings.Join(args, " "), output, err)
-	return output, err
-}
+// executeCommand is now SharedExecuteCommand in common_test.go
 
 
 func TestRepoAddCmd(t *testing.T) {
@@ -144,7 +126,7 @@ func TestRepoAddCmd(t *testing.T) {
 			}
 
 
-			output, err := executeCommand(rootCmd, tc.args...)
+			output, err := SharedExecuteCommand(rootCmd, tc.args...)
 
 			if tc.expectErr {
 				assert.Error(t, err, "Expected an error for test case: %s. Output: %s", tc.name, output)
@@ -176,7 +158,7 @@ func TestRepoListCmd(t *testing.T) {
 
 
 	// Initial list: should be empty
-	output, err := executeCommand(rootCmd, "repo", "list")
+	output, err := SharedExecuteCommand(rootCmd, "repo", "list")
 	require.NoError(t, err)
 	assert.Contains(t, output, "No repositories configured.")
 
@@ -190,20 +172,20 @@ func TestRepoListCmd(t *testing.T) {
 
 	// Add some repositories
 	resetAddCmd()
-	_, err = executeCommand(rootCmd, "repo", "add", "repo1", "url1", "--priority", "10")
+	_, err = SharedExecuteCommand(rootCmd, "repo", "add", "repo1", "url1", "--priority", "10")
 	require.NoError(t, err)
 
 	resetAddCmd()
-	_, err = executeCommand(rootCmd, "repo", "add", "repo2", "url2", "--priority", "5")
+	_, err = SharedExecuteCommand(rootCmd, "repo", "add", "repo2", "url2", "--priority", "5")
 	require.NoError(t, err)
 
 	resetAddCmd()
-	_, err = executeCommand(rootCmd, "repo", "add", "repo3", "url3") // Default priority 0
+	_, err = SharedExecuteCommand(rootCmd, "repo", "add", "repo3", "url3") // Default priority 0
 	require.NoError(t, err)
 
 
 	// List again
-	output, err = executeCommand(rootCmd, "repo", "list")
+	output, err = SharedExecuteCommand(rootCmd, "repo", "list")
 	require.NoError(t, err)
 
 	// Output should be sorted: repo3 (prio 0), then repo2 (prio 5), then repo1 (prio 10)

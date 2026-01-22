@@ -27,13 +27,13 @@ curl http://localhost:8080/health
 
 ```bash
 # Add repository
-./fpm-cli repo add my-repo http://localhost:8080 --priority 1
+fpm repo add my-repo http://localhost:8080 --priority 1
 
 # Set as default
-./fpm-cli repo default my-repo
+fpm repo default my-repo
 
 # List repositories
-./fpm-cli repo list
+fpm repo list
 ```
 
 ### Publish a Package
@@ -43,20 +43,20 @@ curl http://localhost:8080/health
 cd /path/to/your-app
 
 # Package it
-./fpm-cli package --version 1.0.0 --org myorg --app-name my_app
+fpm package --version 1.0.0 --org myorg --app-name my_app
 
 # Publish to repository
-./fpm-cli publish myorg/my_app==1.0.0
+fpm publish myorg/my_app==1.0.0
 ```
 
 ### Download a Package
 
 ```bash
 # Search for packages
-./fpm-cli search myorg/my_app
+fpm search myorg/my_app
 
 # Download from repository
-./fpm-cli get-app my-repo/myorg/my_app:1.0.0
+fpm get-app my-repo/myorg/my_app:1.0.0
 ```
 
 ## Testing with ERPNext
@@ -68,10 +68,10 @@ cd erpnext
 
 # Ensure modules.txt exists and hooks.py is properly configured
 # Package it
-../fpm-cli package --version 15.0.0 --org frappe --app-name erpnext
+fpm package --version 15.0.0 --org frappe --app-name erpnext
 
 # Publish
-../fpm-cli publish frappe/erpnext==15.0.0
+fpm publish frappe/erpnext==15.0.0
 
 # Verify
 curl http://localhost:8080/metadata/frappe/erpnext/package-metadata.json

@@ -27,10 +27,8 @@ FPM transforms Frappe application deployment from a Git-centric model into an en
 Download the latest release for your platform from [Releases](https://github.com/yourusername/fpm/releases):
 
 ```bash
-# Linux/macOS
-curl -LO https://github.com/yourusername/fpm/releases/latest/download/fpm-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)
-chmod +x fpm-*
-sudo mv fpm-* /usr/local/bin/fpm
+# Automated install (Linux/macOS)
+curl -fsSL https://raw.githubusercontent.com/vyogotech/fpm/main/install.sh | bash
 
 # Verify installation
 fpm --help
