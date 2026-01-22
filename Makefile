@@ -15,9 +15,13 @@ ifeq ($(GOOS),windows)
     endif
 endif
 
-.PHONY: all build test clean help
+.PHONY: all build test clean help fmt
 
-all: test build
+all: fmt test build
+
+fmt:
+	@echo "Formatting code..."
+	go fmt ./...
 
 build:
 	@echo "Building FPM binary for $(GOOS)/$(GOARCH)..."

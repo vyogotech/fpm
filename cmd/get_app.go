@@ -61,7 +61,6 @@ If version is not specified, 'latest' is assumed.`,
 			version = "latest"
 		}
 
-
 		cfg, err := config.InitConfig()
 		if err != nil {
 			return fmt.Errorf("failed to initialize FPM configuration: %w", err)

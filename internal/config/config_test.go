@@ -108,7 +108,6 @@ func TestLoadConfig(t *testing.T) {
 		assert.Equal(t, expectedAppsBasePath, loadedCfg.AppsBasePath)
 	})
 
-
 	t.Run("Config File Invalid JSON", func(t *testing.T) {
 		mockHomeDir := t.TempDir()
 		originalHome, err := os.UserHomeDir()

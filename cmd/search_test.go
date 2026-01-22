@@ -83,12 +83,12 @@ func setupTestEnvironment(t *testing.T, mockData []MockPackageData) (tempHomeDir
 			metaBytes, _ := json.MarshalIndent(appMeta, "", "  ")
 			fWriter, _ := zipWriter.Create("app_metadata.json")
 			io.WriteString(fWriter, string(metaBytes))
-			
+
 			appModuleDirEntry := fmt.Sprintf("%s/", data.AppName)
 			header := &zip.FileHeader{Name: appModuleDirEntry}
 			header.SetMode(0o755 | os.ModeDir)
 			zipWriter.CreateHeader(header)
-			
+
 			fHook, _ := zipWriter.Create(filepath.Join(data.AppName, "hooks.py"))
 			io.WriteString(fHook, "# hooks")
 
@@ -105,14 +105,14 @@ func setupTestEnvironment(t *testing.T, mockData []MockPackageData) (tempHomeDir
 				LatestVersion: data.LatestVersionHint,
 				Versions: map[string]repository.PackageVersionMetadata{
 					data.Version: {
-						FPMPath: fmt.Sprintf("%s/%s/%s/%s-%s.fpm", data.Org, data.AppName, data.Version, data.AppName, data.Version),
+						FPMPath:        fmt.Sprintf("%s/%s/%s/%s-%s.fpm", data.Org, data.AppName, data.Version, data.AppName, data.Version),
 						ChecksumSHA256: "dummychecksum",
 					},
 				},
 			}
 			if data.LatestVersionHint != "" && data.LatestVersionHint != data.Version {
 				pkgMeta.Versions[data.LatestVersionHint] = repository.PackageVersionMetadata{
-					FPMPath: fmt.Sprintf("%s/%s/%s/%s-%s.fpm", data.Org, data.AppName, data.LatestVersionHint, data.AppName, data.LatestVersionHint),
+					FPMPath:        fmt.Sprintf("%s/%s/%s/%s-%s.fpm", data.Org, data.AppName, data.LatestVersionHint, data.AppName, data.LatestVersionHint),
 					ChecksumSHA256: "dummychecksumlatest",
 				}
 			}
@@ -157,13 +157,13 @@ func TestSearchCmd(t *testing.T) {
 			}
 			json.NewEncoder(w).Encode(pkgMeta)
 		} else if path == "/metadata/orgz/appz/package-metadata.json" {
-			 pkgMeta := repository.PackageMetadata{
-                Org: "orgZ", AppName: "appZ", Description: "App Z only on remote", LatestVersion: "3.0.0",
-                Versions: map[string]repository.PackageVersionMetadata{
-                    "3.0.0": {FPMPath: "orgZ/appZ/3.0.0/appZ-3.0.0.fpm"},
-                },
-            }
-            json.NewEncoder(w).Encode(pkgMeta)
+			pkgMeta := repository.PackageMetadata{
+				Org: "orgZ", AppName: "appZ", Description: "App Z only on remote", LatestVersion: "3.0.0",
+				Versions: map[string]repository.PackageVersionMetadata{
+					"3.0.0": {FPMPath: "orgZ/appZ/3.0.0/appZ-3.0.0.fpm"},
+				},
+			}
+			json.NewEncoder(w).Encode(pkgMeta)
 		} else {
 			http.NotFound(w, r)
 		}
@@ -187,7 +187,7 @@ func TestSearchCmd(t *testing.T) {
 
 	t.Run("TestSearch_OrderAndSources", func(t *testing.T) {
 		serverRequests = nil
-		
+
 		originalHandler := mockRepoServer.Config.Handler
 		mockRepoServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := strings.ToLower(r.URL.Path)
@@ -198,7 +198,9 @@ func TestSearchCmd(t *testing.T) {
 					Versions: map[string]repository.PackageVersionMetadata{"1.0.0": {FPMPath: "orgA/appX/1.0.0/appX-1.0.0.fpm"}},
 				}
 				json.NewEncoder(w).Encode(pkgMeta)
-			} else { originalHandler.ServeHTTP(w,r) }
+			} else {
+				originalHandler.ServeHTTP(w, r)
+			}
 		})
 
 		output, err := SharedExecuteCommand(rootCmd, "search", "orgA/appX")
@@ -219,14 +221,17 @@ func TestSearchCmd(t *testing.T) {
 
 		wasQueried := false
 		for _, reqPath := range serverRequests {
-			if reqPath == "/metadata/orga/appx/package-metadata.json" { wasQueried = true; break }
+			if reqPath == "/metadata/orga/appx/package-metadata.json" {
+				wasQueried = true
+				break
+			}
 		}
 		assert.True(t, wasQueried)
 
 		serverRequests = nil
 		outputAll, errAll := SharedExecuteCommand(rootCmd, "search")
 		require.NoError(t, errAll)
-		
+
 		assert.Contains(t, outputAll, "(local-store)")
 		assert.Contains(t, outputAll, "orgA/appX")
 		assert.Contains(t, outputAll, "(cache: repo1)")
@@ -234,13 +239,14 @@ func TestSearchCmd(t *testing.T) {
 		assert.Contains(t, outputAll, "orgD/appLocalOnly")
 
 		wasQueriedAll := false
-        for _, reqPath := range serverRequests {
-            if strings.HasPrefix(reqPath, "/metadata/orga/appx") || strings.HasPrefix(reqPath, "/metadata/orgc/appcacheonly") || strings.HasPrefix(reqPath, "/metadata/orgd/applocalonly") {
-                wasQueriedAll = true; break
-            }
-        }
-        assert.False(t, wasQueriedAll)
-		
+		for _, reqPath := range serverRequests {
+			if strings.HasPrefix(reqPath, "/metadata/orga/appx") || strings.HasPrefix(reqPath, "/metadata/orgc/appcacheonly") || strings.HasPrefix(reqPath, "/metadata/orgd/applocalonly") {
+				wasQueriedAll = true
+				break
+			}
+		}
+		assert.False(t, wasQueriedAll)
+
 		mockRepoServer.Config.Handler = originalHandler
 	})
 
@@ -248,7 +254,7 @@ func TestSearchCmd(t *testing.T) {
 		serverRequests = nil
 		output, err := SharedExecuteCommand(rootCmd, "search", "orgZ/appZ")
 		require.NoError(t, err)
-		
+
 		found := false
 		for _, line := range strings.Split(output, "\n") {
 			fields := strings.Fields(line)
@@ -261,7 +267,12 @@ func TestSearchCmd(t *testing.T) {
 		assert.True(t, found, "Should find orgZ/appZ from remote repo2. Output:\n%s", output)
 
 		wasQueried := false
-		for _, reqPath := range serverRequests { if reqPath == "/metadata/orgz/appz/package-metadata.json" { wasQueried = true; break } }
+		for _, reqPath := range serverRequests {
+			if reqPath == "/metadata/orgz/appz/package-metadata.json" {
+				wasQueried = true
+				break
+			}
+		}
 		assert.True(t, wasQueried)
 
 		serverRequests = nil
@@ -269,7 +280,12 @@ func TestSearchCmd(t *testing.T) {
 		require.NoError(t, errGeneric)
 
 		wasQueriedGeneric := false
-		for _, reqPath := range serverRequests { if reqPath == "/metadata/orgz/appz/package-metadata.json" { wasQueriedGeneric = true; break } }
+		for _, reqPath := range serverRequests {
+			if reqPath == "/metadata/orgz/appz/package-metadata.json" {
+				wasQueriedGeneric = true
+				break
+			}
+		}
 		assert.False(t, wasQueriedGeneric)
 	})
 }

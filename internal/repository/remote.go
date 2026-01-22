@@ -149,7 +149,6 @@ func UploadHTTPFile(targetURL, localFilePath, httpMethod, contentTypeHeader stri
 	return nil
 }
 
-
 // UploadPackageMetadata uploads the package-metadata.json file to the repository using HTTP PUT.
 func UploadPackageMetadata(repoBaseURL, org, appName string, metaToUpload *PackageMetadata, client *http.Client) error {
 	if client == nil {
@@ -159,15 +158,18 @@ func UploadPackageMetadata(repoBaseURL, org, appName string, metaToUpload *Packa
 
 	// Ensure the metadata being uploaded has matching Org and AppName, or use args for path
 	if metaToUpload.Org != org || metaToUpload.AppName != appName {
-	    // This could be an error, or we trust the path given by args and metadata content can differ (less ideal)
-	    // For now, let's assume metaToUpload's fields should match for consistency if they are set.
-	    // If metaToUpload comes from a newly initialized struct, its Org/AppName might be empty.
-	    // So, better to use the passed org/appName for path construction.
-	    // And ensure metaToUpload has these set before marshalling if it's new.
-	    if metaToUpload.Org == "" { metaToUpload.Org = org }
-		if metaToUpload.AppName == "" { metaToUpload.AppName = appName }
+		// This could be an error, or we trust the path given by args and metadata content can differ (less ideal)
+		// For now, let's assume metaToUpload's fields should match for consistency if they are set.
+		// If metaToUpload comes from a newly initialized struct, its Org/AppName might be empty.
+		// So, better to use the passed org/appName for path construction.
+		// And ensure metaToUpload has these set before marshalling if it's new.
+		if metaToUpload.Org == "" {
+			metaToUpload.Org = org
+		}
+		if metaToUpload.AppName == "" {
+			metaToUpload.AppName = appName
+		}
 	}
-
 
 	jsonData, err := json.MarshalIndent(metaToUpload, "", "  ")
 	if err != nil {
@@ -305,7 +307,6 @@ func FindPackageInSpecificRepo(
 			Checksum:       versionMeta.ChecksumSHA256, // Might be empty if not in remote meta
 		}, nil
 	}
-
 
 	fmt.Printf("Downloading FPM package from %s to %s...\n", fpmDownloadURL, localCachePath)
 	resp, err := client.Get(fpmDownloadURL)

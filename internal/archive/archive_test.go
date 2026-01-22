@@ -8,10 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	// "reflect" // Removed
+	"fpm/internal/metadata" // Import your metadata package
 	"sort"
 	"strings"
 	"testing"
-	"fpm/internal/metadata" // Import your metadata package
 )
 
 // Helper function to create a mock app structure
@@ -20,10 +20,10 @@ func createMockApp(t *testing.T, basePath string, appName string, files map[stri
 	if err := os.MkdirAll(filepath.Join(appPath, appName, "doctype", "test_doc"), 0755); err != nil { // Simulate app_source structure
 		t.Fatalf("Failed to create mock app dir: %v", err)
 	}
-    // Create app_source structure by creating the appName dir inside appPath
-    // as CreateFPMArchive expects appSourcePath to be the root of the app repo
-    // and then copies its content into app_source in the archive.
-    // The files map paths should be relative to appName (the app repo root).
+	// Create app_source structure by creating the appName dir inside appPath
+	// as CreateFPMArchive expects appSourcePath to be the root of the app repo
+	// and then copies its content into app_source in the archive.
+	// The files map paths should be relative to appName (the app repo root).
 
 	for p, content := range files {
 		filePath := filepath.Join(appPath, p)
@@ -91,7 +91,6 @@ func checkZipContent(t *testing.T, zipFilePath string, expectedFiles map[string]
 	}
 }
 
-
 func TestCreateFPMArchive(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "test-archive-")
 	if err != nil {
@@ -100,7 +99,7 @@ func TestCreateFPMArchive(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	mockAppBasePath := filepath.Join(tmpDir, "apps") // Where mock apps will be created
-	outputPath := filepath.Join(tmpDir, "output")   // Where .fpm files will be saved
+	outputPath := filepath.Join(tmpDir, "output")    // Where .fpm files will be saved
 	if err := os.MkdirAll(mockAppBasePath, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -114,18 +113,17 @@ func TestCreateFPMArchive(t *testing.T) {
 
 	// Sample files for the mock app
 	appFiles := map[string]string{
-		"app_metadata.json":         `{"package_name": "my_test_app", "package_version": "0.0.1", "description": "A test app."}`, // Version will be overridden
-		"requirements.txt":          "frappe>=13.0.0",
-		"install_hooks.py":          "print('hello from install hook')",
-		"my_test_app/file1.py":      "print('file1')",
-		"my_test_app/data/file.json": "{\"key\": \"value\"}",
-		"my_test_app/ignored_file.txt": "this should be ignored",
-		"public/js/script.js":       "console.log('script');", // Should be under app_source/public/js/script.js
-		"compiled_assets/css/style.css": "body { color: red; }", // Should be at root of archive
+		"app_metadata.json":             `{"package_name": "my_test_app", "package_version": "0.0.1", "description": "A test app."}`, // Version will be overridden
+		"requirements.txt":              "frappe>=13.0.0",
+		"install_hooks.py":              "print('hello from install hook')",
+		"my_test_app/file1.py":          "print('file1')",
+		"my_test_app/data/file.json":    "{\"key\": \"value\"}",
+		"my_test_app/ignored_file.txt":  "this should be ignored",
+		"public/js/script.js":           "console.log('script');", // Should be under app_source/public/js/script.js
+		"compiled_assets/css/style.css": "body { color: red; }",   // Should be at root of archive
 	}
-    // Simplified ignore:
-    fpmIgnoreContentSimple := "my_test_app/ignored_file.txt\n"
-
+	// Simplified ignore:
+	fpmIgnoreContentSimple := "my_test_app/ignored_file.txt\n"
 
 	createMockApp(t, mockAppBasePath, appName, appFiles, fpmIgnoreContentSimple)
 
@@ -133,9 +131,8 @@ func TestCreateFPMArchive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to load mock app metadata: %v", err)
 	}
-    // Ensure version is set correctly for CreateFPMArchive call
-    meta.PackageVersion = appVersion
-
+	// Ensure version is set correctly for CreateFPMArchive call
+	meta.PackageVersion = appVersion
 
 	err = CreateFPMArchive(appSourcePath, outputPath, meta, appVersion)
 	if err != nil {
@@ -152,29 +149,28 @@ func TestCreateFPMArchive(t *testing.T) {
 	strExpectedMetadataJson := string(expectedMetadataJson)
 	strRequirementsTxt := "frappe>=13.0.0"
 	strInstallHooksPy := "print('hello from install hook')"
-    strAppSourceFile1Py := "print('file1')"
-    strAppSourceDataFileJson := "{\"key\": \"value\"}"
-    strCompiledAssetsStyleCss := "body { color: red; }"
-
+	strAppSourceFile1Py := "print('file1')"
+	strAppSourceDataFileJson := "{\"key\": \"value\"}"
+	strCompiledAssetsStyleCss := "body { color: red; }"
 
 	expectedFilesInZip := map[string]*string{
-		"app_metadata.json":         &strExpectedMetadataJson,
-		"requirements.txt":          &strRequirementsTxt,
-		"install_hooks.py":          &strInstallHooksPy,
-		"my_test_app/file1.py": &strAppSourceFile1Py, // No app_source prefix
-        "my_test_app/data/file.json": &strAppSourceDataFileJson, // No app_source prefix
-		"public/js/script.js": nil, // No app_source prefix, this path is relative to app source root
+		"app_metadata.json":             &strExpectedMetadataJson,
+		"requirements.txt":              &strRequirementsTxt,
+		"install_hooks.py":              &strInstallHooksPy,
+		"my_test_app/file1.py":          &strAppSourceFile1Py,      // No app_source prefix
+		"my_test_app/data/file.json":    &strAppSourceDataFileJson, // No app_source prefix
+		"public/js/script.js":           nil,                       // No app_source prefix, this path is relative to app source root
 		"compiled_assets/css/style.css": &strCompiledAssetsStyleCss,
 	}
 
 	checkZipContent(t, expectedFPMFilename, expectedFilesInZip)
 
-    // Check that ignored_file.txt is NOT in the zip
-    r, _ := zip.OpenReader(expectedFPMFilename)
-    defer r.Close()
-    for _, f := range r.File {
-        if strings.HasSuffix(f.Name, "ignored_file.txt") {
-            t.Errorf("Found ignored file 'my_test_app/ignored_file.txt' in archive at %s", f.Name)
-        }
-    }
+	// Check that ignored_file.txt is NOT in the zip
+	r, _ := zip.OpenReader(expectedFPMFilename)
+	defer r.Close()
+	for _, f := range r.File {
+		if strings.HasSuffix(f.Name, "ignored_file.txt") {
+			t.Errorf("Found ignored file 'my_test_app/ignored_file.txt' in archive at %s", f.Name)
+		}
+	}
 }

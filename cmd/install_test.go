@@ -2,19 +2,19 @@ package cmd
 
 import (
 	"archive/zip"
+	"encoding/json" // For serving JSON metadata
 	"fmt"
+	"fpm/internal/config"     // For config.LoadConfig() to find AppsBasePath
+	"fpm/internal/repository" // For PackageMetadata struct
+	"github.com/spf13/pflag"
 	"io"
+	"net/http"          // For httptest
+	"net/http/httptest" // For mock server
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
-	"net/http"         // For httptest
-	"net/http/httptest" // For mock server
-	"encoding/json"    // For serving JSON metadata
-	"runtime"
-	"fpm/internal/repository" // For PackageMetadata struct
-	"fpm/internal/config" // For config.LoadConfig() to find AppsBasePath
-	"github.com/spf13/pflag"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,7 +79,6 @@ func Skip_TestInstallCmd_OldPackageStructure_ExpectedToFail(t *testing.T) {
 	err = os.MkdirAll(fpmAppsStoragePath, 0755) // Ensure it exists for clarity, though LoadConfig might not need it to exist
 	require.NoError(t, err)
 
-
 	// 2. Mock Bench Directory
 	mockBenchDir := filepath.Join(baseTmpDir, "mockBench")
 	err = os.MkdirAll(filepath.Join(mockBenchDir, "sites"), 0755) // For apps.txt
@@ -89,7 +88,6 @@ func Skip_TestInstallCmd_OldPackageStructure_ExpectedToFail(t *testing.T) {
 	mockBenchEnvBinDir := filepath.Join(mockBenchDir, "env", "bin")
 	err = os.MkdirAll(mockBenchEnvBinDir, 0755)
 	require.NoError(t, err)
-
 
 	// 3. Mock Pip Script
 	mockPipPath := filepath.Join(mockBenchEnvBinDir, "pip")
@@ -102,14 +100,12 @@ exit 0
 	err = os.WriteFile(mockPipPath, []byte(pipScriptContent), 0755)
 	require.NoError(t, err, "Failed to write mock pip script")
 
-
 	// 4. Create Dummy .fpm Package
 	pkgOrg := "testorg"
 	pkgAppName := "dummyapp"
 	pkgVersion := "0.0.1"
 	dummyFpmFilePath := filepath.Join(baseTmpDir, fmt.Sprintf("%s-%s.fpm", pkgAppName, pkgVersion))
 	createDummyFpmPackage(t, dummyFpmFilePath, pkgOrg, pkgAppName, pkgVersion)
-
 
 	// --- Execution Phase ---
 	// Use the global rootCmd from the cmd package.
@@ -120,7 +116,6 @@ exit 0
 	fmt.Printf("Executing fpm install with args: %v\n", currentArgs)
 	executeErr := rootCmd.Execute()
 
-
 	// --- Assertion Phase ---
 	assert.NoError(t, executeErr, "fpm install command failed")
 
@@ -130,7 +125,6 @@ exit 0
 	expectedAppCodeDir := filepath.Join(fpmAppsStoragePath, pkgOrg, pkgAppName, pkgVersion, pkgAppName)
 	expectedInitPyPath := filepath.Join(expectedAppCodeDir, "__init__.py")
 	assert.FileExists(t, expectedInitPyPath, "Expected __init__.py in FPM storage path")
-
 
 	// Assert Symlink
 	linkPath := filepath.Join(mockBenchDir, "apps", pkgAppName)
@@ -144,7 +138,6 @@ exit 0
 	require.NoError(t, err)
 	assert.Equal(t, absExpectedAppCodeDir, linkTarget, "Symlink does not point to the correct FPM storage path")
 
-
 	// Assert Pip Call
 	pipCallsLogBytes, err := os.ReadFile(pipCallsLogPath)
 	require.NoError(t, err, "Failed to read pip calls log")
@@ -152,7 +145,6 @@ exit 0
 	// Expected: install -q -e ./apps/dummyapp (path relative to bench dir)
 	expectedPipArgs := fmt.Sprintf("install -q -e %s", filepath.Join("./apps", pkgAppName))
 	assert.Equal(t, expectedPipArgs, pipCalls, "Pip was not called with expected arguments")
-
 
 	// Assert apps.txt content
 	appsTxtPath := filepath.Join(mockBenchDir, "sites", "apps.txt")
@@ -226,7 +218,6 @@ func getTestRootCmd() *cobra.Command {
 // End of Skip_TestInstallCmd_OldPackageStructure_ExpectedToFail
 
 // createMinimalFrappeApp and runFPMCommand are now in common_test.go
-
 
 func TestInstallCommand_NewPackageStructure(t *testing.T) {
 	// --- Setup Phase ---
@@ -333,7 +324,6 @@ func TestInstallCommand_NewPackageStructure(t *testing.T) {
 	}
 }
 
-
 func TestInstallCommand_RemotePackage(t *testing.T) {
 	// --- Setup Phase ---
 	// 1. Setup Mock FPM Repository Server
@@ -375,7 +365,6 @@ func TestInstallCommand_RemotePackage(t *testing.T) {
 			// will be relative to that directory, which is what we need for zipping.
 			SharedCreateMinimalAppForInstall(t, appSourceDirForDummyFPM, "testapp", "1.0.1", "testgrp")
 
-
 			archiveFile, err := os.Create(dummyFpmPath)
 			require.NoError(t, err)
 			zipWriter := zip.NewWriter(archiveFile)
@@ -404,10 +393,10 @@ func TestInstallCommand_RemotePackage(t *testing.T) {
 
 			// modules.txt for the app "testapp"
 			modulesPathInZip := filepath.Join("testapp", "modules.txt")
-            fWriterModules, err := zipWriter.Create(modulesPathInZip)
-            require.NoError(t, err)
-            _, err = io.WriteString(fWriterModules, "testmodule")
-            require.NoError(t, err)
+			fWriterModules, err := zipWriter.Create(modulesPathInZip)
+			require.NoError(t, err)
+			_, err = io.WriteString(fWriterModules, "testmodule")
+			require.NoError(t, err)
 
 			// Important: Close the zipWriter and the archiveFile before http.ServeFile uses it.
 			require.NoError(t, zipWriter.Close())
@@ -442,16 +431,19 @@ func TestInstallCommand_RemotePackage(t *testing.T) {
 	mockPipDir := filepath.Join(mockBenchPath, "env", "bin")
 	require.NoError(t, os.MkdirAll(mockPipDir, 0o755))
 	mockPipPath := filepath.Join(mockPipDir, "pip")
-	if runtime.GOOS == "windows" { mockPipPath += ".exe" }
+	if runtime.GOOS == "windows" {
+		mockPipPath += ".exe"
+	}
 	pipScriptContent := "#!/bin/sh\necho \"Mock remote pip install $@\" >> pip_remote_called.log"
-	if runtime.GOOS == "windows" { pipScriptContent = "@echo off\necho Mock remote pip install %* >> pip_remote_called.log" }
+	if runtime.GOOS == "windows" {
+		pipScriptContent = "@echo off\necho Mock remote pip install %* >> pip_remote_called.log"
+	}
 	require.NoError(t, os.WriteFile(mockPipPath, []byte(pipScriptContent), 0o755))
 
 	cfg, err := config.LoadConfig()
 	require.NoError(t, err, "Failed to load config for determining AppsBasePath")
 	expectedFpmStorageAppPath := filepath.Join(cfg.AppsBasePath, "testgrp", "testapp", "1.0.1")
 	expectedAppModuleInStorage := filepath.Join(expectedFpmStorageAppPath, "testapp")
-
 
 	// --- Execution Phase ---
 	installArgs := []string{
@@ -514,7 +506,6 @@ func populateAppInLocalStore(t *testing.T, appsBasePath, org, appName, version, 
 	require.NoError(t, os.WriteFile(filepath.Join(appVersionStorePath, "app_metadata.json"), []byte(appMetaContent), 0o644))
 }
 
-
 func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 	// --- Common Setup for all sub-tests ---
 	tempHome, baseCleanup := setupTempFPMConfig(t) // Manages FPM config and home dir
@@ -523,7 +514,7 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 
 	cfg, err := config.LoadConfig() // get AppsBasePath
 	require.NoError(t, err)
-	mockAppsBasePath := cfg.AppsBasePath // This is where local FPM store will be (e.g. tempHome/.fpm/apps)
+	mockAppsBasePath := cfg.AppsBasePath                     // This is where local FPM store will be (e.g. tempHome/.fpm/apps)
 	require.NoError(t, os.MkdirAll(mockAppsBasePath, 0o755)) // Ensure it exists
 
 	mockBenchPath, err := os.MkdirTemp("", "mockbench-prio-*")
@@ -534,9 +525,13 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 	mockPipDir := filepath.Join(mockBenchPath, "env", "bin")
 	require.NoError(t, os.MkdirAll(mockPipDir, 0o755))
 	mockPipPath := filepath.Join(mockPipDir, "pip")
-	if runtime.GOOS == "windows" { mockPipPath += ".exe" }
+	if runtime.GOOS == "windows" {
+		mockPipPath += ".exe"
+	}
 	pipScriptContent := "#!/bin/sh\necho \"Mock prio pip install $@\" >> pip_prio_called.log"
-	if runtime.GOOS == "windows" { pipScriptContent = "@echo off\necho Mock prio pip install %* >> pip_prio_called.log" }
+	if runtime.GOOS == "windows" {
+		pipScriptContent = "@echo off\necho Mock prio pip install %* >> pip_prio_called.log"
+	}
 	require.NoError(t, os.WriteFile(mockPipPath, []byte(pipScriptContent), 0o755))
 
 	// Mock remote repository server
@@ -544,7 +539,7 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 		t.Logf("Prioritization Test Mock Repo Server received request: %s", r.URL.Path)
 		if r.URL.Path == "/metadata/myorg/myapp/package-metadata.json" {
 			pkgMeta := repository.PackageMetadata{
-				Org:       "myorg",	AppName:    "myapp", LatestVersion: "1.2.0",
+				Org: "myorg", AppName: "myapp", LatestVersion: "1.2.0",
 				Versions: map[string]repository.PackageVersionMetadata{
 					"1.0.0": {FPMPath: "artifacts/myorg/myapp/1.0.0/myapp-1.0.0.fpm", ChecksumSHA256: "remote-myapp-1.0.0-checksum"},
 					"1.2.0": {FPMPath: "artifacts/myorg/myapp/1.2.0/myapp-1.2.0.fpm", ChecksumSHA256: "remote-myapp-1.2.0-checksum"},
@@ -580,7 +575,6 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 	SharedResetRepoCmdFlags() // Assuming this helper exists or is defined in this package
 	_, err = SharedExecuteCommand(rootCmd, "repo", "add", "mockremoterepo", mockRepoServer.URL)
 	require.NoError(t, err)
-
 
 	t.Run("InstallsFromLocalStoreIfVersionExists", func(t *testing.T) {
 		populateAppInLocalStore(t, mockAppsBasePath, "myorg", "myapp", "1.0.0", "local_store_version_1.0.0")

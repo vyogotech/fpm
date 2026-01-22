@@ -49,7 +49,6 @@ func TestGetAppNameFromHooks(t *testing.T) {
 		assert.Equal(t, "commented_app_val", appName)
 	})
 
-
 	t.Run("app_name commented out", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		hooksPath := createHooksFile(t, tmpDir, `# app_name = "commented_app"`)

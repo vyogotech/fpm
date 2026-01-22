@@ -81,7 +81,7 @@ func TestPublishCommand(t *testing.T) {
 	require.NoError(t, os.MkdirAll(mockAppsBasePath, 0o755))
 
 	// Mock Server state
-	var receivedFPMs sync.Map // Store path -> content
+	var receivedFPMs sync.Map     // Store path -> content
 	var receivedMetadata sync.Map // Store path -> repository.PackageMetadata
 
 	mockRepoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +129,6 @@ func TestPublishCommand(t *testing.T) {
 			publishCmd.Flags().Lookup("from-file").Value.Set("") // Reset to empty or default
 		}
 
-
 		tempPackageDir, _ := os.MkdirTemp("", "fpm-publish-fromfile-*")
 		defer os.RemoveAll(tempPackageDir)
 
@@ -141,7 +140,6 @@ func TestPublishCommand(t *testing.T) {
 		expectedMetadataServerPath := fmt.Sprintf("/metadata/%s/%s/package-metadata.json", testOrg, testAppName)
 		receivedFPMs.Delete(expectedFpmServerPath)
 		receivedMetadata.Delete(expectedMetadataServerPath)
-
 
 		args := []string{"publish", "--from-file", dummyFPMPath, "--repo", "mockpublishrepo"}
 		output, err := SharedExecuteCommand(rootCmd, args...)
@@ -163,7 +161,7 @@ func TestPublishCommand(t *testing.T) {
 		if found {
 			var remoteMeta repository.PackageMetadata
 			require.NoError(t, json.Unmarshal(metaDataBytes.([]byte), &remoteMeta))
-			assert.Equal(t, testOrg, remoteMeta.Org) // Changed GroupID to Org
+			assert.Equal(t, testOrg, remoteMeta.Org)         // Changed GroupID to Org
 			assert.Equal(t, testAppName, remoteMeta.AppName) // Changed ArtifactID to AppName
 			assert.Equal(t, testAppVersion, remoteMeta.LatestVersion)
 			versionInfo, ok := remoteMeta.Versions[testAppVersion]
@@ -194,7 +192,6 @@ func TestPublishCommand(t *testing.T) {
 		expectedMetadataServerPath := fmt.Sprintf("/metadata/%s/%s/package-metadata.json", testOrg, testAppName)
 		receivedFPMs.Delete(expectedFpmServerPath)
 		receivedMetadata.Delete(expectedMetadataServerPath)
-
 
 		// 2. Publish from local store
 		// Reset publish flags

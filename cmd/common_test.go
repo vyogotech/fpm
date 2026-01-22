@@ -13,21 +13,21 @@ import (
 	"strings"
 	"testing"
 
+	"fpm/internal/metadata"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/require"
-	"fpm/internal/metadata"
 )
 
 // SharedExecuteCommand is a helper to execute Cobra commands and capture their output.
 // It redirects os.Stdout and os.Stderr to capture output from fmt.Printf etc.
 func SharedExecuteCommand(root *cobra.Command, args ...string) (string, error) {
 	buf := new(bytes.Buffer)
-	
+
 	// Backup original stdout/stderr
 	oldStdout := os.Stdout
 	oldStderr := os.Stderr
-	
+
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 	os.Stderr = w
@@ -37,12 +37,12 @@ func SharedExecuteCommand(root *cobra.Command, args ...string) (string, error) {
 	root.SetArgs(args)
 
 	err := root.Execute()
-	
+
 	// Restore original stdout/stderr
 	w.Close()
 	os.Stdout = oldStdout
 	os.Stderr = oldStderr
-	
+
 	io.Copy(buf, r)
 	output := buf.String()
 	return output, err
@@ -52,7 +52,7 @@ func SharedExecuteCommand(root *cobra.Command, args ...string) (string, error) {
 func SharedRunFPMCommand(t *testing.T, verbose bool, args ...string) ([]byte, error) {
 	_, filename, _, _ := runtime.Caller(0)
 	mainGoPath := filepath.Join(filepath.Dir(filename), "fpm", "main.go")
-	
+
 	cmdArgs := append([]string{"run", mainGoPath}, args...)
 	cmd := exec.Command("go", cmdArgs...)
 

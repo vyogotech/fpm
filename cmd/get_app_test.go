@@ -125,7 +125,7 @@ func TestGetAppCommand(t *testing.T) {
 		for _, identifier := range invalidIdentifiers {
 			_, errCmd := SharedExecuteCommand(rootCmd, "get-app", identifier)
 			require.Error(t, errCmd)
-			assert.True(t, strings.Contains(strings.ToLower(errCmd.Error()), "invalid") || 
+			assert.True(t, strings.Contains(strings.ToLower(errCmd.Error()), "invalid") ||
 				strings.Contains(strings.ToLower(errCmd.Error()), "format") ||
 				strings.Contains(strings.ToLower(errCmd.Error()), "empty") ||
 				strings.Contains(strings.ToLower(errCmd.Error()), "identifier"))
