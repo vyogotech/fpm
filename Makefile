@@ -1,7 +1,7 @@
 # FPM Makefile
 
-BINARY_NAME=fpm
-BUILD_DIR=bin
+BINARY_NAME ?= fpm
+BUILD_DIR ?= bin
 MAIN_PATH=cmd/fpm/main.go
 
 GOOS ?= $(shell go env GOOS)
