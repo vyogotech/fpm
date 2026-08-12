@@ -247,10 +247,28 @@ my-app-1.0.0.fpm
 ## 🔒 Security
 
 - **Authentication**: HTTP Basic Auth for repository write operations
-- **Integrity**: SHA256 checksums for all packages
+- **Integrity**: SHA256 checksums verified end to end (see below)
 - **Encryption**: TLS/SSL support (configurable)
 - **Access Control**: Granular permissions per repository
 - **Audit**: Access logs for all operations
+
+### Package Integrity
+
+Every package carries two distinct SHA256 checksums, each answering a different question:
+
+| Checksum | Location | Covers | Verified by |
+|----------|----------|--------|-------------|
+| `content_checksum` | `app_metadata.json`, inside the `.fpm` | The extracted payload — app module, `requirements.txt`, `package.json`, `install_hooks.py`, `compiled_assets/` | `fpm publish`, before upload |
+| `checksum_sha256` | `package-metadata.json`, in the repository | The raw `.fpm` archive bytes | `fpm install` / `fpm get-app`, on every download **and** every cache hit |
+
+Together these close the chain from packaging to installation:
+
+1. `fpm package` records `content_checksum` over the fully staged payload.
+2. `fpm publish` re-derives it from the archive and **refuses to upload** on mismatch, so a package modified after it was built never reaches a repository.
+3. The repository records `checksum_sha256` over the uploaded bytes.
+4. `fpm install` rejects any download whose bytes do not match, deletes the offending file, and falls through to the next configured repository. Cached packages are re-verified before reuse, so a poisoned cache entry is discarded and re-downloaded rather than installed.
+
+A package whose repository metadata records no `checksum_sha256` cannot be verified. FPM warns on stderr and proceeds, so that packages published before checksums were recorded remain installable.
 
 ## 🧪 Development
 

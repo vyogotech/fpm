@@ -3,6 +3,8 @@ package cmd
 import (
 	// "bytes" // Not directly used, executeCommand captures output
 	"archive/zip" // For creating dummy FPM for mock server
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,7 +27,10 @@ import (
 )
 
 // createDummyFPMForPublishing creates a valid .fpm file with new package structure.
-func createDummyFPMForPublishing(t *testing.T, targetDir, appOrg, appName, appVersion string, contentChecksum string) string {
+// contentChecksumOverride, when non-empty, is recorded in app_metadata.json in place of
+// the checksum that actually describes the archive contents, simulating a tampered package.
+// Pass "" to get a self-consistent package that passes verification.
+func createDummyFPMForPublishing(t *testing.T, targetDir, appOrg, appName, appVersion string, contentChecksumOverride string) string {
 	t.Helper()
 	fpmFileName := fmt.Sprintf("%s-%s.fpm", appName, appVersion)
 	fpmFilePath := filepath.Join(targetDir, fpmFileName)
@@ -35,6 +40,21 @@ func createDummyFPMForPublishing(t *testing.T, targetDir, appOrg, appName, appVe
 	defer archiveFile.Close()
 
 	zipWriter := zip.NewWriter(archiveFile)
+
+	hooksContent := fmt.Sprintf("app_name = \"%s\"\n", appName)
+	hooksEntryName := appName + "/hooks.py"
+
+	// Mirror archive.CalculateArchiveContentChecksum over the entries written below:
+	// sorted by path, each contributing its path, and regular files their content too.
+	// app_metadata.json is excluded because it carries this checksum.
+	contentHash := sha256.New()
+	contentHash.Write([]byte(appName)) // the app module directory, path only
+	contentHash.Write([]byte(hooksEntryName))
+	contentHash.Write([]byte(hooksContent))
+	contentChecksum := hex.EncodeToString(contentHash.Sum(nil))
+	if contentChecksumOverride != "" {
+		contentChecksum = contentChecksumOverride
+	}
 
 	// Add app_metadata.json
 	appMeta := metadata.AppMetadata{
@@ -59,8 +79,7 @@ func createDummyFPMForPublishing(t *testing.T, targetDir, appOrg, appName, appVe
 	_, err = zipWriter.CreateHeader(header)
 	require.NoError(t, err)
 
-	hooksContent := fmt.Sprintf("app_name = \"%s\"\n", appName)
-	fWriterHooks, err := zipWriter.Create(filepath.Join(appName, "hooks.py"))
+	fWriterHooks, err := zipWriter.Create(hooksEntryName)
 	require.NoError(t, err)
 	_, err = io.WriteString(fWriterHooks, hooksContent)
 	require.NoError(t, err)
@@ -133,7 +152,7 @@ func TestPublishCommand(t *testing.T) {
 		defer os.RemoveAll(tempPackageDir)
 
 		// Create a dummy .fpm file to publish
-		dummyFPMPath := createDummyFPMForPublishing(t, tempPackageDir, testOrg, testAppName, testAppVersion, "dummychecksum1")
+		dummyFPMPath := createDummyFPMForPublishing(t, tempPackageDir, testOrg, testAppName, testAppVersion, "")
 
 		// Clear any previously received data for this specific package on the mock server
 		expectedFpmServerPath := fmt.Sprintf("/%s/%s/%s/%s-%s.fpm", testOrg, testAppName, testAppVersion, testAppName, testAppVersion)
@@ -226,7 +245,7 @@ func TestPublishCommand(t *testing.T) {
 	t.Run("PublishToDefaultRepo", func(t *testing.T) {
 		tempPackageDir, _ := os.MkdirTemp("", "fpm-publish-default-*")
 		defer os.RemoveAll(tempPackageDir)
-		dummyFPMPath := createDummyFPMForPublishing(t, tempPackageDir, testOrg, "defaultrepoapp", "1.0.0", "dummychecksum_default")
+		dummyFPMPath := createDummyFPMForPublishing(t, tempPackageDir, testOrg, "defaultrepoapp", "1.0.0", "")
 
 		// Set default repo
 		SharedResetRepoCmdFlags()
@@ -264,7 +283,7 @@ func TestPublishCommand(t *testing.T) {
 
 		tempPackageDir, _ := os.MkdirTemp("", "fpm-publish-exists-*")
 		defer os.RemoveAll(tempPackageDir)
-		dummyFPMPath := createDummyFPMForPublishing(t, tempPackageDir, testOrg, testAppName, testAppVersion, "dummychecksum_exists")
+		dummyFPMPath := createDummyFPMForPublishing(t, tempPackageDir, testOrg, testAppName, testAppVersion, "")
 
 		// Reset publish flags
 		publishRepoName = ""
