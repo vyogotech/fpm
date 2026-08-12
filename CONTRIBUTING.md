@@ -137,7 +137,7 @@ go test ./...
 
 ### What to Work On
 
-- Check [Issues](https://github.com/yourusername/fpm/issues) for `good first issue` or `help wanted` labels
+- Check [Issues](https://github.com/vyogotech/fpm/issues) for `good first issue` or `help wanted` labels
 - Look at the [Roadmap](CHANGELOG.md#unreleased) for planned features
 - Fix bugs or improve documentation
 - Propose new features (open an issue first to discuss)
@@ -495,8 +495,8 @@ Logs, screenshots, etc.
 
 ## 📧 Contact
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/fpm/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/fpm/discussions)
+- **Issues**: [GitHub Issues](https://github.com/vyogotech/fpm/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/vyogotech/fpm/discussions)
 - **Email**: maintainer@example.com
 
 ## 🙏 Recognition
