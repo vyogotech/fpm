@@ -15,7 +15,8 @@ import (
 	"fpm/internal/config"
 	"fpm/internal/gitutils"
 	"fpm/internal/metadata"
-	"fpm/internal/utils" // Added for utils.CopyRegularFile
+	"fpm/internal/utils"  // Added for utils.CopyRegularFile
+	"fpm/internal/wheels" // For vendoring Python dependencies
 
 	"github.com/spf13/cobra"
 )
@@ -84,6 +85,8 @@ var (
 	packageOverwrite        bool
 	packageType             string
 	packageSkipLocalInstall bool
+	packageBundleDeps       bool
+	packagePlatform         string
 )
 
 var packageCmd = &cobra.Command{
@@ -224,8 +227,28 @@ By default, it also installs the packaged app to the local FPM app store.`,
 			return fmt.Errorf("output file '%s' already exists. Use --overwrite to replace it", finalFpmFilePath)
 		}
 
+		// A production package is a deployment artifact, so it bundles its dependencies
+		// by default and installs without network access. Development packages are for
+		// local iteration, where bundling only slows the loop, so they default to off.
+		// An explicit --bundle-deps=true/false overrides either default.
+		bundleDeps := packageBundleDeps
+		if !cmd.Flags().Changed("bundle-deps") {
+			bundleDeps = wheels.DefaultBundleForPackageType(meta.PackageType)
+		}
+
+		// Production packages target amd64 Linux, which is rarely the packaging machine,
+		// so they cross-build unless --platform says otherwise. Other package types build
+		// for the packaging host.
+		wheelPlatform := packagePlatform
+		if wheelPlatform == "" {
+			wheelPlatform = wheels.PlatformForPackageType(meta.PackageType)
+		}
+
 		fmt.Printf("Packaging '%s' version '%s' from '%s'...\n", meta.PackageName, meta.PackageVersion, absSourcePath)
-		err = archive.CreateFPMArchive(absSourcePath, absOutputPath, meta, meta.PackageVersion)
+		err = archive.CreateFPMArchive(absSourcePath, absOutputPath, meta, meta.PackageVersion, archive.Options{
+			BundleDeps:    bundleDeps,
+			WheelPlatform: wheelPlatform,
+		})
 		if err != nil {
 			return fmt.Errorf("failed to create package: %w", err)
 		}
@@ -318,4 +341,6 @@ func init() {
 	packageCmd.Flags().String("org", "", "GitHub organization or similar identifier for the app (overrides auto-detection)")
 	packageCmd.Flags().String("app-name", "", "Actual Frappe app name (e.g., erpnext, my_custom_app) (overrides auto-detection)")
 	packageCmd.Flags().StringVar(&packageType, "package-type", "prod", "Package type (prod|dev)")
+	packageCmd.Flags().BoolVar(&packageBundleDeps, "bundle-deps", true, "Bundle Python dependencies from requirements.txt into the package so it installs without network access (default true for prod packages, false for dev; use --bundle-deps=false to disable)")
+	packageCmd.Flags().StringVar(&packagePlatform, "platform", "", "Wheel platform tag to vendor for (default: "+wheels.DefaultProdPlatform+" for prod packages, packaging host otherwise)")
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -14,6 +15,7 @@ import (
 	"fpm/internal/config"
 	"fpm/internal/metadata"
 	"fpm/internal/repository"
+	"fpm/internal/wheels" // For locating vendored Python dependencies
 	// "fpm/internal/utils" // utils.CopyRegularFile is now handled by appstore package for this flow
 	"os/exec"
 
@@ -302,7 +304,19 @@ from the local FPM store, then from remote repositories.`,
 		}()
 
 		pipAppPath := filepath.Join("./apps", appName)
-		pipCmdArgs := []string{"install", "-q", "-e", pipAppPath}
+		// A package that bundles wheels/ resolves its Python dependencies from that
+		// directory instead of PyPI, so the install works without network access.
+		// Packages without vendored wheels keep the original online behaviour.
+		wheelsInStore := vendoredWheelsDir(baseVersionPath)
+		if wheelsInStore != "" {
+			if storeMeta, metaErr := readMetadataFromFPMStore(baseVersionPath); metaErr == nil {
+				warnOnWheelPlatformMismatch(storeMeta)
+			}
+			fmt.Printf("Detected vendored wheels in package. Installing offline from %s\n", wheelsInStore)
+		} else {
+			fmt.Printf("No vendored wheels in package; resolving Python dependencies from the network.\n")
+		}
+		pipCmdArgs := buildPipInstallArgs(pipAppPath, wheelsInStore)
 		fmt.Printf("Running pip install for '%s': ./env/bin/pip %s\n", appName, strings.Join(pipCmdArgs, " "))
 		pipExecCmd := exec.Command("./env/bin/pip", pipCmdArgs...)
 		output, err := pipExecCmd.CombinedOutput()
@@ -403,6 +417,61 @@ func readMetadataFromFPMFile(fpmPath string) (*metadata.AppMetadata, error) {
 }
 
 // Helper function to read metadata from an installed FPM app directory's app_metadata.json
+// vendoredWheelsDir returns the package's vendored wheels directory, or "" when the
+// package bundles none and its dependencies must be resolved from the network.
+func vendoredWheelsDir(baseVersionPath string) string {
+	dir := filepath.Join(baseVersionPath, wheels.DirName)
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return dir
+	}
+	return ""
+}
+
+// buildPipInstallArgs returns the pip arguments for installing the app into the bench.
+// An empty wheelsDir keeps the original network-resolving behaviour; otherwise pip is
+// pinned to the vendored wheels so the install never reaches PyPI.
+func buildPipInstallArgs(pipAppPath, wheelsDir string) []string {
+	if wheelsDir == "" {
+		return []string{"install", "-q", "-e", pipAppPath}
+	}
+	return []string{"install", "-q", "--no-index", "--find-links", wheelsDir, "-e", pipAppPath}
+}
+
+// warnOnWheelPlatformMismatch reports when a package's vendored wheels were built for a
+// platform that does not obviously match this machine. pip makes the final call on wheel
+// compatibility, so this only surfaces the likely cause ahead of a confusing pip error.
+func warnOnWheelPlatformMismatch(meta *metadata.AppMetadata) {
+	if meta == nil || meta.WheelPlatform == "" || meta.WheelPlatform == "host" {
+		return
+	}
+	// Platform tags name the OS and architecture, e.g. manylinux2014_x86_64.
+	tag := strings.ToLower(meta.WheelPlatform)
+	archMatches := strings.Contains(tag, goArchToWheelArch(runtime.GOARCH))
+	osMatches := runtime.GOOS == "linux" && (strings.Contains(tag, "linux") || strings.Contains(tag, "manylinux"))
+	if runtime.GOOS != "linux" {
+		osMatches = strings.Contains(tag, runtime.GOOS)
+	}
+	if archMatches && osMatches {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"Warning: package wheels were vendored for '%s' but this host is %s/%s. "+
+			"pip may reject them as incompatible.\n",
+		meta.WheelPlatform, runtime.GOOS, runtime.GOARCH)
+}
+
+// goArchToWheelArch maps a Go architecture name onto the spelling used in wheel tags.
+func goArchToWheelArch(goArch string) string {
+	switch goArch {
+	case "amd64":
+		return "x86_64"
+	case "arm64":
+		return "aarch64"
+	default:
+		return goArch
+	}
+}
+
 func readMetadataFromFPMStore(installedAppVersionPath string) (*metadata.AppMetadata, error) {
 	metaFilePath := filepath.Join(installedAppVersionPath, "app_metadata.json")
 	if _, err := os.Stat(metaFilePath); os.IsNotExist(err) {

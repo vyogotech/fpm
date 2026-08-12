@@ -13,6 +13,7 @@ import (
 
 	"fpm/internal/metadata" // Import the metadata package
 	"fpm/internal/utils"    // Import for checksum calculation
+	"fpm/internal/wheels"   // Import for vendoring Python dependencies
 
 	"github.com/sabhiram/go-gitignore" // For .fpmignore
 )
@@ -39,12 +40,39 @@ var productionExclusionPatterns = []string{
 	"test_*",       // Matches files or directories starting with "test_" anywhere
 }
 
+// Options controls optional packaging behaviour. The zero value packages the app
+// exactly as before wheel vendoring existed.
+type Options struct {
+	// BundleDeps bundles the app's Python dependencies into the package so that
+	// installing it does not require network access.
+	BundleDeps bool
+	// WheelPlatform is the pip platform tag to vendor wheels for. An empty tag
+	// vendors for the packaging host.
+	WheelPlatform string
+	// bundle performs the dependency bundling, defaulting to wheels.Bundle. Tests
+	// substitute it to exercise the staging order without requiring pip or network.
+	bundle bundleFunc
+}
+
+// bundleFunc resolves the dependencies declared in appDir into destDir for the given
+// platform, reporting whether anything was bundled.
+type bundleFunc func(appDir, destDir, platform string) (bool, error)
+
+// hostPlatformTag records in metadata that wheels were built for the packaging host,
+// whose exact tag pip determines at build time.
+const hostPlatformTag = "host"
+
 // CreateFPMArchive creates an .fpm package from the app source.
 // appSourcePath: Path to the Frappe app's source directory.
 // outputPath: Directory where the .fpm file should be saved.
 // meta: The AppMetadata for the package.
 // version: The specific version string for this package.
-func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.AppMetadata, version string) error {
+// opts: Optional packaging behaviour; omit for the default packaging path.
+func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.AppMetadata, version string, opts ...Options) error {
+	var options Options
+	if len(opts) > 0 {
+		options = opts[0]
+	}
 	if meta == nil {
 		return errors.New("metadata cannot be nil")
 	}
@@ -201,6 +229,29 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 		// The ignorer passed to copyDir should be the potentially combined one
 		if err := copyDir(compiledAssetsPath, stagedCompiledAssetsPath, ignorer, absAppSourcePath); err != nil {
 			return fmt.Errorf("failed to copy compiled_assets: %w", err)
+		}
+	}
+
+	// --- Vendor Python wheels ---
+	// Runs before the checksum below so vendored wheels are covered by the integrity
+	// hash like every other staged file.
+	if options.BundleDeps {
+		bundleInto := options.bundle
+		if bundleInto == nil {
+			bundleInto = wheels.Bundle
+		}
+		// Read manifests from the staging directory rather than the source tree, so
+		// bundling reflects exactly what the package ships.
+		wheelsStagePath := filepath.Join(stagingDir, wheels.DirName)
+		vendored, vendorErr := bundleInto(stagingDir, wheelsStagePath, options.WheelPlatform)
+		if vendorErr != nil {
+			return fmt.Errorf("failed to vendor wheels: %w", vendorErr)
+		}
+		if vendored {
+			meta.WheelPlatform = options.WheelPlatform
+			if meta.WheelPlatform == "" {
+				meta.WheelPlatform = hostPlatformTag
+			}
 		}
 	}
 
