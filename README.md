@@ -115,14 +115,42 @@ fpm publish --from-file ./my-app-1.0.0.fpm --repo repository-name
 Add a new FPM package repository.
 
 ```bash
-fpm repo add <name> <url> [--priority <number>]
+fpm repo add <name> <url> [--priority <number>] [--username <user>]
 ```
 
 **Example:**
 ```bash
-fpm repo add company-repo https://fpm.company.com --priority 10
+fpm repo add company-repo https://fpm.company.com --priority 10 --username deployer
 fpm repo add local-dev http://localhost:8080 --priority 1
 ```
+
+### Authenticating to a Repository
+
+The bundled repository server requires HTTP Basic Auth for all writes, so publishing to
+one needs credentials. Record the username with `--username`; the **password is never
+stored in `~/.fpm/config.json`**, which is plain text and tends to end up in backups and
+dotfile repositories.
+
+The password is resolved in order:
+
+1. `FPM_REPO_<NAME>_PASSWORD` — repository-specific (`company-repo` → `FPM_REPO_COMPANY_REPO_PASSWORD`)
+2. `FPM_REPO_PASSWORD` — applies to any repository, for single-repository and CI setups
+3. An interactive prompt, with no echo
+
+```bash
+# CI / scripted
+export FPM_REPO_COMPANY_REPO_PASSWORD=...
+fpm publish myorg/my-app==1.0.0 --repo company-repo
+
+# interactive - prompts, nothing lands in shell history
+fpm publish myorg/my-app==1.0.0 --repo company-repo
+```
+
+Credentials are scoped to the repository host, so they are not forwarded if a repository
+redirects to a CDN or object store on another origin. A repository configured without a
+username is treated as public and no credentials are sent.
+
+Create repository users with [`scripts/add-user.sh`](scripts/add-user.sh).
 
 #### `fpm repo list`
 List all configured repositories.

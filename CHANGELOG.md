@@ -8,7 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned Features
-- Authentication support in FPM client (username/password in repository config)
 - Automatic directory creation for new packages
 - TLS/SSL support out of the box
 - Package signing and verification
@@ -20,6 +19,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-repository package resolution
 - Package version conflict detection
 - Rollback and version pinning
+
+## [1.5.0] - 2026-08-12
+
+### Added
+- **Authentication for repositories requiring HTTP Basic Auth.** The bundled repository
+  server requires authentication for every write, and the client sent credentials nowhere,
+  so `fpm publish` could not succeed against the repository FPM itself ships. Repositories
+  now take a `--username`, and every request to a configured repository carries
+  credentials: publish, install, get-app and search.
+- Passwords are resolved from `FPM_REPO_<NAME>_PASSWORD`, then `FPM_REPO_PASSWORD`, then
+  an interactive no-echo prompt. Non-interactive use fails with guidance naming both
+  variables rather than blocking on a prompt nothing will answer.
+- A 401 or 403 now explains what to do — configure a username, or check the password
+  source — instead of surfacing a bare status code.
+- `fpm repo list` shows the username configured for each repository.
+
+### Security
+- **Passwords are never written to `~/.fpm/config.json`.** Only the username is stored;
+  the file is plain text and commonly ends up in backups and dotfile repositories.
+- Credentials are scoped to the repository host, so they are not forwarded when a
+  repository redirects to a CDN or object store on another origin.
+
+### Notes
+- Repositories configured without a username are treated as public and receive no
+  credentials, so existing setups are unaffected.
+- During a multi-repository search or install, a repository whose credentials cannot be
+  resolved is skipped with a warning rather than failing the whole operation, since
+  another repository may serve the package.
 
 ## [1.4.0] - 2026-08-12
 
@@ -229,12 +256,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Troubleshooting guide
 
 ### Known Limitations
-- FPM client does not yet support authentication credentials in repository configuration
 - Nginx requires pre-created directories for new org/app combinations
 - No TLS/SSL by default (HTTP only, can be configured)
 - Metadata endpoint temporarily has no authentication for testing
 
-[Unreleased]: https://github.com/vyogotech/fpm/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/vyogotech/fpm/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/vyogotech/fpm/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/vyogotech/fpm/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/vyogotech/fpm/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/vyogotech/fpm/compare/v1.1.1...v1.2.0

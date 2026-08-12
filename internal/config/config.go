@@ -13,6 +13,11 @@ type RepositoryConfig struct {
 	Name     string `json:"name"`     // User-defined unique name for the repository
 	URL      string `json:"url"`      // Base URL of the FPM repository
 	Priority int    `json:"priority"` // Lower numbers mean higher priority
+	// Username for repositories requiring HTTP Basic Auth. The password is deliberately
+	// not stored here: this file is plain text and commonly ends up in backups and
+	// dotfile repositories. It is supplied through the environment or an interactive
+	// prompt instead.
+	Username string `json:"username,omitempty"`
 }
 
 // FPMConfig defines the structure for FPM's configuration.

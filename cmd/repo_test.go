@@ -187,9 +187,9 @@ func TestRepoListCmd(t *testing.T) {
 		// Header lines are present in the actual output, so we check for content lines
 		// "NAME                 URL                                                PRIORITY",
 		// "----                 ---                                                --------",
-		"repo3                url3                                               0",
-		"repo2                url2                                               5",
-		"repo1                url1                                               10",
+		"repo3                url3                                               0          -",
+		"repo2                url2                                               5          -",
+		"repo1                url1                                               10         -",
 	}
 
 	normalizedOutput := strings.ReplaceAll(strings.TrimSpace(output), "\r\n", "\n")

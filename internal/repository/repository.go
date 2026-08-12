@@ -61,11 +61,24 @@ func FindPackageInRepos(cfg *config.FPMConfig, org, appName, requestedVersion st
 		return nil, fmt.Errorf("no repositories configured. Use 'fpm repo add' to add a repository")
 	}
 
-	client := &http.Client{Timeout: time.Second * 30}
 	userAgent := "fpm-client/0.1.0" // Define User-Agent
 
 	for _, repo := range sortedRepos {
 		fmt.Printf("Searching for %s/%s version '%s' in repository '%s' (%s)...\n", org, appName, requestedVersion, repo.Name, repo.URL)
+
+		// Credentials are per repository, so the client is built inside the loop.
+		// A repository whose credentials cannot be resolved is skipped rather than
+		// aborting the search: a later repository may serve the package without auth.
+		creds, credErr := ResolveCredentials(repo.Name, repo.Username, true)
+		if credErr != nil {
+			fmt.Fprintf(os.Stderr, "Skipping repository %s: %v\n", repo.Name, credErr)
+			continue
+		}
+		client, clientErr := NewClient(repo.URL, creds, time.Second*30)
+		if clientErr != nil {
+			fmt.Fprintf(os.Stderr, "Skipping repository %s: %v\n", repo.Name, clientErr)
+			continue
+		}
 
 		// Construct metadata URL: <repo.URL>/metadata/<org>/<appName>/package-metadata.json
 		metadataPath := fmt.Sprintf("metadata/%s/%s/package-metadata.json", org, appName)

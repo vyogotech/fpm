@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -131,7 +132,19 @@ to publish from the local FPM app store.`,
 		}
 		fmt.Printf("Publishing to repository: %s (%s)\n", targetRepo.Name, targetRepo.URL)
 
-		httpClient := &http.Client{Timeout: 180 * time.Second}
+		// Publishing writes to the repository, which is exactly what a secured repository
+		// requires credentials for, so resolve them before any request is made.
+		creds, err := repository.ResolveCredentials(targetRepo.Name, targetRepo.Username, true)
+		if err != nil {
+			return err
+		}
+		httpClient, err := repository.NewClient(targetRepo.URL, creds, 180*time.Second)
+		if err != nil {
+			return err
+		}
+		if creds.Configured() {
+			fmt.Printf("Authenticating to %s as '%s'.\n", targetRepo.Name, creds.Username)
+		}
 
 		fmt.Printf("Fetching remote metadata for %s/%s from %s...\n", appOrg, appName, targetRepo.Name)
 		remoteMeta, metadataExisted, err := repository.FetchRemotePackageMetadata(targetRepo.URL, appOrg, appName, httpClient)
@@ -192,6 +205,14 @@ to publish from the local FPM app store.`,
 		fmt.Printf("Uploading FPM package to %s...\n", fpmDestURL)
 		err = repository.UploadHTTPFile(fpmDestURL, fpmFilePathToPublish, http.MethodPut, "application/octet-stream", httpClient, "", nil)
 		if err != nil {
+			// A bare 401 gives no hint that credentials are the missing piece, and this
+			// is the first write a publish makes, so it is where auth problems surface.
+			if repository.IsAuthFailure(err) {
+				var statusErr *repository.HTTPStatusError
+				errors.As(err, &statusErr)
+				return fmt.Errorf("failed to upload FPM package: %w\n%s",
+					err, repository.DescribeAuthFailure(targetRepo.Name, targetRepo.Username, statusErr.StatusCode))
+			}
 			return fmt.Errorf("failed to upload FPM package: %w", err)
 		}
 

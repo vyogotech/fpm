@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 	// "os" // Not directly used, but path/filepath might be useful if more path manipulation was needed
@@ -71,7 +70,14 @@ If version is not specified, 'latest' is assumed.`,
 			return fmt.Errorf("repository '%s' not configured. Use 'fpm repo add %s <url>' to configure it", repoName, repoName)
 		}
 
-		httpClient := &http.Client{Timeout: 120 * time.Second} // Shared client
+		creds, err := repository.ResolveCredentials(repoName, repoConfig.Username, true)
+		if err != nil {
+			return err
+		}
+		httpClient, err := repository.NewClient(repoConfig.URL, creds, 120*time.Second) // Shared client
+		if err != nil {
+			return err
+		}
 
 		fmt.Printf("Fetching %s/%s (version: '%s') from repository %s (%s)...\n", org, appName, version, repoName, repoConfig.URL)
 		downloadedPkg, err := repository.FindPackageInSpecificRepo(repoName, repoConfig.URL, org, appName, version, httpClient)
