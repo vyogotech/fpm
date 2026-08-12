@@ -145,10 +145,20 @@ fpm repo default              # Show current default
 Search for packages across repositories.
 
 ```bash
-fpm search                    # List all packages
-fpm search erp                # Search by keyword
-fpm search myorg/my-app       # Search specific package
+fpm search                       # List local packages
+fpm search erp                   # Search local store and cache by keyword
+fpm search erp --remote          # Also search configured repositories
+fpm search --remote              # List every package in every repository
+fpm search myorg/my-app --remote # Look up an exact package
 ```
+
+**Flags:**
+- `--remote`: also query configured repositories. Without it, `fpm search` makes no
+  network calls.
+
+Remote keyword search uses each repository's package index (`/metadata/index.json`),
+which `fpm publish` maintains automatically. A repository without an index can still be
+queried for an exact `<org>/<app>`, but cannot be searched by keyword.
 
 #### `fpm get-app`
 Download a package from a repository to local store.
@@ -166,11 +176,17 @@ fpm get-app company-repo/frappe/erpnext  # Gets latest
 ### Utilities
 
 #### `fpm deps`
-Inspect package dependencies.
+Inspect the dependencies a package declares and bundles.
 
 ```bash
-fpm deps <package-path>
+fpm deps ./my-app-1.0.0.fpm      # a package file
+fpm deps myorg/my-app            # latest in the local store
+fpm deps myorg/my-app==1.0.0     # a specific version
 ```
+
+Reports the Python dependencies declared in the `requirements.txt` and `pyproject.toml`
+the package ships, and whether it bundles wheels for offline installation — so you can
+tell before installing whether it will reach the network.
 
 ## 🏢 Deploy Your Own Repository
 
@@ -227,6 +243,7 @@ See **[Repository Setup Guide](fpm-repo-README.md)** for detailed instructions.
 │     Package Structure               │
 │  /<org>/<app>/<version>/*.fpm       │
 │  /metadata/<org>/<app>/*.json       │
+│  /metadata/index.json  (catalogue)  │
 └─────────────────────────────────────┘
 ```
 

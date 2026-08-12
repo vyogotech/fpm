@@ -27,14 +27,21 @@ type SearchResultItem struct {
 	SourceRank  int // 1 for local-store, 2 for remote-live, 3 for cache
 }
 
+// searchRemote is set by --remote, opting the search into network queries.
+var searchRemote bool
+
 var searchCmd = &cobra.Command{
 	Use:   "search [query]",
-	Short: "Search for FPM packages in local store, cache, and optionally remote repositories",
-	Long: `Searches for FPM packages by matching the query against the groupID, artifactID,
-or description. It searches packages installed in the local FPM app store (~/.fpm/apps),
-metadata cached from remote repositories (~/.fpm/cache), and if the query is a specific
-package identifier (e.g., <group>/<artifact>), it will also query remote repositories live.
-If no query is provided, it lists all packages found in the local store and cache.`,
+	Short: "Search for FPM packages in the local store, cache, and optionally remote repositories",
+	Long: `Searches for FPM packages by matching the query against the org, app name,
+or description. It searches packages installed in the local FPM app store (~/.fpm/apps)
+and metadata cached from remote repositories (~/.fpm/cache).
+
+With --remote it also queries every configured repository, using each repository's
+package index to match by keyword. A repository that publishes no index can still be
+queried for an exact <org>/<app>, but cannot be searched by keyword.
+
+If no query is provided, it lists all packages found.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		query := ""
@@ -180,52 +187,63 @@ If no query is provided, it lists all packages found in the local store and cach
 			fmt.Fprintf(os.Stderr, "Warning: Could not access cache directory at %s: %v\n", cacheBaseDir, statErr)
 		}
 
-		// 3. Targeted Remote Query if query is <org>/<appName> - SourceRank = 2
-		var queryOrg, queryAppName string // Renamed variables
-		isSpecificIdentifier := false
-		if query != "" && strings.Count(query, "/") == 1 && !strings.Contains(query, "==") && !strings.Contains(query, "*") {
-			parts := strings.Split(query, "/")
-			if len(parts) == 2 {
-				parsedOrg := strings.TrimSpace(parts[0])
-				parsedAppName := strings.TrimSpace(parts[1])
-				if parsedOrg != "" && parsedAppName != "" {
-					queryOrg = parsedOrg         // Use renamed variables
-					queryAppName = parsedAppName // Use renamed variables
-					isSpecificIdentifier = true
-					fmt.Printf("\nPerforming targeted remote query for %s/%s...\n", queryOrg, queryAppName)
-				}
-			}
-		}
-
-		if isSpecificIdentifier && cfg != nil {
+		// 3. Remote repositories - SourceRank = 2. Only with --remote, so that a plain
+		// search never makes network calls the user did not ask for.
+		if searchRemote && cfg != nil {
+			queryOrg, queryAppName, isSpecificIdentifier := parsePackageIdentifier(query)
 			httpClient := &http.Client{Timeout: 15 * time.Second}
 			sortedRepos := config.ListRepositories(cfg)
+			if len(sortedRepos) == 0 {
+				fmt.Fprintln(os.Stderr, "Warning: --remote given but no repositories are configured. Use 'fpm repo add'.")
+			}
+
 			for _, repo := range sortedRepos {
-				fmt.Printf("Querying repository: %s (%s)\n", repo.Name, repo.URL)
-				remotePkgMeta, metadataFound, fetchErr := repository.FetchRemotePackageMetadata(repo.URL, queryOrg, queryAppName, httpClient) // Use new signature
+				fmt.Printf("\nQuerying repository: %s (%s)\n", repo.Name, repo.URL)
+
+				// Prefer the repository's package index: it is the only way to match a
+				// keyword, since per-package metadata needs both names to address.
+				idx, indexFound, idxErr := repository.FetchRepositoryIndex(repo.URL, httpClient)
+				if idxErr != nil {
+					fmt.Fprintf(os.Stderr, "Error fetching package index from %s: %v\n", repo.Name, idxErr)
+				}
+
+				if indexFound && idx != nil {
+					matches := 0
+					for _, entry := range idx.Packages {
+						if !entry.Match(query) {
+							continue
+						}
+						matches++
+						addRemoteResult(deDupMap, repo.Name, entry.Org, entry.AppName,
+							entry.LatestVersion, entry.Description)
+					}
+					fmt.Printf("Index matched %d package(s) in %s.\n", matches, repo.Name)
+					continue
+				}
+
+				// No index published yet. Fall back to a targeted lookup, which still
+				// works when the query names an exact package.
+				if !isSpecificIdentifier {
+					fmt.Fprintf(os.Stderr,
+						"Repository %s publishes no package index, so it cannot be searched by keyword. "+
+							"Query an exact <org>/<app> to look it up directly.\n", repo.Name)
+					continue
+				}
+
+				fmt.Printf("No index in %s; looking up %s/%s directly...\n", repo.Name, queryOrg, queryAppName)
+				remotePkgMeta, metadataFound, fetchErr := repository.FetchRemotePackageMetadata(repo.URL, queryOrg, queryAppName, httpClient)
 				if fetchErr != nil {
 					fmt.Fprintf(os.Stderr, "Error fetching metadata from %s for %s/%s: %v\n", repo.Name, queryOrg, queryAppName, fetchErr)
 					continue
 				}
-				if metadataFound && remotePkgMeta != nil { // Metadata found and parsed
+				if metadataFound && remotePkgMeta != nil {
 					for versionStr := range remotePkgMeta.Versions {
-						newItem := SearchResultItem{
-							Source:      fmt.Sprintf("(remote: %s)", repo.Name),
-							Org:         remotePkgMeta.Org,     // Use new field
-							AppName:     remotePkgMeta.AppName, // Use new field
-							Version:     versionStr,
-							Description: remotePkgMeta.Description,
-							SourceRank:  2,
-						}
-						key := fmt.Sprintf("%s/%s:%s", newItem.Org, newItem.AppName, newItem.Version) // Use new fields
-						if existingItem, ok := deDupMap[key]; !ok || newItem.SourceRank < existingItem.SourceRank {
-							deDupMap[key] = newItem
-						}
+						addRemoteResult(deDupMap, repo.Name, remotePkgMeta.Org, remotePkgMeta.AppName,
+							versionStr, remotePkgMeta.Description)
 					}
-				} else if !metadataFound { // Explicitly 404
+				} else if !metadataFound {
 					fmt.Printf("Package %s/%s not found in remote repository %s.\n", queryOrg, queryAppName, repo.Name)
 				}
-				// If metadataFound is true but remotePkgMeta is nil, it implies a parsing error which was already logged by FetchRemotePackageMetadata
 			}
 		}
 
@@ -270,6 +288,46 @@ If no query is provided, it lists all packages found in the local store and cach
 	},
 }
 
+// parsePackageIdentifier reports whether a query names an exact <org>/<app> package,
+// which can be looked up directly even in a repository that publishes no index.
+func parsePackageIdentifier(query string) (org, appName string, ok bool) {
+	if query == "" || strings.Count(query, "/") != 1 ||
+		strings.Contains(query, "==") || strings.Contains(query, "*") {
+		return "", "", false
+	}
+	parts := strings.Split(query, "/")
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	org = strings.TrimSpace(parts[0])
+	appName = strings.TrimSpace(parts[1])
+	if org == "" || appName == "" {
+		return "", "", false
+	}
+	return org, appName, true
+}
+
+// addRemoteResult records a package found in a repository, keeping the highest-ranked
+// source when the same version was already found locally or in the cache.
+func addRemoteResult(deDupMap map[string]SearchResultItem, repoName, org, appName, version, description string) {
+	if version == "" {
+		return
+	}
+	newItem := SearchResultItem{
+		Source:      fmt.Sprintf("(remote: %s)", repoName),
+		Org:         org,
+		AppName:     appName,
+		Version:     version,
+		Description: description,
+		SourceRank:  2,
+	}
+	key := fmt.Sprintf("%s/%s:%s", newItem.Org, newItem.AppName, newItem.Version)
+	if existingItem, ok := deDupMap[key]; !ok || newItem.SourceRank < existingItem.SourceRank {
+		deDupMap[key] = newItem
+	}
+}
+
 func init() {
 	rootCmd.AddCommand(searchCmd)
+	searchCmd.Flags().BoolVar(&searchRemote, "remote", false, "Also search configured remote repositories")
 }
