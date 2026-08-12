@@ -15,15 +15,16 @@ import (
 // the error is returned so a bad artifact is never left behind in the cache for a later
 // run to pick up.
 //
-// When the repository records no checksum the file cannot be verified at all. That is
-// reported as a warning rather than an error, since packages published before checksums
-// were recorded would otherwise become uninstallable.
+// A repository that records no checksum is rejected rather than trusted. Accepting an
+// unverifiable package would let any repository skip verification simply by omitting the
+// field, which is a weaker guarantee than having no verification at all: the client would
+// report success while checking nothing.
 func verifyFPMFileOrRemove(filePath, expectedChecksum, packageDescription string) error {
 	if expectedChecksum == "" {
-		fmt.Fprintf(os.Stderr,
-			"Warning: repository metadata records no checksum for %s; the integrity of %s cannot be verified.\n",
-			packageDescription, filePath)
-		return nil
+		os.Remove(filePath)
+		return fmt.Errorf("repository metadata records no checksum for %s, so the package "+
+			"cannot be verified. Republish it with a current version of fpm to record one",
+			packageDescription)
 	}
 
 	actualChecksum, err := utils.CalculateFileChecksum(filePath)

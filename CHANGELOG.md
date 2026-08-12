@@ -20,6 +20,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Package version conflict detection
 - Rollback and version pinning
 
+## [1.6.0] - 2026-08-12
+
+### Security
+- **A package whose repository metadata records no `checksum_sha256` is now rejected
+  rather than accepted with a warning.** The leniency existed so that packages published
+  before checksums were recorded stayed installable, but it meant any repository could
+  skip verification entirely by omitting the field, while the client reported success
+  having checked nothing — a weaker guarantee than performing no verification at all.
+  The unverifiable artifact is removed rather than left in the cache, and the rejection
+  applies to cache hits as well as fresh downloads, so it cannot be bypassed by planting
+  a file where a download would land.
+
+### Notes
+- The error names the remedy: republish the package to record a checksum.
+- `fpm publish` already refused to upload an archive with no `content_checksum`, so both
+  ends of the chain now fail closed rather than open.
+
 ## [1.5.0] - 2026-08-12
 
 ### Added
@@ -160,7 +177,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes
 - Packages whose repository metadata records no `checksum_sha256` cannot be verified. FPM
   warns on stderr and proceeds, so packages published before checksums were recorded remain
-  installable.
+  installable. (Tightened to a hard rejection in 1.6.0.)
 - A repository serving artifacts that do not match its own published metadata will now be
   rejected rather than silently trusted. Republishing such packages regenerates correct
   metadata.
@@ -260,7 +277,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No TLS/SSL by default (HTTP only, can be configured)
 - Metadata endpoint temporarily has no authentication for testing
 
-[Unreleased]: https://github.com/vyogotech/fpm/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/vyogotech/fpm/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/vyogotech/fpm/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/vyogotech/fpm/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/vyogotech/fpm/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/vyogotech/fpm/compare/v1.2.0...v1.3.0
