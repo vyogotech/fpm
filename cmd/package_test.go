@@ -251,7 +251,7 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(appValidateDir, fname), []byte(""), 0644))
 		}
 
-		cmdArgs := []string{"package", "--version", "0.0.1", "--output-path", outputDir, sourceDir}
+		cmdArgs := []string{"package", "--bundle-deps=false", "--version", "0.0.1", "--output-path", outputDir, sourceDir}
 		rootCmd.SetArgs(cmdArgs)
 
 		oldStdout := os.Stdout
@@ -300,7 +300,7 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(appValidateDir, fname), []byte(""), 0644))
 		}
 
-		cmdArgs := []string{"package", "--version", "0.0.2", "--output-path", outputDir, sourceDir}
+		cmdArgs := []string{"package", "--bundle-deps=false", "--version", "0.0.2", "--output-path", outputDir, sourceDir}
 		rootCmd.SetArgs(cmdArgs)
 		executeErr := rootCmd.Execute()
 		require.NoError(t, executeErr)
@@ -331,7 +331,7 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(appValidateDir, fname), []byte(""), 0644))
 		}
 
-		cmdArgs := []string{"package", "--version", "0.0.3", "--output-path", outputDir,
+		cmdArgs := []string{"package", "--bundle-deps=false", "--version", "0.0.3", "--output-path", outputDir,
 			"--org", "flag-org", "--app-name", "flag-app", sourceDir}
 		rootCmd.SetArgs(cmdArgs)
 		executeErr := rootCmd.Execute()
@@ -356,7 +356,7 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 
 		createMockHooksFile(t, appModuleDirForHooks, "") // Empty hooks.py, no git config
 
-		cmdArgs := []string{"package", "--version", "0.0.4", "--output-path", outputDir, sourceDir}
+		cmdArgs := []string{"package", "--bundle-deps=false", "--version", "0.0.4", "--output-path", outputDir, sourceDir}
 		rootCmd.SetArgs(cmdArgs)
 		executeErr := rootCmd.Execute()
 		assert.Error(t, executeErr)
@@ -387,7 +387,7 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(appValidateDir, fname), []byte(""), 0644))
 		}
 
-		cmdArgs := []string{"package", "--version", "0.0.5", "--output-path", outputDir,
+		cmdArgs := []string{"package", "--bundle-deps=false", "--version", "0.0.5", "--output-path", outputDir,
 			"--app-name", "flag-appname", sourceDir}
 		rootCmd.SetArgs(cmdArgs)
 		executeErr := rootCmd.Execute()
@@ -416,7 +416,7 @@ func runPackageAndGetMeta(t *testing.T, sourceDir string, appName string, versio
 	resetPackageCmdFlags() // Ensure flags are clean for each run
 	outputDir := t.TempDir()
 
-	cmdArgs := []string{"package", "--version", version, "--output-path", outputDir, "--org", "testorg"}
+	cmdArgs := []string{"package", "--bundle-deps=false", "--version", version, "--output-path", outputDir, "--org", "testorg"}
 	if appName != "" {
 		cmdArgs = append(cmdArgs, "--app-name", appName)
 	}
@@ -658,7 +658,7 @@ func TestPackageCmd_LocalInstallBehavior(t *testing.T) {
 		packageSkipLocalInstall = false
 
 		args := []string{
-			"package", sourceAppDir,
+			"package", "--bundle-deps=false", sourceAppDir,
 			"--output-path", packageOutputDir,
 			"--version", testAppVersion,
 			"--org", testAppOrg,
@@ -699,7 +699,7 @@ func TestPackageCmd_LocalInstallBehavior(t *testing.T) {
 		packageSkipLocalInstall = false // Reset before setting for this test specifically
 
 		args := []string{
-			"package", sourceAppDir,
+			"package", "--bundle-deps=false", sourceAppDir,
 			"--output-path", packageOutputDir,
 			"--version", testAppVersion,
 			"--org", testAppOrg,

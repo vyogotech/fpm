@@ -21,6 +21,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Package version conflict detection
 - Rollback and version pinning
 
+## [1.3.0] - 2026-08-12
+
+### Added
+- **Offline installation via bundled Python dependencies.** `fpm package` now bundles the
+  app's Python dependencies into a `wheels/` directory inside the package.
+  `fpm install` pins pip to that directory (`--no-index --find-links`), so installing
+  requires no network access and uses the exact dependency set that was bundled, rather
+  than re-resolving `requirements.txt` at install time.
+- Dependencies are read from both `requirements.txt` and `pyproject.toml`, so apps on
+  either convention are handled without configuration; an app carrying both has its
+  specifiers merged and de-duplicated. From `pyproject.toml`, both `[project].dependencies`
+  and `[build-system].requires` are collected: `fpm install` performs a PEP 517 editable
+  build on the target, so a build backend that was not bundled would make an offline
+  install fail before it starts. Optional extras are not bundled.
+- `--platform` selects the wheel platform tag to bundle for. Production packages default
+  to `manylinux2014_x86_64`, since Frappe deployments target amd64 Linux and that is
+  rarely the packaging machine; other package types build for the packaging host.
+  Cross-target bundling uses `pip download --only-binary=:all:`, so a dependency with no
+  wheel for that platform fails loudly instead of silently producing a host-tagged build.
+- `wheel_platform` in `app_metadata.json` records what the bundled wheels were built for.
+  `fpm install` warns when that does not match the installing host, surfacing the likely
+  cause ahead of a confusing pip error.
+
+### Changed
+- **Production packages now bundle dependencies by default.** A production package is a
+  deployment artifact, so it is self-contained unless told otherwise. Development packages
+  do not bundle, since it only slows the local iteration loop. Either default can be
+  overridden with `--bundle-deps` / `--bundle-deps=false`.
+
+  This makes `python3` with `pip` a requirement for producing production packages, and
+  packaging now fails when a dependency publishes no wheel for the target platform. That
+  is deliberate: the alternative is a package that claims to be deployable but cannot
+  install on the target. Use `--bundle-deps=false` to package without dependencies.
+
+### Notes
+- Installing is unchanged for packages that bundle no dependencies: they still resolve
+  from the network.
+- Bundled wheels are staged before the content checksum is calculated, so they are covered
+  by the package's integrity hash like every other file. Tampering with a bundled wheel is
+  caught by `fpm publish`.
+- Node dependencies are deliberately not bundled. `node_modules` is a build-time
+  requirement for producing JS/CSS; the built output travels in `compiled_assets/`, which
+  `fpm install` deploys to `sites/assets/<app>/`, so no Node toolchain is needed on the
+  target host.
+
 ## [1.2.0] - 2026-08-12
 
 ### Security
@@ -158,7 +203,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No TLS/SSL by default (HTTP only, can be configured)
 - Metadata endpoint temporarily has no authentication for testing
 
-[Unreleased]: https://github.com/vyogotech/fpm/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/vyogotech/fpm/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/vyogotech/fpm/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/vyogotech/fpm/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/vyogotech/fpm/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/vyogotech/fpm/compare/v1.0.0...v1.1.0

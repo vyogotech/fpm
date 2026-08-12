@@ -91,6 +91,8 @@ fpm package --version 1.0.0 --org myorg [--app-name my_app]
 - `--overwrite`: Overwrite existing `.fpm` file
 - `--skip-local-install`: Skip installing to local FPM store
 - `--package-type`: Package type (prod|dev, default: prod)
+- `--bundle-deps`: Bundle Python dependencies for offline install (default: true for prod, false for dev)
+- `--platform`: Wheel platform tag to bundle for (default: `manylinux2014_x86_64` for prod, packaging host otherwise)
 
 #### `fpm install`
 Install a Frappe application package.
@@ -239,10 +241,64 @@ my-app-1.0.0.fpm
 │   ├── __init__.py
 │   ├── hooks.py
 │   └── ...
-├── requirements.txt          # Python dependencies
+├── requirements.txt          # Python dependencies (either or both)
+├── pyproject.toml            # PEP 621 project metadata
 ├── package.json              # Node dependencies (optional)
+├── wheels/                   # Bundled Python deps (prod default)
+├── compiled_assets/          # Prebuilt JS/CSS (optional)
 └── assets/                   # Additional assets
 ```
+
+### Offline Installation
+
+**Production packages bundle their Python dependencies by default**, so they install
+without network access. Development packages do not, since bundling only slows the local
+iteration loop.
+
+```bash
+# production package: bundles deps, cross-built for amd64 Linux
+fpm package -v 1.0.0
+
+# development package: no bundled deps, installs from the network
+fpm package -v 1.0.0 --package-type dev
+
+# opt out for a production package
+fpm package -v 1.0.0 --bundle-deps=false
+
+# opt in for a development package (built for the packaging host)
+fpm package -v 1.0.0 --package-type dev --bundle-deps
+
+# explicit target platform
+fpm package -v 1.0.0 --platform macosx_11_0_arm64
+```
+
+Dependencies are read from **both `requirements.txt` and `pyproject.toml`**, so apps on
+either convention work without configuration. An app carrying both has its specifiers
+merged and de-duplicated. From `pyproject.toml` FPM reads:
+
+- `[project].dependencies` — the app's runtime dependencies
+- `[build-system].requires` — the build backend, which pip needs to perform the editable
+  build on the target machine; without it bundled, an offline install fails before it starts
+
+Optional extras (`[project.optional-dependencies]`) are not bundled, since pip does not
+install them by default.
+
+Bundling needs `python3` with `pip` on PATH at packaging time. If a dependency publishes
+no wheel for the target platform, packaging fails rather than producing a package that
+cannot install offline; `--bundle-deps=false` packages without them.
+
+Installing a package that bundles `wheels/` pins pip to that directory
+(`--no-index --find-links wheels/`), so **no network access is required**. Packages
+without vendored wheels keep resolving from the network, unchanged.
+
+The platform the wheels were built for is recorded as `wheel_platform` in
+`app_metadata.json`, and `fpm install` warns when it does not match the installing host.
+Vendored wheels are covered by the package's `content_checksum` like any other file.
+
+> **Node dependencies are not vendored, and do not need to be.** `node_modules` is a
+> build-time requirement for producing JS/CSS; ship the built output in `compiled_assets/`
+> instead, which `fpm install` deploys to `sites/assets/<app>/`. No Node toolchain is
+> needed on the target machine.
 
 ## 🔒 Security
 

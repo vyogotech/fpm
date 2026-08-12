@@ -21,6 +21,10 @@ type AppMetadata struct {
 	SourceControlURL    string            `json:"source_control_url,omitempty"`
 	PackageType         string            `json:"package_type,omitempty"`
 	ContentChecksum     string            `json:"content_checksum,omitempty"`
+	// WheelPlatform is the pip platform tag the bundled wheels/ directory was vendored
+	// for, or "host" when built for the packaging machine. Empty means the package
+	// bundles no wheels and installs its Python dependencies from the network.
+	WheelPlatform string `json:"wheel_platform,omitempty"`
 	// Add other fields as necessary
 }
 
