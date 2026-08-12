@@ -183,22 +183,6 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 		return fmt.Errorf("failed to walk and copy app source directory: %w", err)
 	}
 
-	// --- Calculate checksum before saving metadata ---
-	// meta.PackageVersion is expected to be set by the caller (e.g., cmd/package.go)
-	// and should be present in the 'meta' object passed to this function.
-	checksum, checksumErr := utils.CalculateDirectoryChecksum(stagingDir, "app_metadata.json")
-	if checksumErr != nil {
-		return fmt.Errorf("failed to calculate content checksum for stagingDir '%s': %w", stagingDir, checksumErr)
-	}
-	meta.ContentChecksum = checksum
-
-	// --- Save app_metadata.json ---
-	// The 'meta' object now includes PackageName, PackageVersion, potentially AppName, Org,
-	// SourceControlURL, PackageType, and the newly added ContentChecksum.
-	if err := metadata.SaveAppMetadata(stagingDir, meta); err != nil { // Save at the root of staging
-		return fmt.Errorf("failed to save app_metadata.json: %w", err)
-	}
-
 	// --- Copy other standard files (requirements.txt, package.json, install_hooks.py) ---
 	otherFiles := []string{"requirements.txt", "package.json", "install_hooks.py"}
 	for _, fName := range otherFiles {
@@ -218,6 +202,24 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 		if err := copyDir(compiledAssetsPath, stagedCompiledAssetsPath, ignorer, absAppSourcePath); err != nil {
 			return fmt.Errorf("failed to copy compiled_assets: %w", err)
 		}
+	}
+
+	// --- Calculate checksum over the fully staged payload ---
+	// This must run after every file that ends up in the archive has been staged
+	// (app source, requirements.txt, package.json, install_hooks.py, compiled_assets),
+	// otherwise those files would be excluded from the integrity hash.
+	// app_metadata.json is excluded because it carries this checksum itself.
+	checksum, checksumErr := utils.CalculateDirectoryChecksum(stagingDir, "app_metadata.json")
+	if checksumErr != nil {
+		return fmt.Errorf("failed to calculate content checksum for stagingDir '%s': %w", stagingDir, checksumErr)
+	}
+	meta.ContentChecksum = checksum
+
+	// --- Save app_metadata.json ---
+	// The 'meta' object now includes PackageName, PackageVersion, potentially AppName, Org,
+	// SourceControlURL, PackageType, and the newly added ContentChecksum.
+	if err := metadata.SaveAppMetadata(stagingDir, meta); err != nil { // Save at the root of staging
+		return fmt.Errorf("failed to save app_metadata.json: %w", err)
 	}
 
 	// --- Create the .fpm ZIP archive ---

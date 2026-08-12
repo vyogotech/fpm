@@ -95,6 +95,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved search logic to correctly handle `<org>/<app>` identifiers in local and cache searches.
 - Fixed environment variable precedence for `FPM_APPS_BASE_PATH`.
 
+## [1.2.0] - 2026-08-12
+
+### Security
+- **Package contents are now covered by the integrity checksum.** `content_checksum` was
+  calculated before `requirements.txt`, `package.json`, `install_hooks.py`, and
+  `compiled_assets/` were staged, so those files shipped inside the `.fpm` without being
+  covered by the hash. `install_hooks.py` executes during installation, so a modified
+  package could pass verification while carrying altered install-time code. The checksum
+  is now calculated over the fully staged payload.
+- **`fpm publish` verifies package contents before uploading.** The archive's payload is
+  re-hashed and compared against the `content_checksum` recorded inside it. A mismatch is
+  a hard error, so a package modified after it was built never reaches a repository.
+  Verification runs before the upload rather than after it.
+- **Downloads are verified against the checksum in repository metadata.** `fpm install`
+  and `fpm get-app` previously carried `checksum_sha256` around without ever checking it.
+  Downloads that do not match are now rejected, the offending file is deleted, and
+  resolution falls through to the next configured repository.
+- **Cached packages are re-verified before reuse.** A cache hit previously returned
+  whatever was on disk unchecked. A poisoned or corrupted cache entry is now discarded and
+  re-downloaded instead of being installed.
+
+### Fixed
+- `fpm publish` no longer emits a spurious checksum warning on every publish. It compared
+  `content_checksum` (a hash of the extracted payload) against a hash of the `.fpm` bytes —
+  two values describing different inputs, which could never be equal. The two checksums are
+  now documented and used for their separate purposes.
+
+### Added
+- `archive.CalculateArchiveContentChecksum` / `archive.VerifyArchiveContentChecksum` for
+  verifying a `.fpm`'s payload directly from its entries, without extracting it.
+- Test coverage for `internal/repository`, which previously had none, covering download
+  verification, cache poisoning, and missing-checksum handling.
+
+### Notes
+- Packages whose repository metadata records no `checksum_sha256` cannot be verified. FPM
+  warns on stderr and proceeds, so packages published before checksums were recorded remain
+  installable.
+- A repository serving artifacts that do not match its own published metadata will now be
+  rejected rather than silently trusted. Republishing such packages regenerates correct
+  metadata.
+
 ## [Unreleased]
 
 ### Planned Features
@@ -112,4 +153,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rollback and version pinning
 
 [1.0.0]: https://github.com/yourusername/fpm/releases/tag/v1.0.0
+[1.2.0]: https://github.com/yourusername/fpm/releases/tag/v1.2.0
 

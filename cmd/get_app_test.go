@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -30,6 +32,9 @@ func TestGetAppCommand(t *testing.T) {
 
 	// Create dummy FPM package bytes
 	fpmBytes := SharedCreateDummyFPMBytes(t, testAppOrg, testAppName, testAppVersion)
+	// The advertised checksum must describe the bytes actually served: clients verify
+	// downloads against it, so a placeholder would be (correctly) rejected as tampering.
+	fpmSum := sha256.Sum256(fpmBytes)
 
 	// Mock PackageMetadata
 	pkgMeta := repository.PackageMetadata{
@@ -39,7 +44,7 @@ func TestGetAppCommand(t *testing.T) {
 		Versions: map[string]repository.PackageVersionMetadata{
 			testAppVersion: {
 				FPMPath:        strings.TrimPrefix(expectedFPMPath, "/"),
-				ChecksumSHA256: "dummychecksum",
+				ChecksumSHA256: hex.EncodeToString(fpmSum[:]),
 			},
 		},
 	}

@@ -56,4 +56,8 @@ vendor/
 .cache/
 .fpm/
 
+# Code search tooling artifacts
+.tldr/
+.tldrignore
+
 

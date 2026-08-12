@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"fpm/internal/config"
-	// "fpm/internal/utils" // For future checksum verification
 )
 
 // PackageVersionMetadata holds metadata for a specific version of a package.
@@ -147,17 +146,25 @@ func FindPackageInRepos(cfg *config.FPMConfig, org, appName, requestedVersion st
 			return nil, fmt.Errorf("failed to create cache directory %s: %w", cacheDir, err)
 		}
 
-		// Basic cache check (existence only for now)
+		packageDescription := fmt.Sprintf("%s/%s version %s", org, appName, targetVersion)
+
+		// Use the cached copy only if it still matches the checksum in repository metadata.
 		if info, err := os.Stat(cachedFPMPath); err == nil && !info.IsDir() && info.Size() > 0 { // Check if file exists and is not empty
-			fmt.Printf("Package found in cache: %s. Using cached file (checksum verification TODO).\n", cachedFPMPath)
-			return &DownloadedPackageInfo{
-				LocalPath:      cachedFPMPath,
-				RepositoryName: repo.Name,
-				Org:            pkgMeta.Org,     // Populate from parsed package metadata
-				AppName:        pkgMeta.AppName, // Populate from parsed package metadata
-				Version:        targetVersion,
-				Checksum:       versionMeta.ChecksumSHA256,
-			}, nil
+			if verifyErr := verifyFPMFileOrRemove(cachedFPMPath, versionMeta.ChecksumSHA256, packageDescription); verifyErr != nil {
+				// The cached file was corrupt or stale and has been removed;
+				// fall through to download a fresh copy.
+				fmt.Fprintf(os.Stderr, "Discarding cached package: %v\n", verifyErr)
+			} else {
+				fmt.Printf("Package found in cache: %s. Checksum verified.\n", cachedFPMPath)
+				return &DownloadedPackageInfo{
+					LocalPath:      cachedFPMPath,
+					RepositoryName: repo.Name,
+					Org:            pkgMeta.Org,     // Populate from parsed package metadata
+					AppName:        pkgMeta.AppName, // Populate from parsed package metadata
+					Version:        targetVersion,
+					Checksum:       versionMeta.ChecksumSHA256,
+				}, nil
+			}
 		}
 
 		fmt.Printf("Downloading %s to %s...\n", fpmDownloadURL, cachedFPMPath)
@@ -216,13 +223,14 @@ func FindPackageInRepos(cfg *config.FPMConfig, org, appName, requestedVersion st
 
 		fmt.Printf("Successfully downloaded %s.\n", fpmFileName)
 
-		// TODO: Implement and call utils.CalculateFileChecksum(cachedFPMPath)
-		// TODO: Compare with versionMeta.ChecksumSHA256
-		// TODO: If mismatch, os.Remove(cachedFPMPath) and continue
+		// Reject a download that does not match the checksum in repository metadata,
+		// and try the next repository rather than handing back a bad package.
+		if verifyErr := verifyFPMFileOrRemove(cachedFPMPath, versionMeta.ChecksumSHA256, packageDescription); verifyErr != nil {
+			fmt.Fprintf(os.Stderr, "Rejecting package from repository '%s': %v\n", repo.Name, verifyErr)
+			continue
+		}
 		if versionMeta.ChecksumSHA256 != "" {
-			fmt.Printf("Checksum verification for %s to be implemented (expected: %s).\n", cachedFPMPath, versionMeta.ChecksumSHA256)
-		} else {
-			fmt.Printf("No checksum provided in metadata for %s. Skipping verification.\n", fpmFileName)
+			fmt.Printf("Checksum verified for %s.\n", fpmFileName)
 		}
 
 		return &DownloadedPackageInfo{

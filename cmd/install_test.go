@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"archive/zip"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json" // For serving JSON metadata
 	"fmt"
 	"fpm/internal/config"     // For config.LoadConfig() to find AppsBasePath
@@ -326,6 +329,44 @@ func TestInstallCommand_NewPackageStructure(t *testing.T) {
 
 func TestInstallCommand_RemotePackage(t *testing.T) {
 	// --- Setup Phase ---
+	// Build the served .fpm up front, with the new package structure, so the checksum
+	// advertised in metadata describes the exact bytes served. Clients verify downloads
+	// against it, so a placeholder would be (correctly) rejected as tampering.
+	var fpmBuf bytes.Buffer
+	zipWriter := zip.NewWriter(&fpmBuf)
+
+	// Add app_metadata.json (essential for install command to read pkgMeta)
+	appMetaContent := `{"org":"testgrp", "app_name":"testapp", "package_name":"testapp", "package_version":"1.0.1", "content_checksum":"dummychecksumfortestapp101"}`
+	fWriter, err := zipWriter.Create("app_metadata.json")
+	require.NoError(t, err)
+	_, err = io.WriteString(fWriter, appMetaContent)
+	require.NoError(t, err)
+
+	// Add app module files (new structure) - these are relative to the root of the zip
+	// hooks.py for the app "testapp"
+	fWriterHooks, err := zipWriter.Create("testapp/hooks.py")
+	require.NoError(t, err)
+	_, err = io.WriteString(fWriterHooks, "app_name = \"testapp\"")
+	require.NoError(t, err)
+
+	// __init__.py for the app "testapp"
+	fWriterInit, err := zipWriter.Create("testapp/__init__.py")
+	require.NoError(t, err)
+	_, err = io.WriteString(fWriterInit, "# init")
+	require.NoError(t, err)
+
+	// modules.txt for the app "testapp"
+	fWriterModules, err := zipWriter.Create("testapp/modules.txt")
+	require.NoError(t, err)
+	_, err = io.WriteString(fWriterModules, "testmodule")
+	require.NoError(t, err)
+
+	require.NoError(t, zipWriter.Close())
+
+	remoteFPMBytes := fpmBuf.Bytes()
+	remoteFPMSum := sha256.Sum256(remoteFPMBytes)
+	remoteFPMChecksum := hex.EncodeToString(remoteFPMSum[:])
+
 	// 1. Setup Mock FPM Repository Server
 	mockRepoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Logf("Mock repo server received request: %s %s", r.Method, r.URL.Path)
@@ -338,71 +379,14 @@ func TestInstallCommand_RemotePackage(t *testing.T) {
 				Versions: map[string]repository.PackageVersionMetadata{
 					"1.0.1": {
 						FPMPath:        "artifacts/testgrp/testapp/1.0.1/testapp-1.0.1.fpm", // Path uses org/app
-						ChecksumSHA256: "dummychecksumfortestapp101",
+						ChecksumSHA256: remoteFPMChecksum,
 					},
 				},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(pkgMeta)
 		} else if strings.HasSuffix(r.URL.Path, ".fpm") {
-			// Serve a dummy .fpm file (can use createDummyFpmPackage logic to create a real one if needed)
-			// For this test, we need to ensure the FPM file has the *new* package structure.
-			// So, create a temporary FPM file with the new structure.
-
-			tempFpmDir, err := os.MkdirTemp("", "tempfpm-*")
-			require.NoError(t, err)
-			defer os.RemoveAll(tempFpmDir)
-
-			dummyFpmName := "testapp-1.0.1.fpm"
-			dummyFpmPath := filepath.Join(tempFpmDir, dummyFpmName)
-
-			// Create a dummy app source that will be packaged into the .fpm
-			// This app source is temporary and only used to create the dummy .fpm file content.
-			appSourceDirForDummyFPM, err := os.MkdirTemp("", "tempsourcefordummyfpm-*")
-			require.NoError(t, err)
-			defer os.RemoveAll(appSourceDirForDummyFPM)
-			// Use the same createMinimalFrappeApp helper. The paths it creates inside appSourceDirForDummyFPM
-			// will be relative to that directory, which is what we need for zipping.
-			SharedCreateMinimalAppForInstall(t, appSourceDirForDummyFPM, "testapp", "1.0.1", "testgrp")
-
-			archiveFile, err := os.Create(dummyFpmPath)
-			require.NoError(t, err)
-			zipWriter := zip.NewWriter(archiveFile)
-
-			// Add app_metadata.json (essential for install command to read pkgMeta)
-			appMetaContent := fmt.Sprintf(`{"org":"testgrp", "app_name":"testapp", "package_name":"testapp", "package_version":"1.0.1", "content_checksum":"dummychecksumfortestapp101"}`)
-			fWriter, err := zipWriter.Create("app_metadata.json")
-			require.NoError(t, err)
-			_, err = io.WriteString(fWriter, appMetaContent)
-			require.NoError(t, err)
-
-			// Add app module files (new structure) - these are relative to the root of the zip
-			// hooks.py for the app "testapp"
-			hooksPathInZip := filepath.Join("testapp", "hooks.py")
-			fWriterHooks, err := zipWriter.Create(hooksPathInZip)
-			require.NoError(t, err)
-			_, err = io.WriteString(fWriterHooks, "app_name = \"testapp\"")
-			require.NoError(t, err)
-
-			// __init__.py for the app "testapp"
-			initPathInZip := filepath.Join("testapp", "__init__.py")
-			fWriterInit, err := zipWriter.Create(initPathInZip)
-			require.NoError(t, err)
-			_, err = io.WriteString(fWriterInit, "# init")
-			require.NoError(t, err)
-
-			// modules.txt for the app "testapp"
-			modulesPathInZip := filepath.Join("testapp", "modules.txt")
-			fWriterModules, err := zipWriter.Create(modulesPathInZip)
-			require.NoError(t, err)
-			_, err = io.WriteString(fWriterModules, "testmodule")
-			require.NoError(t, err)
-
-			// Important: Close the zipWriter and the archiveFile before http.ServeFile uses it.
-			require.NoError(t, zipWriter.Close())
-			require.NoError(t, archiveFile.Close())
-
-			http.ServeFile(w, r, dummyFpmPath)
+			w.Write(remoteFPMBytes)
 		} else {
 			http.NotFound(w, r)
 		}
@@ -419,7 +403,7 @@ func TestInstallCommand_RemotePackage(t *testing.T) {
 	if repoAddCmd.Flags().Lookup("priority") != nil {
 		repoAddCmd.Flags().Lookup("priority").Value.Set("0")
 	}
-	_, err := SharedExecuteCommand(rootCmd, addRepoArgs...) // Uses helper from repo_test.go
+	_, err = SharedExecuteCommand(rootCmd, addRepoArgs...) // Uses helper from repo_test.go
 	require.NoError(t, err, "Failed to add mock repository")
 
 	// 3. Setup Mock Bench
@@ -534,6 +518,37 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 	}
 	require.NoError(t, os.WriteFile(mockPipPath, []byte(pipScriptContent), 0o755))
 
+	// Build the served packages up front so the checksums advertised in metadata
+	// actually describe the bytes served. Clients verify downloads against these,
+	// so a placeholder value here would be (correctly) rejected as tampering.
+	buildRemoteFPM := func(version string) []byte {
+		var buf bytes.Buffer
+		zipWriter := zip.NewWriter(&buf)
+		appMetaContent := fmt.Sprintf(`{"org":"myorg", "app_name":"myapp", "package_name":"myapp", "package_version":"%s", "content_checksum":"remote-myapp-%s-checksum"}`, version, version)
+		fWriter, err := zipWriter.Create("app_metadata.json")
+		require.NoError(t, err)
+		_, err = io.WriteString(fWriter, appMetaContent)
+		require.NoError(t, err)
+		_, err = zipWriter.Create("myapp/")
+		require.NoError(t, err)
+		fHooks, err := zipWriter.Create("myapp/hooks.py")
+		require.NoError(t, err)
+		_, err = io.WriteString(fHooks, fmt.Sprintf("# Remote version %s marker", version)) // Unique marker
+		require.NoError(t, err)
+		require.NoError(t, zipWriter.Close())
+		return buf.Bytes()
+	}
+
+	remoteFPMs := map[string][]byte{
+		"1.0.0": buildRemoteFPM("1.0.0"),
+		"1.2.0": buildRemoteFPM("1.2.0"),
+	}
+	remoteChecksums := make(map[string]string, len(remoteFPMs))
+	for version, content := range remoteFPMs {
+		sum := sha256.Sum256(content)
+		remoteChecksums[version] = hex.EncodeToString(sum[:])
+	}
+
 	// Mock remote repository server
 	mockRepoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Logf("Prioritization Test Mock Repo Server received request: %s", r.URL.Path)
@@ -541,30 +556,21 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 			pkgMeta := repository.PackageMetadata{
 				Org: "myorg", AppName: "myapp", LatestVersion: "1.2.0",
 				Versions: map[string]repository.PackageVersionMetadata{
-					"1.0.0": {FPMPath: "artifacts/myorg/myapp/1.0.0/myapp-1.0.0.fpm", ChecksumSHA256: "remote-myapp-1.0.0-checksum"},
-					"1.2.0": {FPMPath: "artifacts/myorg/myapp/1.2.0/myapp-1.2.0.fpm", ChecksumSHA256: "remote-myapp-1.2.0-checksum"},
+					"1.0.0": {FPMPath: "artifacts/myorg/myapp/1.0.0/myapp-1.0.0.fpm", ChecksumSHA256: remoteChecksums["1.0.0"]},
+					"1.2.0": {FPMPath: "artifacts/myorg/myapp/1.2.0/myapp-1.2.0.fpm", ChecksumSHA256: remoteChecksums["1.2.0"]},
 				},
 			}
 			json.NewEncoder(w).Encode(pkgMeta)
-		} else if strings.HasSuffix(r.URL.Path, ".fpm") { // Serve a generic FPM for any requested version
+		} else if strings.HasSuffix(r.URL.Path, ".fpm") { // Serve the prebuilt FPM for the requested version
 			versionFromFile := strings.Split(filepath.Base(r.URL.Path), "-")[1]
 			versionFromFile = strings.TrimSuffix(versionFromFile, ".fpm")
 
-			tempFpmDir, _ := os.MkdirTemp("", "tempfpm-prio-*")
-			defer os.RemoveAll(tempFpmDir)
-			dummyFpmPath := filepath.Join(tempFpmDir, filepath.Base(r.URL.Path))
-
-			archiveFile, _ := os.Create(dummyFpmPath)
-			zipWriter := zip.NewWriter(archiveFile)
-			appMetaContent := fmt.Sprintf(`{"org":"myorg", "app_name":"myapp", "package_name":"myapp", "package_version":"%s", "content_checksum":"remote-myapp-%s-checksum"}`, versionFromFile, versionFromFile)
-			fWriter, _ := zipWriter.Create("app_metadata.json")
-			io.WriteString(fWriter, appMetaContent)
-			_, _ = zipWriter.Create("myapp/")
-			fHooks, _ := zipWriter.Create("myapp/hooks.py")
-			io.WriteString(fHooks, fmt.Sprintf("# Remote version %s marker", versionFromFile)) // Unique marker
-			zipWriter.Close()
-			archiveFile.Close()
-			http.ServeFile(w, r, dummyFpmPath)
+			content, ok := remoteFPMs[versionFromFile]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			w.Write(content)
 		} else {
 			http.NotFound(w, r)
 		}

@@ -272,40 +272,25 @@ func FindPackageInSpecificRepo(
 		return nil, fmt.Errorf("failed to create cache directory %s: %w", cacheDir, err)
 	}
 
-	// TODO: Implement more robust caching (e.g., check checksum of cached file)
+	packageDescription := fmt.Sprintf("%s/%s version %s", org, appName, resolvedVersion)
+
+	// Use the cached copy only if it still matches the checksum in repository metadata.
 	if _, err := os.Stat(localCachePath); err == nil {
-		fmt.Printf("Found cached FPM package at %s. Verifying checksum (TODO)...\n", localCachePath)
-		// For now, assume cached is valid if it exists.
-		// Checksum verification should be added here. If checksum matches versionMeta.ChecksumSHA256, return.
-		// If it doesn't match, proceed to download.
-		// For now, we'll just return the cached path if it exists.
-		// This needs to be enhanced with actual checksum verification.
-		// if versionMeta.ChecksumSHA256 != "" {
-		//     cachedFileChecksum, checksumErr := utils.CalculateFileChecksum(localCachePath)
-		//     if checksumErr == nil && cachedFileChecksum == versionMeta.ChecksumSHA256 {
-		//         fmt.Printf("Checksum for cached FPM %s matches. Using cached file.\n", localCachePath)
-		//         return &DownloadedPackageInfo{
-		//				LocalPath:      localCachePath,
-		//				RepositoryName: repoName,
-		//				Org:            pkgMeta.Org, // From metadata, canonical
-		//				AppName:        pkgMeta.AppName, // From metadata, canonical
-		//				Version:        resolvedVersion,
-		//				Checksum:       versionMeta.ChecksumSHA256,
-		//			}, nil
-		//     }
-		//     fmt.Printf("Checksum mismatch for cached file %s or error calculating checksum. Will re-download.\n", localCachePath)
-		// }
-		// Fall-through to download if no checksum in metadata or if it mismatches (once implemented)
-		// For now, simplified: if exists, use it.
-		fmt.Printf("Using existing cached file (checksum verification not yet implemented): %s\n", localCachePath)
-		return &DownloadedPackageInfo{
-			LocalPath:      localCachePath,
-			RepositoryName: repoName,
-			Org:            pkgMeta.Org,
-			AppName:        pkgMeta.AppName,
-			Version:        resolvedVersion,
-			Checksum:       versionMeta.ChecksumSHA256, // Might be empty if not in remote meta
-		}, nil
+		if verifyErr := verifyFPMFileOrRemove(localCachePath, versionMeta.ChecksumSHA256, packageDescription); verifyErr != nil {
+			// The cached file was corrupt or stale and has been removed;
+			// fall through to download a fresh copy.
+			fmt.Fprintf(os.Stderr, "Discarding cached package: %v\n", verifyErr)
+		} else {
+			fmt.Printf("Found cached FPM package at %s. Checksum verified.\n", localCachePath)
+			return &DownloadedPackageInfo{
+				LocalPath:      localCachePath,
+				RepositoryName: repoName,
+				Org:            pkgMeta.Org,
+				AppName:        pkgMeta.AppName,
+				Version:        resolvedVersion,
+				Checksum:       versionMeta.ChecksumSHA256, // Might be empty if not in remote meta
+			}, nil
+		}
 	}
 
 	fmt.Printf("Downloading FPM package from %s to %s...\n", fpmDownloadURL, localCachePath)
@@ -333,21 +318,13 @@ func FindPackageInSpecificRepo(
 	}
 	outFile.Close() // Ensure file is closed before checksum calculation (if any)
 
-	// TODO: Verify checksum of downloaded file against versionMeta.ChecksumSHA256
-	// if versionMeta.ChecksumSHA256 != "" {
-	//     downloadedFileChecksum, checksumErr := utils.CalculateFileChecksum(localCachePath)
-	//     if checksumErr != nil {
-	//         os.Remove(localCachePath) // Remove if checksum fails
-	//         return nil, fmt.Errorf("failed to calculate checksum for downloaded file %s: %w", localCachePath, checksumErr)
-	//     }
-	//     if downloadedFileChecksum != versionMeta.ChecksumSHA256 {
-	//         os.Remove(localCachePath) // Remove if checksum fails
-	//         return nil, fmt.Errorf("checksum mismatch for downloaded file %s (expected %s, got %s)", localCachePath, versionMeta.ChecksumSHA256, downloadedFileChecksum)
-	//     }
-	//     fmt.Printf("Checksum verified for downloaded file: %s\n", downloadedFileChecksum)
-	// } else {
-	//     fmt.Printf("No checksum provided in repository metadata for %s/%s version %s. Skipping verification.\n", org, appName, resolvedVersion)
-	// }
+	// Reject a download that does not match the checksum in repository metadata.
+	if verifyErr := verifyFPMFileOrRemove(localCachePath, versionMeta.ChecksumSHA256, packageDescription); verifyErr != nil {
+		return nil, fmt.Errorf("integrity check failed for package downloaded from repository %s: %w", repoName, verifyErr)
+	}
+	if versionMeta.ChecksumSHA256 != "" {
+		fmt.Printf("Checksum verified for downloaded package %s.\n", packageDescription)
+	}
 
 	fmt.Printf("Successfully downloaded FPM package to %s\n", localCachePath)
 	return &DownloadedPackageInfo{

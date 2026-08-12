@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"fpm/internal/archive" // For archive.VerifyArchiveContentChecksum
 	"fpm/internal/config"
 	"fpm/internal/metadata"   // For metadata.ReadMetadataFromFPMArchive
 	"fpm/internal/repository" // For repository.FetchRemotePackageMetadata, etc.
@@ -173,18 +174,25 @@ to publish from the local FPM app store.`,
 			return fmt.Errorf("error constructing FPM upload URL: %w", err)
 		}
 
-		fmt.Printf("Uploading FPM package to %s...\n", fpmDestURL)
-		err = repository.UploadHTTPFile(fpmDestURL, fpmFilePathToPublish, http.MethodPut, "application/octet-stream", httpClient, "", nil)
-		if err != nil {
-			return fmt.Errorf("failed to upload FPM package: %w", err)
+		// Verify the archive's payload still matches the checksum recorded inside it,
+		// before anything is uploaded, so a tampered package never reaches a repository.
+		if err := archive.VerifyArchiveContentChecksum(fpmFilePathToPublish, currentAppMeta.ContentChecksum); err != nil {
+			return fmt.Errorf("integrity check failed for %s: %w", fpmFilePathToPublish, err)
 		}
+		fmt.Printf("Verified package contents against checksum %s.\n", currentAppMeta.ContentChecksum)
 
+		// ChecksumSHA256 in the repository metadata covers the raw .fpm bytes so clients
+		// can verify the download itself. It is intentionally a different value from
+		// ContentChecksum, which covers the extracted payload.
 		checksum, err := utils.CalculateFileChecksum(fpmFilePathToPublish)
 		if err != nil {
 			return fmt.Errorf("failed to calculate checksum for %s: %w", fpmFilePathToPublish, err)
 		}
-		if currentAppMeta.ContentChecksum != "" && currentAppMeta.ContentChecksum != checksum {
-			fmt.Fprintf(os.Stderr, "Warning: checksum in app_metadata.json (%s) of the FPM file being published does not match its calculated content checksum (%s). Using calculated checksum for remote metadata.\n", currentAppMeta.ContentChecksum, checksum)
+
+		fmt.Printf("Uploading FPM package to %s...\n", fpmDestURL)
+		err = repository.UploadHTTPFile(fpmDestURL, fpmFilePathToPublish, http.MethodPut, "application/octet-stream", httpClient, "", nil)
+		if err != nil {
+			return fmt.Errorf("failed to upload FPM package: %w", err)
 		}
 
 		versionEntry := repository.PackageVersionMetadata{
