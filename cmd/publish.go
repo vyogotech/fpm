@@ -214,9 +214,43 @@ to publish from the local FPM app store.`,
 			return fmt.Errorf("failed to upload updated package metadata: %w", err)
 		}
 
+		// Keep the repository's package catalogue current, so `fpm search --remote` can
+		// discover this package by keyword rather than only by exact <org>/<app>.
+		if err := updateRepositoryIndex(targetRepo, remoteMeta, versionEntry.ReleaseDate, httpClient); err != nil {
+			// The package itself published successfully; a stale catalogue makes it
+			// harder to discover but does not make it unusable.
+			fmt.Fprintf(os.Stderr, "Warning: failed to update repository index: %v\n", err)
+		}
+
 		fmt.Printf("Successfully published package %s/%s version %s to repository %s.\n", appOrg, appName, appVersion, targetRepo.Name)
 		return nil
 	},
+}
+
+// updateRepositoryIndex records the just-published package in the repository catalogue,
+// creating the catalogue if the repository has none yet.
+func updateRepositoryIndex(repo config.RepositoryConfig, meta *repository.PackageMetadata,
+	releaseDate string, client *http.Client,
+) error {
+	idx, found, err := repository.FetchRepositoryIndex(repo.URL, client)
+	if err != nil {
+		return err
+	}
+	if !found || idx == nil {
+		fmt.Printf("Repository %s has no package index yet. Creating one.\n", repo.Name)
+		idx = &repository.RepositoryIndex{}
+	}
+
+	idx.Upsert(repository.IndexEntry{
+		Org:           meta.Org,
+		AppName:       meta.AppName,
+		Description:   meta.Description,
+		LatestVersion: meta.LatestVersion,
+		UpdatedAt:     releaseDate,
+	})
+
+	fmt.Printf("Updating package index for repository %s...\n", repo.Name)
+	return repository.UploadRepositoryIndex(repo.URL, idx, client)
 }
 
 func resolveLatestVersionFromLocalStore(appsBasePath, groupID, artifactID string) (string, error) {

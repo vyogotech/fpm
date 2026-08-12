@@ -1,9 +1,13 @@
 package wheels
 
 import (
+	"archive/zip"
 	"bufio"
+	"bytes"
 	"fmt"
+	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -93,6 +97,73 @@ func Collect(appDir string) (Requirements, error) {
 	return req, nil
 }
 
+// CollectFromArchive reads the dependency specifiers declared inside an .fpm package,
+// without extracting it. It also reports the wheels the package bundles, so a caller can
+// show what an install would actually resolve from.
+func CollectFromArchive(fpmPath string) (req Requirements, bundledWheels []string, err error) {
+	r, err := zip.OpenReader(fpmPath)
+	if err != nil {
+		return Requirements{}, nil, fmt.Errorf("failed to open FPM package %s: %w", fpmPath, err)
+	}
+	defer r.Close()
+
+	seen := make(map[string]bool)
+	add := func(spec string) {
+		if spec == "" || seen[spec] {
+			return
+		}
+		seen[spec] = true
+		req.Specs = append(req.Specs, spec)
+	}
+
+	readEntry := func(f *zip.File) ([]byte, error) {
+		rc, openErr := f.Open()
+		if openErr != nil {
+			return nil, fmt.Errorf("failed to open %s in %s: %w", f.Name, fpmPath, openErr)
+		}
+		defer rc.Close()
+		return io.ReadAll(rc)
+	}
+
+	var reqTxt, pyProjectData []byte
+	for _, f := range r.File {
+		switch {
+		case f.Name == RequirementsFileName:
+			if reqTxt, err = readEntry(f); err != nil {
+				return Requirements{}, nil, err
+			}
+		case f.Name == PyProjectFileName:
+			if pyProjectData, err = readEntry(f); err != nil {
+				return Requirements{}, nil, err
+			}
+		case strings.HasPrefix(f.Name, DirName+"/") && !strings.HasSuffix(f.Name, "/"):
+			bundledWheels = append(bundledWheels, path.Base(f.Name))
+		}
+	}
+
+	if specs := parseRequirementsTxtBytes(reqTxt); len(specs) > 0 {
+		req.Sources = append(req.Sources, RequirementsFileName)
+		for _, s := range specs {
+			add(s)
+		}
+	}
+	if len(pyProjectData) > 0 {
+		specs, parseErr := parsePyProjectBytes(pyProjectData)
+		if parseErr != nil {
+			return Requirements{}, nil, parseErr
+		}
+		if len(specs) > 0 {
+			req.Sources = append(req.Sources, PyProjectFileName)
+			for _, s := range specs {
+				add(s)
+			}
+		}
+	}
+
+	sort.Strings(bundledWheels)
+	return req, bundledWheels, nil
+}
+
 // parseRequirementsTxt reads dependency specifiers from a pip requirements file,
 // dropping comments and blank lines.
 //
@@ -100,17 +171,21 @@ func Collect(appDir string) (Requirements, error) {
 // through untouched, so an app that splits its requirements across files still resolves
 // correctly.
 func parseRequirementsTxt(path string) ([]string, error) {
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %s: %w", path, err)
 	}
-	defer file.Close()
+	return parseRequirementsTxtBytes(data), nil
+}
 
+// parseRequirementsTxtBytes parses requirements content already held in memory, so the
+// same rules apply whether it came from disk or from inside an .fpm archive.
+func parseRequirementsTxtBytes(data []byte) []string {
 	var specs []string
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -124,10 +199,7 @@ func parseRequirementsTxt(path string) ([]string, error) {
 			specs = append(specs, line)
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("failed to read %s: %w", path, err)
-	}
-	return specs, nil
+	return specs
 }
 
 // parsePyProject reads the dependencies pip needs at install time from pyproject.toml.
@@ -144,10 +216,14 @@ func parsePyProject(path string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read %s: %w", path, err)
 	}
+	return parsePyProjectBytes(data)
+}
 
+// parsePyProjectBytes parses pyproject.toml content already held in memory.
+func parsePyProjectBytes(data []byte) ([]string, error) {
 	var parsed pyProject
 	if _, err := toml.Decode(string(data), &parsed); err != nil {
-		return nil, fmt.Errorf("failed to parse %s: %w", path, err)
+		return nil, fmt.Errorf("failed to parse %s: %w", PyProjectFileName, err)
 	}
 
 	var specs []string

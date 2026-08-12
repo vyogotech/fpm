@@ -21,6 +21,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Package version conflict detection
 - Rollback and version pinning
 
+## [1.4.0] - 2026-08-12
+
+### Added
+- **`fpm search --remote`** queries configured repositories, matching keywords against a
+  new repository package index. Previously a search could only reach a repository when
+  the query named an exact `<org>/<app>`, because per-package metadata lives at
+  `metadata/<org>/<app>/package-metadata.json` and can only be fetched by a client that
+  already knows both names. There was nothing to search.
+- **Repository package index** at `metadata/index.json`, maintained by `fpm publish`.
+  It catalogues every package in a repository with its latest version and description.
+  A repository that publishes no index can still be queried for an exact `<org>/<app>`;
+  it just cannot be searched by keyword.
+- **`fpm deps` is implemented.** It previously printed its own name and the argument it
+  was given. It now resolves a package — a path to an `.fpm`, or `<org>/<app>[==<version>]`
+  from the local store — and reports the Python dependencies declared in the
+  `requirements.txt` and `pyproject.toml` the package ships, together with the wheels it
+  bundles and the platform they were built for. Reading the shipped manifests rather than
+  the source tree means it describes what an install would actually resolve.
+
+### Changed
+- **`fpm search` no longer contacts repositories unless `--remote` is given.** It
+  previously queried them automatically whenever the query looked like `<org>/<app>`,
+  making network access a surprise. Local store and cache searches are unchanged.
+
+### Notes
+- `fpm deps` reports FPM-level package dependencies from `app_metadata.json` when present,
+  labelled as not resolved during install, since dependency resolution is still unbuilt.
+- A failure to update the repository index is a warning, not an error: the package itself
+  has published successfully by that point, and a stale catalogue makes it harder to
+  discover but not unusable.
+
 ## [1.3.0] - 2026-08-12
 
 ### Added
@@ -203,7 +234,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No TLS/SSL by default (HTTP only, can be configured)
 - Metadata endpoint temporarily has no authentication for testing
 
-[Unreleased]: https://github.com/vyogotech/fpm/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/vyogotech/fpm/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/vyogotech/fpm/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/vyogotech/fpm/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/vyogotech/fpm/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/vyogotech/fpm/compare/v1.1.0...v1.1.1
