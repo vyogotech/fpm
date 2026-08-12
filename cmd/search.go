@@ -3,8 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"io/fs"    // For filepath.WalkDir
-	"net/http" // For targeted remote query
+	"io/fs" // For filepath.WalkDir
 	"os"
 	"path/filepath"
 	"sort"
@@ -191,7 +190,6 @@ If no query is provided, it lists all packages found.`,
 		// search never makes network calls the user did not ask for.
 		if searchRemote && cfg != nil {
 			queryOrg, queryAppName, isSpecificIdentifier := parsePackageIdentifier(query)
-			httpClient := &http.Client{Timeout: 15 * time.Second}
 			sortedRepos := config.ListRepositories(cfg)
 			if len(sortedRepos) == 0 {
 				fmt.Fprintln(os.Stderr, "Warning: --remote given but no repositories are configured. Use 'fpm repo add'.")
@@ -199,6 +197,19 @@ If no query is provided, it lists all packages found.`,
 
 			for _, repo := range sortedRepos {
 				fmt.Printf("\nQuerying repository: %s (%s)\n", repo.Name, repo.URL)
+
+				// A private repository needs credentials even to be searched. One that
+				// cannot be authenticated is skipped, so the rest still return results.
+				creds, credErr := repository.ResolveCredentials(repo.Name, repo.Username, true)
+				if credErr != nil {
+					fmt.Fprintf(os.Stderr, "Skipping repository %s: %v\n", repo.Name, credErr)
+					continue
+				}
+				httpClient, clientErr := repository.NewClient(repo.URL, creds, 15*time.Second)
+				if clientErr != nil {
+					fmt.Fprintf(os.Stderr, "Skipping repository %s: %v\n", repo.Name, clientErr)
+					continue
+				}
 
 				// Prefer the repository's package index: it is the only way to match a
 				// keyword, since per-package metadata needs both names to address.

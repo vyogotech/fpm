@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"fmt"
+
 	"fpm/internal/config"
+	"fpm/internal/repository"
+
 	"github.com/spf13/cobra"
 )
 
@@ -13,7 +16,10 @@ var repoCmd = &cobra.Command{
 	// No Run function for the base 'repo' command itself, it's a group.
 }
 
-var repoAddPriority int // Variable to hold the priority flag for the add command
+var (
+	repoAddPriority int    // Priority flag for the add command
+	repoAddUsername string // Username for repositories requiring authentication
+)
 
 // repoAddCmd represents the repo add command
 var repoAddCmd = &cobra.Command{
@@ -34,6 +40,7 @@ var repoAddCmd = &cobra.Command{
 			Name:     repoName,
 			URL:      repoURL,
 			Priority: repoAddPriority,
+			Username: repoAddUsername,
 		}
 
 		if err := config.AddRepository(cfg, newRepo); err != nil {
@@ -45,6 +52,12 @@ var repoAddCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Repository '%s' (%s) added successfully with priority %d.\n", repoName, repoURL, repoAddPriority)
+		if repoAddUsername != "" {
+			// Say where the password comes from, since it is deliberately not stored.
+			fmt.Printf("Authenticating as '%s'. Supply the password via %s (or %s), "+
+				"or you will be prompted when running interactively.\n",
+				repoAddUsername, repository.PasswordEnvVar(repoName), repository.PasswordEnvFallback)
+		}
 		return nil
 	},
 }
@@ -115,11 +128,15 @@ var repoListCmd = &cobra.Command{
 
 		// Print a header
 		// Consider using a table library for nicer output if more fields are added later
-		fmt.Printf("%-20s %-50s %s\n", "NAME", "URL", "PRIORITY")
-		fmt.Printf("%-20s %-50s %s\n", "----", "---", "--------") // Simple separator
+		fmt.Printf("%-20s %-50s %-10s %s\n", "NAME", "URL", "PRIORITY", "USERNAME")
+		fmt.Printf("%-20s %-50s %-10s %s\n", "----", "---", "--------", "--------") // Simple separator
 
 		for _, repo := range repos {
-			fmt.Printf("%-20s %-50s %d\n", repo.Name, repo.URL, repo.Priority)
+			username := repo.Username
+			if username == "" {
+				username = "-"
+			}
+			fmt.Printf("%-20s %-50s %-10d %s\n", repo.Name, repo.URL, repo.Priority, username)
 		}
 
 		return nil
@@ -128,6 +145,7 @@ var repoListCmd = &cobra.Command{
 
 func init() {
 	// Flags for repoAddCmd
+	repoAddCmd.Flags().StringVar(&repoAddUsername, "username", "", "Username for a repository requiring authentication (the password is supplied via environment or prompt, never stored)")
 	repoAddCmd.Flags().IntVarP(&repoAddPriority, "priority", "p", 0, "Priority of the repository (lower number means higher priority)")
 
 	// Add subcommands to repoCmd

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -72,7 +73,7 @@ func SharedRunFPMCommand(t *testing.T, verbose bool, args ...string) ([]byte, er
 		if !verbose && len(output) > 0 {
 			errorMsg += fmt.Sprintf("\nCommand output:\n%s", string(output))
 		}
-		return output, fmt.Errorf(errorMsg)
+		return output, errors.New(errorMsg)
 	}
 	return output, nil
 }

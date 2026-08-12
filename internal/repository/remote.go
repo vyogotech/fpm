@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 	// "fpm/internal/config" // Not directly needed by these functions, URL is passed in
 	// "fpm/internal/utils" // For checksum of uploaded file, if done client-side before upload
@@ -142,7 +143,12 @@ func UploadHTTPFile(targetURL, localFilePath, httpMethod, contentTypeHeader stri
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
 		respBodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("failed to upload file to %s (status: %s). Response: %s", targetURL, resp.Status, string(respBodyBytes))
+		return &HTTPStatusError{
+			URL:        targetURL,
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       strings.TrimSpace(string(respBodyBytes)),
+		}
 	}
 
 	fmt.Printf("File %s uploaded successfully to %s.\n", filepath.Base(localFilePath), targetURL)
