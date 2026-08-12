@@ -239,7 +239,7 @@ from the local FPM store, then from remote repositories.`,
 		fmt.Printf("Proceeding with bench operations for %s/%s version %s using source: %s\n", appOrg, appName, appVersion, appModulePathInFPMStore)
 		fmt.Printf("Target Bench Path: %s\n", benchPath)
 		if siteName != "" {
-			fmt.Printf("Target Site (for future use): %s\n", siteName)
+			fmt.Printf("Target Site: %s\n", siteName)
 		}
 
 		absBenchPath, err := filepath.Abs(benchPath)
@@ -373,9 +373,64 @@ from the local FPM store, then from remote repositories.`,
 			fmt.Printf("%s Successfully updated with app '%s'.\n", logMessagePrefix, appNameString)
 		}
 
-		fmt.Println("\nPlaceholder: Next steps: Running migrations for a site, etc.")
+		// Adding the app to the bench makes it available; installing it onto a site is a
+		// separate step that only the site's own bench can perform.
+		if siteName != "" {
+			if err := installAppOnSite(absBenchPath, siteName, appName); err != nil {
+				return err
+			}
+		} else {
+			fmt.Printf("\nApp '%s' is installed in the bench. "+
+				"Pass --site <site> to also install it onto a site.\n", appName)
+		}
 		return nil
 	},
+}
+
+// benchExecutable is the bench CLI inside a Frappe bench's virtualenv, the same place
+// the pip used for the app install comes from.
+const benchExecutable = "./env/bin/bench"
+
+// installAppOnSite runs `bench --site <site> install-app <app>`, which is what actually
+// makes an app active on a site: creating its DocTypes and running its patches.
+//
+// It is deliberately delegated to bench rather than reimplemented. Site installation
+// touches the database and runs the app's own migrations, and bench is the only thing
+// that knows how to do that correctly for a given Frappe version.
+func installAppOnSite(benchPath, siteName, appName string) error {
+	currentWD, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to determine current directory: %w", err)
+	}
+	if err := os.Chdir(benchPath); err != nil {
+		return fmt.Errorf("failed to change directory to bench path '%s': %w", benchPath, err)
+	}
+	defer func() {
+		if err := os.Chdir(currentWD); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to change directory back to '%s': %v\n", currentWD, err)
+		}
+	}()
+
+	if _, statErr := os.Stat(benchExecutable); statErr != nil {
+		return fmt.Errorf("cannot install app '%s' onto site '%s': %s not found in bench '%s'. "+
+			"The app is installed in the bench; run 'bench --site %s install-app %s' yourself",
+			appName, siteName, benchExecutable, benchPath, siteName, appName)
+	}
+
+	args := []string{"--site", siteName, "install-app", appName}
+	fmt.Printf("\nInstalling app '%s' onto site '%s': %s %s\n",
+		appName, siteName, benchExecutable, strings.Join(args, " "))
+
+	execCmd := exec.Command(benchExecutable, args...)
+	output, err := execCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to install app '%s' onto site '%s':\n%s\nError: %w",
+			appName, siteName, string(output), err)
+	}
+
+	fmt.Printf("Successfully installed app '%s' onto site '%s'.\nOutput:\n%s\n",
+		appName, siteName, string(output))
+	return nil
 }
 
 // Helper function to read metadata from an FPM file's app_metadata.json
@@ -487,6 +542,6 @@ func init() {
 	if err := installCmd.MarkFlagRequired("bench-path"); err != nil {
 		fmt.Fprintf(os.Stderr, "Error marking 'bench-path' flag required for install cmd: %v\n", err)
 	}
-	installCmd.Flags().String("site", "", "Name of the site to install the app to (optional)")
+	installCmd.Flags().String("site", "", "Site to install the app onto after adding it to the bench (runs 'bench --site <site> install-app')")
 	rootCmd.AddCommand(installCmd)
 }

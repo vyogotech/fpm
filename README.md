@@ -31,6 +31,7 @@ Download the latest release for your platform from [Releases](https://github.com
 curl -fsSL https://raw.githubusercontent.com/vyogotech/fpm/main/install.sh | bash
 
 # Verify installation
+fpm --version
 fpm --help
 ```
 
@@ -101,6 +102,13 @@ Install a Frappe application package.
 fpm install <org>/<app>==<version> --bench-path /path/to/bench [--site mysite.local]
 ```
 
+**Flags:**
+- `--bench-path`: the Frappe bench to install into
+- `--site`: also install the app onto a site, by running
+  `bench --site <site> install-app <app>`. Without it the app is added to the bench but
+  not activated on any site — creating its DocTypes and running its patches is a separate
+  step only bench can perform.
+
 #### `fpm publish`
 Publish a package to a repository.
 
@@ -158,6 +166,16 @@ List all configured repositories.
 ```bash
 fpm repo list
 ```
+
+#### `fpm repo remove`
+Remove a configured repository.
+
+```bash
+fpm repo remove <name>   # alias: fpm repo rm
+```
+
+Packages already downloaded stay in the local FPM app store; only the configuration is
+removed. If the repository was the default publish target, that is unset too.
 
 #### `fpm repo default`
 Set or show the default publish repository.
