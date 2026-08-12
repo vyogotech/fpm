@@ -20,6 +20,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Package version conflict detection
 - Rollback and version pinning
 
+## [1.7.0] - 2026-08-12
+
+### Added
+- **`fpm --version`** reports the build it came from. The version and commit are stamped
+  by the Makefile from `git describe`, so released binaries identify themselves; a build
+  made with plain `go build` reports `dev` rather than claiming a release number it does
+  not have.
+- **`fpm repo remove <name>`** (alias `rm`) removes a configured repository.
+  `config.RemoveRepository` had been implemented but wired to no command. Removing the
+  repository that was the default publish target also unsets the default, which would
+  otherwise fail later complaining about a repository the user thought was configured.
+- **`fpm install --site` is implemented.** The flag was advertised in help text while the
+  install printed `Placeholder: Next steps: Running migrations for a site`. It now runs
+  `bench --site <site> install-app <app>`, delegating to bench because site installation
+  touches the database and runs the app's own patches. Without `--site`, the install says
+  plainly that the app is in the bench but not active on any site.
+
+### Notes
+- A site install that fails is reported as an error with bench's own output, since the app
+  is in the bench but not active on the site, and that state needs to be visible.
+- When a bench has no `env/bin/bench`, the error gives the command to run by hand rather
+  than implying the whole install failed.
+
 ## [1.6.0] - 2026-08-12
 
 ### Security
@@ -277,7 +300,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No TLS/SSL by default (HTTP only, can be configured)
 - Metadata endpoint temporarily has no authentication for testing
 
-[Unreleased]: https://github.com/vyogotech/fpm/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/vyogotech/fpm/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/vyogotech/fpm/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/vyogotech/fpm/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/vyogotech/fpm/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/vyogotech/fpm/compare/v1.3.0...v1.4.0

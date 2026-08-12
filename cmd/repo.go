@@ -107,6 +107,49 @@ If no repository name is provided, it displays the current default publish repos
 	},
 }
 
+// repoRemoveCmd represents the repo remove command
+var repoRemoveCmd = &cobra.Command{
+	Use:     "remove <name>",
+	Aliases: []string{"rm"},
+	Short:   "Remove a configured FPM repository",
+	Long: `Removes an FPM package repository from the local configuration.
+
+Packages already downloaded from the repository stay in the local FPM app store; only
+the repository configuration is removed.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		repoName := args[0]
+
+		cfg, err := config.InitConfig()
+		if err != nil {
+			return fmt.Errorf("failed to initialize FPM configuration: %w", err)
+		}
+
+		if !config.RemoveRepository(cfg, repoName) {
+			return fmt.Errorf("repository '%s' not found. Use 'fpm repo list' to see configured repositories", repoName)
+		}
+
+		// A default pointing at a repository that no longer exists would fail later with
+		// a confusing message, so clear it here and say so.
+		clearedDefault := false
+		if cfg.DefaultPublishRepository == repoName {
+			cfg.DefaultPublishRepository = ""
+			clearedDefault = true
+		}
+
+		if err := config.SaveConfig(cfg); err != nil {
+			return fmt.Errorf("failed to save updated FPM configuration: %w", err)
+		}
+
+		fmt.Printf("Repository '%s' removed.\n", repoName)
+		if clearedDefault {
+			fmt.Printf("It was the default publish repository, so that is now unset. " +
+				"Use 'fpm repo default <repo_name>' to choose another.\n")
+		}
+		return nil
+	},
+}
+
 // repoListCmd represents the repo list command
 var repoListCmd = &cobra.Command{
 	Use:   "list",
@@ -151,6 +194,7 @@ func init() {
 	// Add subcommands to repoCmd
 	repoCmd.AddCommand(repoAddCmd)
 	repoCmd.AddCommand(repoListCmd)
+	repoCmd.AddCommand(repoRemoveCmd)
 	repoCmd.AddCommand(repoSetDefaultCmd) // Add the new 'default' subcommand
 
 	// Add repoCmd to rootCmd (this was already here, ensuring it stays)

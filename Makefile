@@ -8,6 +8,12 @@ GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 BINARY_OUT = $(BUILD_DIR)/$(BINARY_NAME)
 
+# Version reported by `fpm --version`, taken from the git tag so a released binary
+# identifies itself. Falls back to "dev" outside a git checkout.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+LDFLAGS = -X 'fpm/cmd.version=$(VERSION)' -X 'fpm/cmd.commit=$(COMMIT)'
+
 # Add .exe extension for Windows if not already present
 ifeq ($(GOOS),windows)
     ifneq ($(suffix $(BINARY_NAME)),.exe)
@@ -26,7 +32,7 @@ fmt:
 build:
 	@echo "Building FPM binary for $(GOOS)/$(GOARCH)..."
 	@mkdir -p $(BUILD_DIR)
-	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -v -o $(BINARY_OUT) $(MAIN_PATH)
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -v -ldflags "$(LDFLAGS)" -o $(BINARY_OUT) $(MAIN_PATH)
 
 test:
 	@echo "Running tests..."
@@ -43,3 +49,5 @@ help:
 	@echo "  test    : Run all tests with coverage"
 	@echo "  clean   : Remove build artifacts"
 	@echo "  all     : Run tests and build"
+	@echo ""
+	@echo "Variables: BINARY_NAME, BUILD_DIR, GOOS, GOARCH, VERSION, COMMIT"
