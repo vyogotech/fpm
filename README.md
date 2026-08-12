@@ -369,7 +369,10 @@ Together these close the chain from packaging to installation:
 3. The repository records `checksum_sha256` over the uploaded bytes.
 4. `fpm install` rejects any download whose bytes do not match, deletes the offending file, and falls through to the next configured repository. Cached packages are re-verified before reuse, so a poisoned cache entry is discarded and re-downloaded rather than installed.
 
-A package whose repository metadata records no `checksum_sha256` cannot be verified. FPM warns on stderr and proceeds, so that packages published before checksums were recorded remain installable.
+A package whose repository metadata records no `checksum_sha256` **cannot be verified, and
+is rejected**. Accepting it would let any repository skip verification simply by omitting
+the field — a weaker guarantee than no verification at all, since the client would report
+success while checking nothing. Republish such a package to record a checksum.
 
 ## 🧪 Development
 

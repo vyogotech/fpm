@@ -154,19 +154,46 @@ func TestPoisonedCacheIsDiscardedAndRedownloaded(t *testing.T) {
 	}
 }
 
-// TestMissingChecksumIsWarnedNotFatal keeps packages published before checksums were
-// recorded installable, rather than silently trusted or hard-failed.
-func TestMissingChecksumIsWarnedNotFatal(t *testing.T) {
-	fpmBytes := []byte("a legacy fpm payload")
+// TestMissingChecksumIsRejected closes the bypass: a repository that omits
+// checksum_sha256 would otherwise skip verification entirely while the client reported
+// success, which is a weaker guarantee than having no verification at all.
+func TestMissingChecksumIsRejected(t *testing.T) {
+	fpmBytes := []byte("an unverifiable fpm payload")
 	srv := newMockRepo(t, fpmBytes, "")
 	cfg := testConfig(t, srv.URL)
 
 	info, err := FindPackageInRepos(cfg, testOrg, testAppName, testVersion)
-	if err != nil {
-		t.Fatalf("expected a package with no recorded checksum to still install, got: %v", err)
+	if err == nil {
+		t.Fatalf("a package with no recorded checksum must be rejected, got %+v", info)
 	}
-	if info.Checksum != "" {
-		t.Fatalf("expected empty checksum, got %q", info.Checksum)
+	if info != nil {
+		t.Fatalf("expected no package info on rejection, got %+v", info)
+	}
+
+	// The unverifiable artifact must not be left behind for a later run to reuse.
+	if _, statErr := os.Stat(cachePathFor(t)); !os.IsNotExist(statErr) {
+		t.Fatalf("unverifiable package was left in the cache at %s", cachePathFor(t))
+	}
+}
+
+// TestMissingChecksumCannotBeLaunderedThroughTheCache proves the rejection is not
+// bypassable by planting a file where a download would land: the cache-hit path verifies
+// too, so an unverifiable entry is discarded rather than served.
+func TestMissingChecksumCannotBeLaunderedThroughTheCache(t *testing.T) {
+	fpmBytes := []byte("an unverifiable fpm payload")
+	srv := newMockRepo(t, fpmBytes, "")
+	cfg := testConfig(t, srv.URL)
+
+	cachePath := cachePathFor(t)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o750); err != nil {
+		t.Fatalf("failed to create cache dir: %v", err)
+	}
+	if err := os.WriteFile(cachePath, fpmBytes, 0o644); err != nil {
+		t.Fatalf("failed to plant cache entry: %v", err)
+	}
+
+	if _, err := FindPackageInRepos(cfg, testOrg, testAppName, testVersion); err == nil {
+		t.Fatal("a cached package with no recorded checksum must still be rejected")
 	}
 }
 
