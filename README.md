@@ -1,8 +1,8 @@
 # Frappe Package Manager (FPM)
 
-[![CI](https://github.com/yourusername/fpm/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/fpm/actions/workflows/ci.yml)
-[![Release](https://github.com/yourusername/fpm/actions/workflows/release.yml/badge.svg)](https://github.com/yourusername/fpm/actions/workflows/release.yml)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/yourusername/fpm)](https://golang.org/doc/devel/release.html)
+[![CI](https://github.com/vyogotech/fpm/actions/workflows/ci.yml/badge.svg)](https://github.com/vyogotech/fpm/actions/workflows/ci.yml)
+[![Release](https://github.com/vyogotech/fpm/actions/workflows/release.yml/badge.svg)](https://github.com/vyogotech/fpm/actions/workflows/release.yml)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/vyogotech/fpm)](https://golang.org/doc/devel/release.html)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 FPM is a command-line interface and package management system for Frappe applications, providing package creation, installation, and repository management to streamline Frappe app deployment.
@@ -24,7 +24,7 @@ FPM transforms Frappe application deployment from a Git-centric model into an en
 
 ### Install FPM CLI
 
-Download the latest release for your platform from [Releases](https://github.com/yourusername/fpm/releases):
+Download the latest release for your platform from [Releases](https://github.com/vyogotech/fpm/releases):
 
 ```bash
 # Automated install (Linux/macOS)
@@ -282,7 +282,7 @@ A package whose repository metadata records no `checksum_sha256` cannot be verif
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/fpm.git
+git clone https://github.com/vyogotech/fpm.git
 cd fpm
 
 # Download dependencies
@@ -330,9 +330,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/fpm/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/fpm/discussions)
-- **Documentation**: [Project Wiki](https://github.com/yourusername/fpm/wiki)
+- **Issues**: [GitHub Issues](https://github.com/vyogotech/fpm/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/vyogotech/fpm/discussions)
+- **Documentation**: [Project Wiki](https://github.com/vyogotech/fpm/wiki)
 
 ## 🗺️ Roadmap
 
