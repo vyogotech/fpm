@@ -20,6 +20,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Package version conflict detection
 - Rollback and version pinning
 
+## [2.0.0] - 2026-08-14
+
+### Major Milestone
+Version 2.0.0 marks a major production-ready release of the Frappe Package Manager (FPM) CLI and repository ecosystem, delivering offline air-gapped installation, end-to-end checksum verification, remote package discovery, secure HTTP basic authentication, and bench site integration.
+
+### Added
+- **Offline Installation & Bundled Python Wheels**: Self-contained packages bundle all Python dependencies from `requirements.txt` and `pyproject.toml` into `wheels/` for deterministic, zero-network installation.
+- **Dependency Inspection (`fpm deps`)**: Inspect Python dependencies, build-system requirements, and bundled wheel platform targets directly from `.fpm` package archives or the local store.
+- **Remote Package Search (`fpm search --remote`)**: Query configured repositories via a repository package index (`metadata/index.json`) for remote package discovery.
+- **HTTP Basic Authentication**: Secure publishing and fetching against authenticated repositories using environment variables (`FPM_REPO_<NAME>_PASSWORD`, `FPM_REPO_PASSWORD`) or interactive prompts, with safe credential storage in `~/.fpm/config.json`.
+- **Bench Site Installation (`fpm install --site <site>`)**: Direct bench site app installation executing `bench --site <site> install-app <app>`.
+- **Version Reporting (`fpm --version`)**: Build-stamped version and commit output via `git describe`.
+- **Repository Management (`fpm repo remove <name>`)**: Safely remove repositories and auto-clean default targets.
+
+### Security
+- **Mandatory SHA-256 Checksum Verification**: Fail-closed verification rejecting packages lacking valid checksums in repository metadata across fresh downloads and cache hits.
+- **Scoped Credentials**: Repository authentication credentials strictly scoped to the repository host to prevent token leakage on redirects.
+
 ## [1.7.0] - 2026-08-12
 
 ### Added
@@ -300,7 +318,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No TLS/SSL by default (HTTP only, can be configured)
 - Metadata endpoint temporarily has no authentication for testing
 
-[Unreleased]: https://github.com/vyogotech/fpm/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/vyogotech/fpm/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/vyogotech/fpm/compare/v1.7.0...v2.0.0
 [1.7.0]: https://github.com/vyogotech/fpm/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/vyogotech/fpm/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/vyogotech/fpm/compare/v1.4.0...v1.5.0
