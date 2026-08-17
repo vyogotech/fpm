@@ -1,0 +1,60 @@
+========================================================================
+ Frappe Package Manager (FPM) Registry has been successfully deployed!
+========================================================================
+
+1. Get the Registry URL:
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "fpm-registry.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+{{- else if contains "LoadBalancer" .Values.service.type }}
+     NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+           You can watch the status of by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "fpm-registry.fullname" . }}'
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "fpm-registry.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  echo http://$SERVICE_IP:{{ .Values.service.port }}
+{{- else if contains "ClusterIP" .Values.service.type }}
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "{{ include "fpm-registry.selectorLabels" . }}" -o jsonpath="{.items[0].metadata.name}")
+  export CONTAINER_PORT=$(kubectl get pod --namespace {{ .Release.Namespace }} $POD_NAME -o jsonpath="{.spec.containers[0].ports[0].containerPort}")
+  echo "Forwarding traffic to http://127.0.0.1:8080"
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8080:$CONTAINER_PORT
+{{- end }}
+
+2. Check Registry Health:
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  curl http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}/health
+{{- end }}
+{{- end }}
+
+3. Configure FPM CLI with this Registry:
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  fpm repo add k8s-registry http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }} --priority 10
+  fpm repo default k8s-registry
+{{- end }}
+{{- end }}
+
+4. Publish Frappe Apps:
+  fpm package --version 1.0.0 --org <org-name>
+  fpm publish <org-name>/<app-name>==1.0.0 --repo k8s-registry
+
+5. Authentication details:
+{{- if .Values.auth.enabled }}
+  Username: {{ .Values.auth.username | default "(from auth.existingSecret / auth.htpasswd)" }}
+
+  The password is not printed here: `helm get notes` is readable by anyone with
+  read access to the release, and shells keep history. Publishers should hold
+  it as an environment variable:
+
+    export FPM_REPO_K8S_REGISTRY_PASSWORD='<password>'
+{{- else }}
+  WARNING: authentication is DISABLED. Every write path on this registry is
+  anonymous, including package metadata, which carries checksum_sha256 — anyone
+  who can reach it can repoint a package at any artifact and forge its
+  checksum. Do not expose this deployment beyond a network you fully control.
+{{- end }}
+========================================================================

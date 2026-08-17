@@ -1,0 +1,16 @@
+apiVersion: v2
+name: fpm-registry
+description: A Helm chart for deploying Frappe Package Manager (FPM) Repository & Registry
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - fpm
+  - frappe
+  - package-manager
+  - registry
+  - webdav
+home: https://github.com/vyogotech/fpm
+maintainers:
+  - name: Vyogo Tech
+    email: info@vyogo.tech
