@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Every registry write path was unauthenticated.** Both the compose and Helm
+  nginx configurations allowed anonymous `PUT` and `DELETE` of package metadata
+  *and* of artifacts at every path depth. Because `package-metadata.json`
+  carries `fpm_path` and `checksum_sha256`, anyone able to reach the registry
+  could repoint a package at an arbitrary artifact and forge its checksum,
+  defeating the integrity chain end to end; an anonymous
+  `PUT /metadata/index.json` could erase the catalogue.
+
+  Three separate causes, all now fixed:
+  - `limit_except` was commented out on the metadata location behind a stale
+    TODO claiming the client did not yet support credentials. It has since
+    v1.5.0.
+  - `limit_except` does not inherit into nested locations, so the `\.fpm$`
+    location had no authentication of its own.
+  - The server-level regex intended to protect artifact paths was **dead
+    code**: once a nested location matches, nginx returns from
+    `ngx_http_core_find_location` and never evaluates server-level regex
+    locations, and `location /` always matches first.
+
+- Auth and CORS policy is now factored into `nginx/fpm-location.conf`, included
+  by every location serving repository content. nginx refuses to start if it is
+  missing, so the failure mode is closed.
+- The Helm chart no longer defaults to `admin` / `adminpassword`; it fails to
+  render unless credentials are supplied, and `NOTES.txt` no longer prints the
+  password.
+- `COPY` and `MOVE` removed from `dav_methods` — the client never issues them.
+
+### Fixed
+
+- CORS headers were silently absent from `/metadata/*.json` and `.fpm`
+  responses. A location declaring any `add_header` discards every `add_header`
+  inherited from its parent, so declaring `Content-Type` in those nested
+  locations dropped the CORS headers a browser client needs.
+
+- **`latest_version` was chosen by string comparison** (`cmd/publish.go`), so a
+  repository that had published 1.10.0 kept reporting 1.9.0 as latest, and
+  `fpm install <app>` with no pinned version installed the older package
+  without saying so. Version ordering now lives in `internal/semver`, and the
+  latest version is recomputed across every published version rather than
+  compared against the stored one — which also repairs metadata the old
+  comparison had already corrupted.
+
+### Added
+
+- **`fpm-registry`, a registry service.** Replaces nginx's WebDAV on the *write*
+  path only; reads remain static files under a document root, so an unmodified
+  `fpm` client cannot tell the difference beyond the base URL. It exists
+  because three properties could not be built on WebDAV at all:
+
+  - **Per-organisation ownership.** A publisher token is scoped to the orgs it
+    may write to, so a publisher can no longer overwrite `frappe/erpnext`.
+  - **Real integrity.** The server hashes the bytes it receives and re-verifies
+    the archive's own content checksum. The client-supplied
+    `package-metadata.json` is still accepted, so `fpm publish` keeps working,
+    but its `fpm_path` and `checksum_sha256` are discarded rather than stored.
+  - **Atomic publishing.** Metadata and the catalogue index are derived from the
+    packages that exist and written under one lock, so concurrent publishes no
+    longer lose each other and a truncated index cannot persist.
+
+  It also refuses republishing a version (409), refuses artifacts whose
+  coordinates disagree with their manifest, and counts downloads — which the
+  static registry had no way to observe.
+
+  `fpm-registry serve` runs it; `fpm-registry issue` mints a publisher token,
+  storing only its hash. `POST /admin/publishers` does the same over HTTP for
+  an administrative credential, so publisher onboarding does not require shell
+  access.
+
+- `PackageVersionMetadata` now carries `frappe_compatibility`,
+  `source_control_url`, `author`, `package_type` and `wheel_platform`, and
+  dependencies are populated from the manifest instead of being dropped. All
+  `omitempty`, so older clients are unaffected. This lets a consumer answer
+  "which Frappe versions does this support?" from a JSON read instead of
+  downloading and unpacking the artifact.
+
+- `test/registry` — an acceptance suite that boots real nginx and asserts the
+  write-protection and CORS contract, run against **both** the compose config
+  and the Helm-rendered config so the two cannot drift apart again. Behaviour
+  is specified in `test/registry/features/registry_auth.feature`. Run with
+  `go test -tags integration ./test/registry/...`. The service's own contract is
+  specified in `test/registry/features/registry_service.feature`.
+
 ### Planned Features
 - Automatic directory creation for new packages
 - TLS/SSL support out of the box
