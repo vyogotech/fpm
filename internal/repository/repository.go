@@ -8,19 +8,77 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	// "sort" // Not directly used in this file, but config.ListRepositories is.
+	"sort"
+	"strings"
 	"time"
 
 	"fpm/internal/config"
 )
 
 // PackageVersionMetadata holds metadata for a specific version of a package.
+//
+// The fields below fpm_path/checksum are carried from the package's own
+// app_metadata.json at publish time. Surfacing them here means a consumer —
+// the marketplace catalogue, a mirror, a compatibility check — can answer
+// "which Frappe versions does this support?" from a JSON read, instead of
+// downloading and unpacking a potentially very large artifact to find out.
+//
+// Every added field is omitempty, so metadata published by an older client
+// stays valid and an older client ignores fields it does not know.
 type PackageVersionMetadata struct {
 	FPMPath        string       `json:"fpm_path"`
 	ChecksumSHA256 string       `json:"checksum_sha256"`
 	ReleaseDate    string       `json:"release_date,omitempty"`
 	Dependencies   []Dependency `json:"dependencies,omitempty"`
 	Notes          string       `json:"notes,omitempty"`
+
+	// FrappeCompatibility lists the Frappe versions the package declares, e.g.
+	// ["14.x.x", "15.x.x"].
+	FrappeCompatibility []string `json:"frappe_compatibility,omitempty"`
+	SourceControlURL    string   `json:"source_control_url,omitempty"`
+	Author              string   `json:"author,omitempty"`
+	PackageType         string   `json:"package_type,omitempty"`
+	// WheelPlatform is the pip platform tag the bundled wheels were vendored
+	// for. A consumer installing on a different platform needs to know before
+	// it starts, not when pip fails.
+	WheelPlatform string `json:"wheel_platform,omitempty"`
+}
+
+// DependenciesFrom converts a manifest's dependency map into published
+// dependency records.
+//
+// The manifest writes dependencies as {"erpnext": "13.2.1"} — an app name and
+// a version, with no organisation. A key may qualify itself as "org/app"; an
+// unqualified key leaves Org empty, meaning "resolve by app name". Defaulting
+// the publisher's own org here would be worse than leaving it blank, because
+// it would assert that a shared app such as erpnext belongs to whoever
+// happened to depend on it.
+func DependenciesFrom(dependencies map[string]string) []Dependency {
+	if len(dependencies) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(dependencies))
+	for name := range dependencies {
+		names = append(names, name)
+	}
+	// Sorted so republishing an unchanged package produces identical metadata
+	// rather than a diff that depends on Go's map iteration order.
+	sort.Strings(names)
+
+	out := make([]Dependency, 0, len(names))
+	for _, name := range names {
+		org, appName := "", name
+		if parts := strings.SplitN(name, "/", 2); len(parts) == 2 {
+			org, appName = parts[0], parts[1]
+		}
+		out = append(out, Dependency{
+			Org:               org,
+			AppName:           appName,
+			VersionConstraint: dependencies[name],
+		})
+	}
+	return out
 }
 
 // Dependency defines a package dependency.

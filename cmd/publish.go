@@ -15,6 +15,7 @@ import (
 	"fpm/internal/config"
 	"fpm/internal/metadata"   // For metadata.ReadMetadataFromFPMArchive
 	"fpm/internal/repository" // For repository.FetchRemotePackageMetadata, etc.
+	"fpm/internal/semver"     // For correct latest-version selection
 	"fpm/internal/utils"      // For utils.CalculateFileChecksum
 
 	"github.com/spf13/cobra"
@@ -220,14 +221,25 @@ to publish from the local FPM app store.`,
 			FPMPath:        fpmServerRelPath,
 			ChecksumSHA256: checksum,
 			ReleaseDate:    time.Now().UTC().Format(time.RFC3339Nano),
-			Dependencies:   nil, // TODO: Populate from currentAppMeta.Dependencies
+			Dependencies:   repository.DependenciesFrom(currentAppMeta.Dependencies),
 			Notes:          currentAppMeta.Description,
+			// Carried into the published metadata so a consumer can read
+			// compatibility and provenance without downloading and unpacking
+			// the artifact. Every field is omitempty, so an older client simply
+			// ignores what it does not recognise.
+			FrappeCompatibility: currentAppMeta.FrappeCompatibility,
+			SourceControlURL:    currentAppMeta.SourceControlURL,
+			Author:              currentAppMeta.Author,
+			PackageType:         currentAppMeta.PackageType,
+			WheelPlatform:       currentAppMeta.WheelPlatform,
 		}
 		remoteMeta.Versions[appVersion] = versionEntry
 
-		if remoteMeta.LatestVersion == "" || appVersion > remoteMeta.LatestVersion { // TODO: Proper SemVer
-			remoteMeta.LatestVersion = appVersion
-		}
+		// Recomputed across every published version rather than comparing the
+		// newcomer against the stored value. The previous comparison was a raw
+		// string compare, which ranked "1.9.0" above "1.10.0"; recomputing from
+		// the whole set also repairs metadata that comparison already corrupted.
+		remoteMeta.LatestVersion = semver.LatestOf(remoteMeta.Versions)
 
 		fmt.Printf("Uploading updated metadata for %s/%s...\n", appOrg, appName)
 		err = repository.UploadPackageMetadata(targetRepo.URL, appOrg, appName, remoteMeta, httpClient)
