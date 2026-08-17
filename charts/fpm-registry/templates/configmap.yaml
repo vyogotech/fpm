@@ -1,0 +1,136 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fpm-registry.fullname" . }}-config
+  labels:
+    {{- include "fpm-registry.labels" . | nindent 4 }}
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+
+    events {
+        worker_connections {{ .Values.config.workerConnections | default 1024 }};
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
+        # Custom MIME type for .fpm files
+        types {
+            application/x-fpm fpm;
+        }
+
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log /var/log/nginx/access.log main;
+
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout {{ .Values.config.keepaliveTimeout | default 65 }};
+        types_hash_max_size 2048;
+
+        # Upload limits and buffers
+        client_max_body_size {{ .Values.config.clientMaxBodySize | default "500M" }};
+        client_body_buffer_size 128k;
+        client_header_buffer_size 1k;
+        large_client_header_buffers 4 16k;
+
+        # Timeouts
+        client_body_timeout {{ .Values.config.clientBodyTimeout | default "300s" }};
+        client_header_timeout {{ .Values.config.clientHeaderTimeout | default "300s" }};
+        send_timeout {{ .Values.config.sendTimeout | default "300s" }};
+
+        server {
+            listen {{ .Values.service.port | default 80 }};
+            server_name _;
+
+            # Health check endpoint
+            location /health {
+                access_log off;
+                return 200 "healthy\n";
+                add_header Content-Type text/plain;
+            }
+
+            # Root location for FPM repository
+            #
+            # Every location below includes fpm-location.conf, which carries
+            # the auth and CORS policy. Neither `limit_except` nor `add_header`
+            # inherits into a nested location, so the policy must be repeated
+            # rather than set once here. See the fpm-location.conf key below.
+            location / {
+                root {{ .Values.persistence.mountPath | default "/var/fpm-repo" }};
+
+                # Enable directory listing
+                autoindex on;
+                autoindex_exact_size off;
+                autoindex_localtime on;
+
+                # Enable WebDAV methods. COPY and MOVE are deliberately absent:
+                # the fpm client never issues them. Inherited by nested
+                # locations below.
+                dav_methods PUT DELETE MKCOL;
+                create_full_put_path on;
+                dav_access user:rw group:r all:r;
+
+                include /etc/nginx/fpm-location.conf;
+
+                # Handle .fpm files. This location governs artifact writes at
+                # EVERY path depth: when a nested location matches, nginx never
+                # evaluates server-level regex locations, so a server-level
+                # rule cannot be used to protect them.
+                location ~ \.fpm$ {
+                    include /etc/nginx/fpm-location.conf;
+
+                    add_header Content-Type application/x-fpm;
+                    add_header Content-Disposition 'attachment';
+                }
+
+                # Metadata files (JSON format). package-metadata.json carries
+                # fpm_path and checksum_sha256, so an anonymous writer here
+                # could repoint any package at any artifact and forge its
+                # checksum; index.json governs the whole catalogue.
+                location ~ /metadata/.*\.json$ {
+                    include /etc/nginx/fpm-location.conf;
+
+                    add_header Content-Type application/json;
+                }
+            }
+        }
+    }
+
+  # Shared auth + CORS policy, included by every repository location above.
+  # Mounted at /etc/nginx/fpm-location.conf; nginx refuses to start if it is
+  # absent, so the failure mode is closed.
+  fpm-location.conf: |
+    {{- if .Values.auth.enabled }}
+    # Reads are public; every write requires a publisher credential.
+    limit_except GET OPTIONS {
+        auth_basic "FPM Repository - Authentication Required";
+        auth_basic_user_file /etc/nginx/auth/.htpasswd;
+    }
+    {{- else }}
+    # WARNING: auth.enabled is false. Every write path on this registry is
+    # anonymous, including package metadata, which carries checksum_sha256.
+    # Never do this on a network you do not fully control.
+    {{- end }}
+
+    add_header 'Access-Control-Allow-Origin' '{{ .Values.config.cors.allowOrigin }}' always;
+    add_header 'Access-Control-Allow-Methods' '{{ .Values.config.cors.allowMethods }}' always;
+    add_header 'Access-Control-Allow-Headers' '{{ .Values.config.cors.allowHeaders }}' always;
+
+    if ($request_method = 'OPTIONS') {
+        add_header 'Access-Control-Allow-Origin' '{{ .Values.config.cors.allowOrigin }}';
+        add_header 'Access-Control-Allow-Methods' '{{ .Values.config.cors.allowMethods }}';
+        add_header 'Access-Control-Allow-Headers' '{{ .Values.config.cors.allowHeaders }}';
+        add_header 'Access-Control-Max-Age' {{ .Values.config.cors.maxAge }};
+        add_header 'Content-Type' 'text/plain charset=UTF-8';
+        add_header 'Content-Length' 0;
+        return 204;
+    }

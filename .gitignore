@@ -1,11 +1,17 @@
 # FPM - Git Ignore
 
-# Binaries
-fpm
-fpm-*
-!fpm-repo-README.md
+# Binaries built at the repository root.
+#
+# Anchored with a leading slash deliberately. The previous unanchored `fpm-*`
+# matched at any depth, so it also ignored `charts/fpm-registry/` — the entire
+# Helm chart, which was consequently never committed — and
+# `nginx/fpm-location.conf`, the include nginx refuses to start without. Both
+# looked fine because they existed on disk; neither was in version control.
+/fpm
+/fpm-cli
+/fpm-registry
+/main
 *.exe
-main
 
 # Build artifacts
 bin/

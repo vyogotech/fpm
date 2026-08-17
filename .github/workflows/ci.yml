@@ -110,6 +110,7 @@ jobs:
           files=(
             "compose.yml"
             "nginx/nginx.conf"
+            "nginx/fpm-location.conf"
             "scripts/setup.sh"
             "scripts/add-user.sh"
             "fpm-repo-README.md"
@@ -139,9 +140,23 @@ jobs:
 
       - name: Validate nginx config syntax
         run: |
-          docker run --rm -v $(pwd)/nginx/nginx.conf:/etc/nginx/nginx.conf:ro nginx:alpine nginx -t
+          docker run --rm \
+            -v $(pwd)/nginx/nginx.conf:/etc/nginx/nginx.conf:ro \
+            -v $(pwd)/nginx/fpm-location.conf:/etc/nginx/fpm-location.conf:ro \
+            nginx:alpine nginx -t
 
       - name: Validate compose file
         run: |
           docker compose -f compose.yml config > /dev/null
           echo "✓ compose.yml is valid"
+
+      # Boots real nginx and asserts that every write path demands credentials
+      # and that reads still carry CORS. See
+      # test/registry/features/registry_auth.feature.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+
+      - name: Registry write-protection acceptance tests
+        run: go test -tags integration -count=1 -v ./test/registry/...

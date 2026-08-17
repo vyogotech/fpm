@@ -1,0 +1,107 @@
+# Default values for fpm-registry.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: nginx
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: alpine
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: false
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext: {}
+
+securityContext: {}
+
+# Repository storage configuration
+persistence:
+  enabled: true
+  ## Set storageClassName to use a specific StorageClass (empty string uses cluster default, e.g. local-path)
+  storageClassName: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  mountPath: /var/fpm-repo
+  ## Set to an existing PersistentVolumeClaim name if desired
+  existingClaim: ""
+
+# Basic authentication configuration for write operations (PUT, DELETE, MKCOL)
+auth:
+  enabled: true
+  ## Use an existing secret containing .htpasswd file under key 'htpasswd' or '.htpasswd'
+  existingSecret: ""
+  ## Username and password for HTTP Basic Authentication.
+  ## Deliberately empty: the chart refuses to render rather than deploying a
+  ## registry whose publish credentials are a matter of public record. Supply
+  ## them at install time, or set auth.existingSecret / auth.htpasswd instead.
+  username: ""
+  password: ""
+  ## Raw .htpasswd contents (overrides username/password if specified)
+  htpasswd: ""
+
+# Nginx and WebDAV runtime configuration
+config:
+  clientMaxBodySize: "500M"
+  clientBodyTimeout: "300s"
+  clientHeaderTimeout: "300s"
+  sendTimeout: "300s"
+  keepaliveTimeout: "65"
+  workerConnections: "1024"
+  cors:
+    allowOrigin: "*"
+    allowMethods: "GET, PUT, DELETE, OPTIONS"
+    allowHeaders: "Authorization, Content-Type"
+    maxAge: "1728000"
+
+service:
+  type: ClusterIP
+  port: 80
+  # nodePort: 30080
+
+ingress:
+  enabled: true
+  className: "traefik"
+  annotations: {}
+    # traefik.ingress.kubernetes.io/router.entrypoints: web
+  hosts:
+    - host: fpm.192.168.1.111.nip.io
+      paths:
+        - path: /
+          pathType: Prefix
+  ## TLS is effectively mandatory in any deployment reachable beyond localhost:
+  ## publish uses HTTP Basic, so plaintext hands the credential to anyone on
+  ## the path. Populate this (and, with cert-manager, add the issuer annotation
+  ## above) before exposing the registry.
+  tls: []
+  #  - secretName: fpm-registry-tls
+  #    hosts:
+  #      - fpm.192.168.1.111.nip.io
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1024Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}

@@ -6,6 +6,9 @@ services:
       - "${FPM_REPO_PORT:-8080}:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Auth + CORS policy included by every repository location. nginx fails
+      # to start if this is missing, so the failure mode is closed.
+      - ./nginx/fpm-location.conf:/etc/nginx/fpm-location.conf:ro
       - ./nginx/.htpasswd:/etc/nginx/.htpasswd:ro
       - fpm-repo-data:/var/fpm-repo
     restart: unless-stopped
