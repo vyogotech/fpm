@@ -72,12 +72,22 @@ data:
                 autoindex_exact_size off;
                 autoindex_localtime on;
 
+                {{- if .Values.backend.enabled }}
+                # WebDAV is deliberately absent: writes are served by the
+                # write-path service, which enforces per-organisation ownership
+                # and re-verifies each artifact's checksum. Leaving dav_methods
+                # here would leave a second write path with neither property,
+                # reachable in-cluster even though the route sends external
+                # writes elsewhere. Without these directives nginx answers PUT
+                # with 405, which is the correct answer from a read path.
+                {{- else }}
                 # Enable WebDAV methods. COPY and MOVE are deliberately absent:
                 # the fpm client never issues them. Inherited by nested
                 # locations below.
                 dav_methods PUT DELETE MKCOL;
                 create_full_put_path on;
                 dav_access user:rw group:r all:r;
+                {{- end }}
 
                 include /etc/nginx/fpm-location.conf;
 

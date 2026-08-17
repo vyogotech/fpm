@@ -1,0 +1,20 @@
+{{- if and .Values.backend.enabled .Values.backend.publishers.persistence.enabled (empty .Values.backend.publishers.persistence.existingClaim) }}
+# Publisher records live on their own volume rather than in the document root.
+# The root is served: GET reads any file beneath it and the read path lists it
+# with autoindex on, so storing token hashes there would publish them.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "fpm-registry.backendName" . }}-publishers
+  labels:
+    {{- include "fpm-registry.backendLabels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.backend.publishers.persistence.accessMode | default "ReadWriteOnce" | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.backend.publishers.persistence.size | default "128Mi" | quote }}
+  {{- if .Values.backend.publishers.persistence.storageClassName }}
+  storageClassName: {{ .Values.backend.publishers.persistence.storageClassName | quote }}
+  {{- end }}
+{{- end }}

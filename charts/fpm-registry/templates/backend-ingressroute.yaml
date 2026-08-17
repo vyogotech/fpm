@@ -1,0 +1,44 @@
+{{- if and .Values.backend.enabled .Values.backend.route.enabled }}
+{{- $backend := include "fpm-registry.backendName" . -}}
+{{- $port := .Values.backend.service.port | default 8080 -}}
+# Splits one hostname across both paths: reads stay on the static read path,
+# writes go to the service that can enforce per-organisation ownership and
+# re-verify checksums. An unmodified fpm client sees a single registry URL.
+#
+# Traefik-specific by necessity: a plain Ingress cannot route on HTTP method,
+# and the alternative — a second hostname for publishing — would mean every
+# publisher configures a different URL from every consumer.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ $backend }}
+  labels:
+    {{- include "fpm-registry.backendLabels" . | nindent 4 }}
+spec:
+  entryPoints:
+    {{- toYaml .Values.backend.route.entryPoints | nindent 4 }}
+  routes:
+    {{- range $host := .Values.backend.route.hosts }}
+    # Priority is explicit: these routes must outrank the read path's Ingress
+    # rule for the same host, which would otherwise win on any given request
+    # and answer a publish with 405.
+    - kind: Rule
+      match: Host(`{{ $host }}`) && ({{ range $i, $m := $.Values.backend.route.methods }}{{ if $i }} || {{ end }}Method(`{{ $m }}`){{ end }})
+      priority: {{ $.Values.backend.route.priority | default 100 }}
+      services:
+        - name: {{ $backend }}
+          port: {{ $port }}
+    {{- if $.Values.backend.route.exposeAdmin }}
+    # Token issuance. Off by default: it is guarded by a wildcard-organisation
+    # credential, but an endpoint that mints publish credentials does not need
+    # to be reachable from the internet to be useful — an operator can reach it
+    # through the Service.
+    - kind: Rule
+      match: Host(`{{ $host }}`) && PathPrefix(`/admin`)
+      priority: {{ add ($.Values.backend.route.priority | default 100) 10 }}
+      services:
+        - name: {{ $backend }}
+          port: {{ $port }}
+    {{- end }}
+    {{- end }}
+{{- end }}
