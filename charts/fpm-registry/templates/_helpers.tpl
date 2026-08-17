@@ -51,6 +51,45 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+Name of the write-path service.
+*/}}
+{{- define "fpm-registry.backendName" -}}
+{{- printf "%s-backend" (include "fpm-registry.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Selector labels for the write-path service.
+
+The read and write paths are separate deployments sharing one document root, so
+their selectors must not overlap — otherwise the read Service would load-balance
+GETs onto the write path, and the difference between them would stop being
+observable at the point it matters.
+
+The name carries the -backend suffix rather than relying on the component label
+alone: a label selector matches supersets, so {name, instance} would select
+these pods too. Distinguishing on name keeps the read path's existing selector
+correct without editing it, which matters because a Deployment's selector is
+immutable and an in-place upgrade could not change it.
+*/}}
+{{- define "fpm-registry.backendSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "fpm-registry.name" . }}-backend
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: backend
+{{- end }}
+
+{{/*
+Common labels for the write-path service.
+*/}}
+{{- define "fpm-registry.backendLabels" -}}
+helm.sh/chart: {{ include "fpm-registry.chart" . }}
+{{ include "fpm-registry.backendSelectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
 Create the name of the service account to use
 */}}
 {{- define "fpm-registry.serviceAccountName" -}}

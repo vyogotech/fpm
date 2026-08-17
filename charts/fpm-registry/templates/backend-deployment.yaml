@@ -1,0 +1,137 @@
+{{- if .Values.backend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fpm-registry.backendName" . }}
+  labels:
+    {{- include "fpm-registry.backendLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.backend.replicaCount | default 1 }}
+  # Recreate rather than RollingUpdate: the document root is a ReadWriteOnce
+  # volume and publishing serialises on an in-process lock, so a second
+  # generation writing the same index concurrently is exactly what the write
+  # path exists to prevent.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "fpm-registry.backendSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.backend.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "fpm-registry.backendSelectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "fpm-registry.serviceAccountName" . }}
+      initContainers:
+        # The image runs unprivileged, so the publishers volume has to be
+        # writable by that uid before the server starts. It is not merely read:
+        # issuing a token through the admin API rewrites it, and a token handed
+        # to a publisher but lost on restart fails later, in their pipeline, for
+        # no visible reason.
+        - name: init-publishers
+          image: {{ .Values.backend.initImage | default "busybox:latest" }}
+          securityContext:
+            # Overrides the pod's runAsNonRoot, which this container inherits
+            # and which the kubelet would otherwise refuse alongside uid 0.
+            # Chowning a volume to another uid is the one thing here that needs
+            # to be root, and it finishes before the server starts.
+            runAsNonRoot: false
+            runAsUser: 0
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p {{ dir .Values.backend.publishers.path }}
+              chown -R {{ .Values.backend.runAsUser | default 10001 }} {{ dir .Values.backend.publishers.path }}
+              # Shared with the read path, which runs as nginx.
+              mkdir -p {{ .Values.persistence.mountPath | default "/var/fpm-repo" }}/metadata
+              chmod 777 {{ .Values.persistence.mountPath | default "/var/fpm-repo" }} \
+                        {{ .Values.persistence.mountPath | default "/var/fpm-repo" }}/metadata || true
+          volumeMounts:
+            - name: publishers
+              mountPath: {{ dir .Values.backend.publishers.path }}
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath | default "/var/fpm-repo" }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.backend.runAsUser | default 10001 }}
+      containers:
+        - name: backend
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy | default "IfNotPresent" }}
+          args:
+            - serve
+            - --root
+            - {{ .Values.persistence.mountPath | default "/var/fpm-repo" | quote }}
+            - --publishers
+            - {{ .Values.backend.publishers.path | quote }}
+            - --addr
+            - ":{{ .Values.backend.service.port | default 8080 }}"
+          ports:
+            - name: http
+              containerPort: {{ .Values.backend.service.port | default 8080 }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath | default "/var/fpm-repo" }}
+            # Deliberately not the document root: GET reads any file beneath
+            # that root, and the read path lists it with autoindex on, so a
+            # publishers file stored there would hand out its own token hashes.
+            - name: publishers
+              mountPath: {{ dir .Values.backend.publishers.path }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ if .Values.persistence.existingClaim }}{{ .Values.persistence.existingClaim }}{{ else }}{{ include "fpm-registry.fullname" . }}-data{{ end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: publishers
+          {{- if .Values.backend.publishers.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ if .Values.backend.publishers.persistence.existingClaim }}{{ .Values.backend.publishers.persistence.existingClaim }}{{ else }}{{ include "fpm-registry.backendName" . }}-publishers{{ end }}
+          {{- else }}
+          # Every issued token is lost on restart. Acceptable only for a
+          # throwaway registry.
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

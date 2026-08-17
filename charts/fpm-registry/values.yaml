@@ -68,6 +68,64 @@ config:
     allowHeaders: "Authorization, Content-Type"
     maxAge: "1728000"
 
+# The write-path service (`fpm-registry serve`).
+#
+# Reads stay on nginx above; only writes move here. That split is what makes
+# per-organisation ownership, artifact integrity and atomic publishing possible
+# — none of which WebDAV can express. With this enabled, nginx's WebDAV methods
+# are withdrawn, because a second write path without those properties would
+# undo all three.
+backend:
+  enabled: true
+  replicaCount: 1
+  image:
+    ## Built from the repository's Dockerfile. There is no published image yet,
+    ## so this must be a tag your cluster can resolve — pushed to a registry, or
+    ## imported into the node's container runtime.
+    repository: localhost/fpm-registry
+    tag: "2.0.0"
+    pullPolicy: IfNotPresent
+  ## Runs unprivileged. Must match the uid baked into the image.
+  runAsUser: 10001
+  initImage: busybox:latest
+  podAnnotations: {}
+  service:
+    port: 8080
+  publishers:
+    ## Publisher records: name, permitted orgs, and a token hash. Never the
+    ## token itself.
+    path: /etc/fpm/publishers.json
+    persistence:
+      ## Disabling this makes every issued token vanish on restart, which fails
+      ## later in a publisher's pipeline rather than here.
+      enabled: true
+      size: 128Mi
+      storageClassName: ""
+      accessMode: ReadWriteOnce
+      existingClaim: ""
+  ## Method-based routing, so publishers and consumers share one URL. Requires
+  ## Traefik; a plain Ingress cannot match on method.
+  route:
+    enabled: true
+    entryPoints:
+      - web
+    hosts:
+      - fpm.192.168.1.111.nip.io
+    methods:
+      - PUT
+      - DELETE
+    ## Must outrank the read path's Ingress rule for the same host.
+    priority: 100
+    ## Expose POST /admin/publishers publicly. Off by default.
+    exposeAdmin: false
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1024Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
 service:
   type: ClusterIP
   port: 80
