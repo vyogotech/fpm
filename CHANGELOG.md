@@ -51,7 +51,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compared against the stored one — which also repairs metadata the old
   comparison had already corrupted.
 
+- **Packaging died on symlinks it could not follow.** frappe/wiki checks in
+  `wiki/public/node_modules` as a symlink to an install-time artifact; staging
+  followed the link, failed the stat, and the whole package aborted. Dangling
+  and directory symlinks are now skipped with a warning; symlinks to regular
+  files are still copied.
+
 ### Added
+
+- **`fpm mirror`, a bulk builder for official Frappe apps.** Reads a curated
+  CSV catalog (`catalog/apps.csv`, frappe-org repositories only — the loader
+  rejects anything else), discovers the latest release tag of each major line
+  with `git ls-remote` (no clone), skips versions the registry already has via
+  the anonymous metadata read path, and packages and publishes only what is
+  missing. Untagged apps can track a branch instead, published as a prerelease
+  pseudo-version (`0.0.0-git.<date>.<sha>`) that can never become
+  `latest_version`. Builds reuse a persistent cache across apps and runs:
+  git checkouts under `~/.fpm/build-cache/src/`, `PIP_CACHE_DIR` for wheel
+  vendoring, and npm/yarn caches for optional per-app asset-build scripts
+  (`catalog/build/<slug>.sh`). Failures are isolated per app and reported
+  (`--report` writes JSON; exit 1 when anything failed, 2 on config errors);
+  a packaging failure with bundled wheels is retried without them and labeled
+  `published-nodeps`. Replaces `scripts/bulk-package.py` and
+  `scripts/apps.json`, which guessed artifact names from repo names and
+  hardcoded versions.
 
 - **`fpm-registry`, a registry service.** Replaces nginx's WebDAV on the *write*
   path only; reads remain static files under a document root, so an unmodified

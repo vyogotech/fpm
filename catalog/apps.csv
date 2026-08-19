@@ -1,0 +1,15 @@
+slug,repo,app_name,track,branch,branch_major,majors,bundle_deps,enabled,notes
+frappe,https://github.com/frappe/frappe,,,,,14;15;16,,,
+erpnext,https://github.com/frappe/erpnext,,,,,14;15;16,,,
+hrms,https://github.com/frappe/hrms,,,,,14;15;16,,,
+payments,https://github.com/frappe/payments,,branch,develop,0,,,,no release tags upstream; tracked from develop
+builder,https://github.com/frappe/builder,,,,,,,,
+gameplan,https://github.com/frappe/gameplan,,,,,,,,
+insights,https://github.com/frappe/insights,,,,,,,,
+wiki,https://github.com/frappe/wiki,,,,,,,,
+helpdesk,https://github.com/frappe/helpdesk,,,,,,,,
+crm,https://github.com/frappe/crm,,,,,,,,
+lms,https://github.com/frappe/lms,,,,,,,,
+drive,https://github.com/frappe/drive,,,,,,,,
+print_designer,https://github.com/frappe/print_designer,,,,,,,,
+webshop,https://github.com/frappe/webshop,,branch,develop,0,,,,no release tags upstream; tracked from develop
