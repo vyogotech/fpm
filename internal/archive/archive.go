@@ -198,6 +198,12 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 		// If relPath is a root file/dir (e.g., assets/icon.png), it goes to stagingDir/assets/icon.png
 		targetPath := filepath.Join(stagingDir, relPath) // All files/dirs are now relative to stagingDir root
 
+		if skip, err := skipSymlink(path, d); err != nil {
+			return err
+		} else if skip {
+			return nil
+		}
+
 		if d.IsDir() {
 			// Special handling for the app module directory itself (meta.AppName)
 			// It should be created directly in stagingDir.
@@ -376,6 +382,27 @@ func copyFile(src, dst string) error {
 	return os.Chmod(dst, 0644)
 }
 
+// skipSymlink decides what to do with a symlink met during staging. A link to
+// a regular file is followed and copied like any file. A dangling link or a
+// link to a directory is skipped with a warning: apps check in links to
+// install-time artifacts (wiki's public/node_modules, for one), and a zip
+// package can represent neither a broken link nor safely embed a foreign tree.
+func skipSymlink(path string, d fs.DirEntry) (bool, error) {
+	if d.Type()&fs.ModeSymlink == 0 {
+		return false, nil
+	}
+	info, err := os.Stat(path) // follows the link
+	if err != nil {
+		fmt.Printf("Warning: skipping dangling symlink %s\n", path)
+		return true, nil
+	}
+	if info.IsDir() {
+		fmt.Printf("Warning: skipping directory symlink %s\n", path)
+		return true, nil
+	}
+	return false, nil
+}
+
 // copyDir recursively copies a directory from src to dst, respecting ignore rules
 // ignorer and ignoreRootPath are used for .fpmignore checks
 func copyDir(srcDir, dstDir string, ignorer *ignore.GitIgnore, ignoreRootPath string) error { // Changed gitignore to ignore
@@ -409,6 +436,12 @@ func copyDir(srcDir, dstDir string, ignorer *ignore.GitIgnore, ignoreRootPath st
 		}
 
 		targetPath := filepath.Join(dstDir, relPathFromSrcRoot)
+
+		if skip, err := skipSymlink(path, d); err != nil {
+			return err
+		} else if skip {
+			return nil
+		}
 
 		if d.IsDir() {
 			return os.MkdirAll(targetPath, 0755) // Use fixed permissions for staging directories
