@@ -234,6 +234,28 @@ Reports the Python dependencies declared in the `requirements.txt` and `pyprojec
 the package ships, and whether it bundles wheels for offline installation — so you can
 tell before installing whether it will reach the network.
 
+#### `fpm mirror`
+Bulk-build and publish official Frappe apps from the checked-in catalog.
+
+```bash
+fpm mirror --catalog catalog/apps.csv --repo company-repo            # full catalog
+fpm mirror --catalog catalog/apps.csv --repo company-repo --dry-run  # plan only
+fpm mirror --catalog catalog/apps.csv --repo company-repo --apps crm,hrms
+```
+
+Discovers the latest release tag of each major line per app (`git ls-remote`,
+no clone), skips versions the repository already has, and builds and publishes
+the rest. Re-runs are idempotent. Git checkouts, pip's wheel cache, and
+npm/yarn caches persist under `~/.fpm/build-cache/` (override with
+`--cache-dir`). Publishing credentials come from `FPM_REPO_<NAME>_PASSWORD`,
+like `fpm publish`. See [catalog/README.md](catalog/README.md) for the catalog
+format, branch-tracked apps, and per-app asset-build scripts.
+
+**Flags:** `--apps` (slug filter), `--dry-run` (+ `--json`), `--skip-publish`,
+`--output-path` (default `dist`), `--report <file.json>`, `--cache-dir`,
+`--no-clean`. Exit codes: 0 clean, 1 when any app failed, 2 on
+configuration/catalog errors.
+
 ## 🏢 Deploy Your Own Repository
 
 FPM includes everything you need to deploy an enterprise-grade package repository using Nginx and Podman/Docker Compose.

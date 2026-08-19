@@ -121,3 +121,37 @@ func TestIsPrerelease(t *testing.T) {
 		t.Error("1.0.0 is not a prerelease")
 	}
 }
+
+func TestValid(t *testing.T) {
+	for _, v := range []string{"1.0.0", "v15.93.1", "1.0", "1", "1.0.0.4", "1.0.0-rc.1+build.5"} {
+		if !Valid(v) {
+			t.Errorf("Valid(%q) should be true", v)
+		}
+	}
+	for _, v := range []string{"", "version-15", "latest", "v15.x", "abc"} {
+		if Valid(v) {
+			t.Errorf("Valid(%q) should be false", v)
+		}
+	}
+}
+
+func TestMajor(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"15.93.1", 15},
+		{"v14.0.0", 14},
+		{"0.5.0", 0},
+		{"v2", 2},
+	}
+	for _, tc := range cases {
+		got, ok := Major(tc.in)
+		if !ok || got != tc.want {
+			t.Errorf("Major(%q) = %d, %v; want %d, true", tc.in, got, ok, tc.want)
+		}
+	}
+	if _, ok := Major("version-15"); ok {
+		t.Error("Major(\"version-15\") should not parse")
+	}
+}

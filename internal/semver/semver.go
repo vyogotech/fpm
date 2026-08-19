@@ -145,6 +145,22 @@ func IsPrerelease(value string) bool {
 	return parse(value).isPrerelese
 }
 
+// Valid reports whether a version parses under the ordering rules above.
+func Valid(value string) bool {
+	return parse(value).ok
+}
+
+// Major returns a version's major component, and whether the version parsed
+// at all. Callers grouping versions into release lines need the distinction
+// between "major 0" and "not a version".
+func Major(value string) (int, bool) {
+	p := parse(value)
+	if !p.ok {
+		return 0, false
+	}
+	return p.numbers[0], true
+}
+
 // Sort returns the versions ordered ascending by precedence.
 func Sort(versions []string) []string {
 	out := append([]string(nil), versions...)
