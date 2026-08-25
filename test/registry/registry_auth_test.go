@@ -247,6 +247,10 @@ func startRegistry(t *testing.T, f fixture) *registry {
 			}
 		}
 		_ = exec.Command(runtimeBin, "rm", "--force", name).Run()
+		// nginx (UID 101) creates files inside the mounted data volume that
+		// the CI user cannot delete, causing t.TempDir() cleanup to fail
+		// with "permission denied". Recursively fix ownership first.
+		_ = chmodTree(dataDir, 0o777)
 	})
 
 	reg := &registry{
