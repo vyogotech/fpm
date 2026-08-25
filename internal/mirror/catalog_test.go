@@ -54,10 +54,21 @@ func TestLoadCatalogParsesFields(t *testing.T) {
 	}
 }
 
-func TestLoadCatalogRejectsThirdPartyRepo(t *testing.T) {
-	path := writeCatalog(t, "evil,https://github.com/notfrappe/evil,,,,,,,,\n")
-	if _, err := LoadCatalog(path); err == nil || !strings.Contains(err.Error(), "frappe-org") {
-		t.Fatalf("expected frappe-org rejection, got %v", err)
+func TestLoadCatalogValidatesGitURL(t *testing.T) {
+	path := writeCatalog(t, "evil,ftp://invalid.com/repo,,,,,,,,\n")
+	if _, err := LoadCatalog(path); err == nil || !strings.Contains(err.Error(), "valid git URL") {
+		t.Fatalf("expected invalid git URL rejection, got %v", err)
+	}
+}
+
+func TestLoadCatalogAllowsExternalGitRepo(t *testing.T) {
+	path := writeCatalog(t, "raven,https://github.com/The-Commit-Company/raven,,,,,,,,\n")
+	cat, err := LoadCatalog(path)
+	if err != nil {
+		t.Fatalf("expected external repo allowed, got error: %v", err)
+	}
+	if len(cat.Apps) != 1 || cat.Apps[0].Slug != "raven" {
+		t.Errorf("unexpected catalog apps: %+v", cat.Apps)
 	}
 }
 
@@ -131,7 +142,7 @@ func TestEnabledFilter(t *testing.T) {
 }
 
 func TestShippedCatalogLoads(t *testing.T) {
-	cat, err := LoadCatalog(filepath.Join("..", "..", "catalog", "apps.csv"))
+	cat, err := LoadCatalogWithOptions(filepath.Join("..", "..", "catalog", "apps.csv"), CatalogOptions{AllowThirdParty: true})
 	if err != nil {
 		t.Fatal(err)
 	}
