@@ -37,7 +37,10 @@ jobs:
 
       - name: Run tests with gotestsum
         run: |
-          $(go env GOPATH)/bin/gotestsum --junitfile unit-tests.xml -- ./... -race -coverprofile=coverage.out
+          $(go env GOPATH)/bin/gotestsum --junitfile unit-tests.xml -- ./... -race
+
+      - name: Generate coverage profile
+        run: go test -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Generate coverage report
         run: go tool cover -html=coverage.out -o coverage.html
