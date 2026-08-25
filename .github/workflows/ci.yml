@@ -17,7 +17,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22.x'
+          go-version-file: go.mod
 
       - name: Cache Go modules
         uses: actions/cache@v4
@@ -37,10 +37,7 @@ jobs:
 
       - name: Run tests with gotestsum
         run: |
-          $(go env GOPATH)/bin/gotestsum --junitfile unit-tests.xml -- ./... -race
-
-      - name: Generate coverage profile
-        run: go test -coverprofile=coverage.out -covermode=atomic ./...
+          $(go env GOPATH)/bin/gotestsum --junitfile unit-tests.xml -- ./... -race -coverprofile=coverage.out
 
       - name: Generate coverage report
         run: go tool cover -html=coverage.out -o coverage.html
@@ -69,7 +66,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22.x'
+          go-version-file: go.mod
 
       - name: Build FPM using Makefile
         run: make build
@@ -88,7 +85,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22.x'
+          go-version-file: go.mod
 
       - name: Run go vet
         run: go vet ./...
@@ -159,7 +156,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22.x'
+          go-version-file: go.mod
 
       - name: Registry write-protection acceptance tests
         run: go test -tags integration -count=1 -v ./test/registry/...
