@@ -200,7 +200,15 @@ func startRegistry(t *testing.T, f fixture) *registry {
 	t.Helper()
 
 	runtimeBin := containerRuntime(t)
-	workDir := t.TempDir()
+	// Do NOT use t.TempDir() — its automatic os.RemoveAll cleanup runs as
+	// the CI user, but Docker writes files as root (UID 0). The CI user
+	// cannot unlink root-owned files, so the built-in cleanup always fails
+	// and marks the test as FAIL even when every assertion passed. We manage
+	// our own temp dir and use the container runtime to fix ownership.
+	workDir, err := os.MkdirTemp("", "fpm-registry-test-*")
+	if err != nil {
+		t.Fatalf("creating work dir: %v", err)
+	}
 	confPath, policyPath, htpasswdMount := f.build(t, workDir)
 
 	dataDir := filepath.Join(workDir, "data")
@@ -247,10 +255,12 @@ func startRegistry(t *testing.T, f fixture) *registry {
 			}
 		}
 		_ = exec.Command(runtimeBin, "rm", "--force", name).Run()
-		// nginx (UID 101) creates files inside the mounted data volume that
-		// the CI user cannot delete, causing t.TempDir() cleanup to fail
-		// with "permission denied". Recursively fix ownership first.
-		_ = chmodTree(dataDir, 0o777)
+		// Docker writes files as root inside the mounted volume. Use the
+		// container runtime to chown everything back so os.RemoveAll works.
+		_ = exec.Command(runtimeBin, "run", "--rm",
+			"-v", workDir+":/work",
+			"alpine", "chmod", "-R", "777", "/work").Run()
+		_ = os.RemoveAll(workDir)
 	})
 
 	reg := &registry{
