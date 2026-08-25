@@ -1,10 +1,9 @@
-// Package mirror bulk-builds and publishes official Frappe apps.
+// Package mirror bulk-builds and publishes Frappe ecosystem apps.
 //
-// The catalog is a checked-in CSV of frappe-org repositories; mirror discovers
+// The catalog is a checked-in CSV of Frappe ecosystem repositories; mirror discovers
 // release tags, packages the latest release of each major line, and publishes
-// the versions the registry does not have yet. Only repositories under the
-// official frappe GitHub organisation are accepted: the registry does not give
-// third-party apps a listing.
+// the versions the registry does not have yet. Apps from any Git repository
+// (official, community, or third-party) are supported.
 package mirror
 
 import (
@@ -17,11 +16,8 @@ import (
 	"strings"
 )
 
-// Org is the only organisation the mirror publishes under.
+// Org is the default organization namespace the mirror publishes under.
 const Org = "frappe"
-
-// repoPrefix is the only source location the catalog accepts.
-const repoPrefix = "https://github.com/frappe/"
 
 // Track selects how versions are discovered for an app.
 const (
@@ -72,9 +68,18 @@ var catalogColumns = []string{
 	"majors", "bundle_deps", "enabled", "notes",
 }
 
-// LoadCatalog reads and validates a catalog CSV. Build scripts are resolved
-// from a build/ directory next to the CSV file.
+// CatalogOptions configures catalog validation behavior.
+type CatalogOptions struct {
+	AllowThirdParty bool
+}
+
+// LoadCatalog reads and validates a catalog CSV using default options (allowing any valid git repo URL).
 func LoadCatalog(path string) (*Catalog, error) {
+	return LoadCatalogWithOptions(path, CatalogOptions{AllowThirdParty: true})
+}
+
+// LoadCatalogWithOptions reads and validates a catalog CSV with explicit options.
+func LoadCatalogWithOptions(path string, opts CatalogOptions) (*Catalog, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open catalog %s: %w", path, err)
@@ -126,8 +131,8 @@ func LoadCatalog(path string) (*Catalog, error) {
 		}
 		seen[app.Slug] = true
 
-		if !strings.HasPrefix(app.Repo, repoPrefix) {
-			return nil, rowErr("repo must be under %s — only official frappe-org apps are mirrored", repoPrefix)
+		if !strings.HasPrefix(app.Repo, "https://") && !strings.HasPrefix(app.Repo, "http://") && !strings.HasPrefix(app.Repo, "git@") {
+			return nil, rowErr("repo must be a valid git URL (https://, http://, or git@)")
 		}
 
 		switch app.Track {

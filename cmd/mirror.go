@@ -16,16 +16,17 @@ import (
 )
 
 var (
-	mirrorCatalogPath string
-	mirrorRepoName    string
-	mirrorApps        string
-	mirrorDryRun      bool
-	mirrorJSON        bool
-	mirrorSkipPublish bool
-	mirrorOutputPath  string
-	mirrorReportPath  string
-	mirrorCacheDir    string
-	mirrorNoClean     bool
+	mirrorCatalogPath     string
+	mirrorRepoName        string
+	mirrorApps            string
+	mirrorDryRun          bool
+	mirrorJSON            bool
+	mirrorSkipPublish     bool
+	mirrorOutputPath      string
+	mirrorReportPath      string
+	mirrorCacheDir        string
+	mirrorNoClean         bool
+	mirrorAllowThirdParty bool
 )
 
 // Exit codes: 0 clean, 1 one or more apps failed, 2 configuration/catalog
@@ -52,7 +53,9 @@ var mirrorCmd = &cobra.Command{
 }
 
 func runMirror() error {
-	catalog, err := mirror.LoadCatalog(mirrorCatalogPath)
+	catalog, err := mirror.LoadCatalogWithOptions(mirrorCatalogPath, mirror.CatalogOptions{
+		AllowThirdParty: mirrorAllowThirdParty,
+	})
 	if err != nil {
 		return err
 	}
@@ -157,5 +160,6 @@ func init() {
 	mirrorCmd.Flags().StringVar(&mirrorReportPath, "report", "", "Write a JSON run report to this path")
 	mirrorCmd.Flags().StringVar(&mirrorCacheDir, "cache-dir", "", "Persistent build cache (default ~/.fpm/build-cache)")
 	mirrorCmd.Flags().BoolVar(&mirrorNoClean, "no-clean", false, "Keep checkout state between builds (debugging)")
+	mirrorCmd.Flags().BoolVar(&mirrorAllowThirdParty, "allow-third-party", true, "Allow third-party / external git repositories in the catalog")
 	mirrorCmd.MarkFlagRequired("repo")
 }

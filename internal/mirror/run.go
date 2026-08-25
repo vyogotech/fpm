@@ -88,6 +88,7 @@ func (r *Runner) runOne(item BuildItem) Result {
 	if err != nil {
 		return fail("package", err)
 	}
+	defer os.RemoveAll(filepath.Dir(artifact))
 
 	manifest, err := metadata.ReadMetadataFromFPMArchive(artifact)
 	if err != nil {
@@ -192,7 +193,7 @@ func (r *Runner) packageApp(item BuildItem, checkout string) (artifact string, n
 }
 
 func (r *Runner) runBuildScript(script, checkout string) error {
-	cmd := exec.Command("sh", script)
+	cmd := exec.Command("bash", script)
 	cmd.Dir = checkout
 	cmd.Env = r.Workspace.BuildEnv()
 	out, err := cmd.CombinedOutput()
