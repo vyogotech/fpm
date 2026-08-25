@@ -87,6 +87,11 @@ func buildHelmConfig(t *testing.T, dir string) (string, string, string) {
 		"--show-only", "templates/configmap.yaml",
 		"--set", "auth.username="+publisherUser,
 		"--set", "auth.password="+publisherPass,
+		// backend.enabled=true (the default) intentionally omits dav_methods
+		// from nginx because the write-path service handles writes. The
+		// acceptance test validates the standalone mode where nginx itself
+		// handles WebDAV, so we override the default here.
+		"--set", "backend.enabled=false",
 	).CombinedOutput()
 	if err != nil {
 		t.Fatalf("rendering the chart: %v\n%s", err, rendered)
