@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-08-27
+
 Offline installation of custom (non-catalog) apps from arbitrary git checkouts: fpm
 now does all the build, vendor and install work itself, and exposes enough metadata
 for external caching and orchestration to key on.
@@ -513,7 +515,8 @@ Version 2.0.0 marks a major production-ready release of the Frappe Package Manag
 - No TLS/SSL by default (HTTP only, can be configured)
 - Metadata endpoint temporarily has no authentication for testing
 
-[Unreleased]: https://github.com/vyogotech/fpm/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/vyogotech/fpm/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/vyogotech/fpm/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/vyogotech/fpm/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/vyogotech/fpm/compare/v1.7.0...v2.0.0
 [1.7.0]: https://github.com/vyogotech/fpm/compare/v1.6.0...v1.7.0
