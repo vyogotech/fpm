@@ -27,7 +27,7 @@ ifeq ($(GOOS),windows)
     endif
 endif
 
-.PHONY: all build build-registry test test-integration clean help fmt
+.PHONY: all build build-registry test test-integration test-offline clean help fmt
 
 all: fmt test build
 
@@ -54,6 +54,12 @@ test:
 test-integration:
 	@echo "Running integration tests..."
 	go test -tags integration -count=1 -v ./test/...
+
+# End-to-end offline install against a real, network-isolated bench on a remote
+# podman host. Needs FPM_OFFLINE_SSH_HOST=user@host; see test/offline/README.md.
+test-offline:
+	@echo "Running the offline installation scenario on $${FPM_OFFLINE_SSH_HOST:-varun@192.168.1.111}..."
+	bash test/offline/run.sh all
 
 clean:
 	@echo "Cleaning up..."

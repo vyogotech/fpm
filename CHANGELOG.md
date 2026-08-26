@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Offline installation of custom (non-catalog) apps from arbitrary git checkouts: fpm
+now does all the build, vendor and install work itself, and exposes enough metadata
+for external caching and orchestration to key on.
+
+### Added
+
+- **`fpm package --bench-path <bench>`** runs Frappe's own asset build
+  (`bench build --app <app> --production`) inside a bench and ships the output in
+  `<app>/public/dist/`, recording the bundle manifest entries as `asset_bundles` in
+  `app_metadata.json`. Any build error fails packaging (exit 4); there is no silent
+  source-only fallback. `compiled_assets/` is still accepted from older packages.
+  A source outside `<bench>/apps/` is staged there as a copy for the build (app
+  frontends such as erpnext's `banking/` resolve the bench from their own path, and
+  esbuild folds input source paths into bundle hashes, so building at `apps/<app>`
+  yields the same hashed names a bench build would), and
+  `yarn install --check-files` runs first when the app has a `package.json`, as
+  `bench get-app` does. `node_modules/` is excluded from packages, and gitignore-style
+  directory patterns (`node_modules/`, `tests/`, `__pycache__/`) now skip the directory
+  itself instead of leaving empty entries.
+- **`fpm install` deploys assets the way `bench build` does**, ported from
+  `frappe/build.py` and `esbuild/esbuild.js` rather than invented: `sites/assets/<app>`
+  is a symlink to the app's `public/` (`make_asset_dirs`), the app's bundles are
+  merged into the single global `sites/assets/assets.json` / `assets-rtl.json`
+  (`Object.assign` semantics — other apps' keys preserved, `JSON.stringify(obj, null, 4)`,
+  no trailing newline), and the `assets_json` key is deleted from `redis_cache`. The
+  previous `copyDirContents` deploy wrote a real directory and never touched the manifest,
+  so Frappe could not resolve the bundles.
+- **`commit_sha`, `git_ref`, `git_dirty`** in `app_metadata.json` and `commit_sha` /
+  `git_ref` in published `package-metadata.json`: the exact revision a package was built
+  from, for build de-duplication.
+- **`fpm exists <org>/<app>[==<version>] [--commit] [--platform] [--python-version] [--remote] [--json]`**
+  answers whether a package already exists — locally or in a repository — from metadata
+  alone, without downloading; exit 10 when it does not.
+- **`required_apps` (hooks.py) are resolved and enforced.** `fpm package` pins each entry
+  to `org/app==version` against the local store and configured repositories and records
+  them (`required_apps` in `app_metadata.json` and repository metadata); an unresolvable
+  entry fails packaging (exit 5). `fpm install` checks the transitive closure is already in
+  the local FPM store before touching the bench and fails hard (exit 6) instead of
+  fetching. `fpm deps` shows the closure with presence, `--check` and `--json`.
+  `internal/resolver` (previously an empty stub) implements this.
+- **Explicit wheel target.** `--platform` is repeatable and `--python-version`
+  (plus `--implementation`, `--abi`) is required for a cross-build with dependencies, so
+  wheels are resolved for the destination bench's interpreter, never the packaging
+  host's. Every vendored distribution is pinned in `wheels/fpm-lock.txt`;
+  `wheel_python_version` is recorded in metadata.
+- **`fpm install` refuses a platform/interpreter mismatch** (exit 7) instead of
+  warning, since there is no network fallback once pip runs offline;
+  `--ignore-platform-mismatch` restores the old behaviour. `--skip-required-apps-check`
+  opts out of the required-apps check.
+- **Bench-provided required apps.** A `required_apps` entry satisfied by an app
+  already in the bench (installed outside fpm, or baked into an image such as the
+  ERPNext single-node one) is accepted at install time when its module `__version__`
+  matches the pin, and is never reinstalled; `fpm package --bench-path` resolves
+  entries against the build bench the same way (`resolved_from: bench:<path>`), and
+  `fpm deps --bench-path` reports them.
+- **Closure bundles.** `fpm bundle <org>/<app>[==<version>] [--remote]` and
+  `fpm package --with-deps` export a directory with the package plus the packages
+  of every app it transitively requires — each once — and an `fpm-bundle.json`
+  install-order manifest; `fpm install <bundle-dir>` installs them in that order,
+  offline. This is how an app such as hrms (`required_apps = ["frappe/erpnext"]`)
+  ships with erpnext without erpnext being duplicated inside its package.
+- Distinct exit codes: 3 not a Frappe app, 4 asset build failed, 5 unresolved
+  required apps, 6 missing required apps, 7 platform mismatch, 10 not found.
+- `test/offline`: an end-to-end offline install scenario against a real,
+  network-isolated Single Node Frappista container on a remote podman host
+  (`make test-offline`).
+
+### Changed
+
+- **`fpm package` validates the Frappe app structure first**, before metadata
+  generation, git introspection, dependency resolution or any build, and reports a
+  typed error (`apputils.ErrNotFrappeApp`, exit 3) so callers can tell "not a Frappe
+  app" apart from a build or network failure. The app module is detected from the
+  directory layout (`--app-name`, else the single directory holding `hooks.py`,
+  `__init__.py`, `modules.txt`).
+- `fpm install --site` no longer needs a `bench` executable inside the virtualenv: it
+  runs `env/bin/python -m frappe.utils.bench_helper frappe --site <site> install-app
+  <app>` from `sites/`, which is what the `bench` CLI itself execs.
+- `fpm package` installs into the local store through `appstore.ManageAppInLocalStore`
+  instead of a duplicated inline extractor.
+
+### Fixed
+
+- `FPM_APPS_BASE_PATH` was ignored on the very first run (`InitConfig` returned the
+  defaults without applying the override).
+
 ## [2.1.0] - 2026-08-25
 
 ### Security

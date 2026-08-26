@@ -12,14 +12,20 @@ import (
 	"strings"
 
 	"fpm/internal/appstore" // Added for app store management
+	"fpm/internal/assets"
 	"fpm/internal/config"
 	"fpm/internal/metadata"
 	"fpm/internal/repository"
+	"fpm/internal/resolver"
 	"fpm/internal/wheels" // For locating vendored Python dependencies
-	// "fpm/internal/utils" // utils.CopyRegularFile is now handled by appstore package for this flow
 	"os/exec"
 
 	"github.com/spf13/cobra"
+)
+
+var (
+	installSkipRequiredAppsCheck  bool
+	installIgnorePlatformMismatch bool
 )
 
 // copyDirContents recursively copies contents from src to dst.
@@ -73,10 +79,6 @@ If the version is not specified for a remote package, 'latest' is assumed and re
 from the local FPM store, then from remote repositories.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		packagePathArg := args[0]
-		var appModulePathInFPMStore string
-		var appOrg, appName, appVersion string
-
 		cfg, configErr := config.InitConfig()
 		if configErr != nil {
 			return fmt.Errorf("failed to initialize FPM configuration: %w", configErr)
@@ -90,6 +92,23 @@ from the local FPM store, then from remote repositories.`,
 		if err != nil {
 			return fmt.Errorf("error retrieving 'site' flag: %w", err)
 		}
+
+		// A directory holding fpm-bundle.json is a dependency closure exported by
+		// `fpm bundle` or `fpm package --with-deps`: every package in it is installed,
+		// in dependency order, so the required-apps check passes at each step.
+		if isBundleDir(args[0]) {
+			return installBundle(cmd, args[0], benchPath, siteName, cfg)
+		}
+		return installOne(cmd, args[0], benchPath, siteName, cfg)
+	},
+}
+
+// installOne installs a single package — a local .fpm file or an
+// <org>/<app>[==<version>] identifier — into the bench, and onto siteName when given.
+func installOne(cmd *cobra.Command, packagePathArg, benchPath, siteName string, cfg *config.FPMConfig) error {
+	{
+		var appModulePathInFPMStore string
+		var appOrg, appName, appVersion string
 
 		fmt.Printf("Attempting to install '%s'\n", packagePathArg)
 		statInfo, statErr := os.Stat(packagePathArg)
@@ -247,7 +266,33 @@ from the local FPM store, then from remote repositories.`,
 			return fmt.Errorf("failed to get absolute path for bench directory '%s': %w", benchPath, err)
 		}
 
-		originalPath := appModulePathInFPMStore
+		// --- Pre-install checks ---
+		// The target bench has no network, so anything the install would need to fetch
+		// has to be refused now, before the bench is touched.
+		baseVersionPath := filepath.Dir(appModulePathInFPMStore)
+		storeMeta, metaErr := readMetadataFromFPMStore(baseVersionPath)
+		if metaErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not read package metadata from local store: %v\n", metaErr)
+			storeMeta = &metadata.AppMetadata{}
+		}
+		packageID := fmt.Sprintf("%s/%s==%s", appOrg, appName, appVersion)
+		if err := checkRequiredApps(cfg, storeMeta, absBenchPath, packageID, siteName != "", installSkipRequiredAppsCheck); err != nil {
+			return err
+		}
+		wheelsInStore := vendoredWheelsDir(baseVersionPath)
+		if wheelsInStore != "" {
+			if err := checkWheelTarget(storeMeta, benchPythonVersion(absBenchPath), installIgnorePlatformMismatch); err != nil {
+				return err
+			}
+		}
+
+		// <bench>/apps/<app> must be the app's *package root* — the directory holding
+		// pyproject.toml / requirements.txt with the Python module <app>/ inside it —
+		// which is what `pip install -e`, Frappe (`apps/<app>/<app>/public` for assets)
+		// and bench all expect. In the local store that is the version directory, whose
+		// extra files (app_metadata.json, wheels/, the stored .fpm) are ignored by all of
+		// them.
+		originalPath := baseVersionPath
 		linkName := filepath.Join(absBenchPath, "apps", appName)
 
 		fmt.Printf("Preparing to symlink app '%s' from '%s' to '%s'\n", appName, originalPath, linkName)
@@ -268,24 +313,13 @@ from the local FPM store, then from remote repositories.`,
 		}
 		fmt.Printf("Successfully symlinked app '%s' into bench.\n", appName)
 
-		// --- Automatic Asset Deployment ---
-		// Check if compiled_assets exist in the local FPM store for this version
-		baseVersionPath := filepath.Dir(appModulePathInFPMStore)
-		compiledAssetsInStore := filepath.Join(baseVersionPath, "compiled_assets")
-		if info, err := os.Stat(compiledAssetsInStore); err == nil && info.IsDir() {
-			fmt.Printf("Detected 'compiled_assets' in package. Deploying to bench assets...\n")
-			targetAssetsPath := filepath.Join(absBenchPath, "sites", "assets", appName)
-
-			if err := os.MkdirAll(targetAssetsPath, 0755); err != nil {
-				return fmt.Errorf("failed to create target assets directory '%s': %w", targetAssetsPath, err)
-			}
-
-			if err := copyDirContents(compiledAssetsInStore, targetAssetsPath); err != nil {
-				return fmt.Errorf("failed to deploy compiled assets to '%s': %w", targetAssetsPath, err)
-			}
-			fmt.Printf("Successfully deployed assets for app '%s' to bench.\n", appName)
-		} else {
-			fmt.Printf("No 'compiled_assets' found in package, skipping asset deployment.\n")
+		// --- Asset deployment ---
+		// Exactly what `bench build --app <app> --using-cached` does with prebuilt output:
+		// link sites/assets/<app> to the app's public/ directory and merge the app's
+		// built bundles into sites/assets/assets.json and assets-rtl.json. Nothing is
+		// compiled here; the package ships <app>/public/dist from `fpm package --bench-path`.
+		if err := deployPackagedAssets(absBenchPath, appName, appModulePathInFPMStore, baseVersionPath); err != nil {
+			return err
 		}
 
 		currentWD, err := os.Getwd()
@@ -307,11 +341,7 @@ from the local FPM store, then from remote repositories.`,
 		// A package that bundles wheels/ resolves its Python dependencies from that
 		// directory instead of PyPI, so the install works without network access.
 		// Packages without vendored wheels keep the original online behaviour.
-		wheelsInStore := vendoredWheelsDir(baseVersionPath)
 		if wheelsInStore != "" {
-			if storeMeta, metaErr := readMetadataFromFPMStore(baseVersionPath); metaErr == nil {
-				warnOnWheelPlatformMismatch(storeMeta)
-			}
 			fmt.Printf("Detected vendored wheels in package. Installing offline from %s\n", wheelsInStore)
 		} else {
 			fmt.Printf("No vendored wheels in package; resolving Python dependencies from the network.\n")
@@ -384,19 +414,25 @@ from the local FPM store, then from remote repositories.`,
 				"Pass --site <site> to also install it onto a site.\n", appName)
 		}
 		return nil
-	},
+	}
 }
 
-// benchExecutable is the bench CLI inside a Frappe bench's virtualenv, the same place
-// the pip used for the app install comes from.
-const benchExecutable = "./env/bin/bench"
+// benchPythonExecutable is the interpreter of a Frappe bench's virtualenv, relative to
+// the bench root — the same place the pip used for the app install comes from.
+const benchPythonExecutable = "./env/bin/python"
 
 // installAppOnSite runs `bench --site <site> install-app <app>`, which is what actually
 // makes an app active on a site: creating its DocTypes and running its patches.
 //
-// It is deliberately delegated to bench rather than reimplemented. Site installation
-// touches the database and runs the app's own migrations, and bench is the only thing
-// that knows how to do that correctly for a given Frappe version.
+// It is deliberately delegated to Frappe rather than reimplemented. Site installation
+// touches the database and runs the app's own migrations, and Frappe is the only thing
+// that knows how to do that correctly for a given version.
+//
+// The `bench` CLI is not required to be installed, in the virtualenv or anywhere: for
+// any frappe command, bench merely chdirs into <bench>/sites and execs
+// `env/bin/python -m frappe.utils.bench_helper frappe <args>` (bench/cli.py,
+// frappe_cmd). That is invoked directly, so an install works in benches where bench
+// lives outside the virtualenv (a user or system install, container images).
 func installAppOnSite(benchPath, siteName, appName string) error {
 	currentWD, err := os.Getwd()
 	if err != nil {
@@ -411,17 +447,22 @@ func installAppOnSite(benchPath, siteName, appName string) error {
 		}
 	}()
 
-	if _, statErr := os.Stat(benchExecutable); statErr != nil {
+	if _, statErr := os.Stat(benchPythonExecutable); statErr != nil {
 		return fmt.Errorf("cannot install app '%s' onto site '%s': %s not found in bench '%s'. "+
 			"The app is installed in the bench; run 'bench --site %s install-app %s' yourself",
-			appName, siteName, benchExecutable, benchPath, siteName, appName)
+			appName, siteName, benchPythonExecutable, benchPath, siteName, appName)
 	}
 
-	args := []string{"--site", siteName, "install-app", appName}
-	fmt.Printf("\nInstalling app '%s' onto site '%s': %s %s\n",
-		appName, siteName, benchExecutable, strings.Join(args, " "))
+	args := []string{"-m", "frappe.utils.bench_helper", "frappe", "--site", siteName, "install-app", appName}
+	fmt.Printf("\nInstalling app '%s' onto site '%s': (cd sites && %s %s)\n",
+		appName, siteName, benchPythonExecutable, strings.Join(args, " "))
 
-	execCmd := exec.Command(benchExecutable, args...)
+	python, err := filepath.Abs(benchPythonExecutable)
+	if err != nil {
+		return err
+	}
+	execCmd := exec.Command(python, args...)
+	execCmd.Dir = filepath.Join(benchPath, "sites")
 	output, err := execCmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to install app '%s' onto site '%s':\n%s\nError: %w",
@@ -430,6 +471,21 @@ func installAppOnSite(benchPath, siteName, appName string) error {
 
 	fmt.Printf("Successfully installed app '%s' onto site '%s'.\nOutput:\n%s\n",
 		appName, siteName, string(output))
+
+	// Frappe's installer clears the site cache itself, but make it explicit rather
+	// than rely on that: the site's cached boot info, hooks and website pages must not
+	// outlive the app set they were computed for. Not fatal — the app is installed.
+	clearArgs := []string{"-m", "frappe.utils.bench_helper", "frappe", "--site", siteName, "clear-cache"}
+	fmt.Printf("Clearing site cache: (cd sites && %s %s)\n", benchPythonExecutable, strings.Join(clearArgs, " "))
+	clearCmd := exec.Command(python, clearArgs...)
+	clearCmd.Dir = filepath.Join(benchPath, "sites")
+	if out, err := clearCmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: clear-cache for site '%s' failed: %v\n%s\nRun 'bench --site %s clear-cache' yourself.\n",
+			siteName, err, strings.TrimSpace(string(out)), siteName)
+	} else {
+		fmt.Printf("Cleared cache for site '%s'.\n", siteName)
+	}
+	fmt.Printf("Note: running web/worker processes load an app when they start; restart them (bench restart) for '%s' to be served.\n", appName)
 	return nil
 }
 
@@ -492,27 +548,208 @@ func buildPipInstallArgs(pipAppPath, wheelsDir string) []string {
 	return []string{"install", "-q", "--no-index", "--find-links", wheelsDir, "-e", pipAppPath}
 }
 
-// warnOnWheelPlatformMismatch reports when a package's vendored wheels were built for a
-// platform that does not obviously match this machine. pip makes the final call on wheel
-// compatibility, so this only surfaces the likely cause ahead of a confusing pip error.
-func warnOnWheelPlatformMismatch(meta *metadata.AppMetadata) {
-	if meta == nil || meta.WheelPlatform == "" || meta.WheelPlatform == "host" {
-		return
+// checkWheelTarget refuses to start an offline install whose vendored wheels cannot
+// match this bench. Once pip runs with --no-index there is no network fallback, so a
+// platform or interpreter mismatch is caught here, where the fix is actionable, not
+// as a pip resolution error halfway through. The check is skipped for wheels built
+// for the packaging host, whose exact tag is unknown; pip decides those.
+func checkWheelTarget(meta *metadata.AppMetadata, benchPython string, ignore bool) error {
+	if meta == nil || meta.WheelPlatform == "" || meta.WheelPlatform == wheels.HostPlatformTag {
+		return nil
 	}
-	// Platform tags name the OS and architecture, e.g. manylinux2014_x86_64.
-	tag := strings.ToLower(meta.WheelPlatform)
-	archMatches := strings.Contains(tag, goArchToWheelArch(runtime.GOARCH))
-	osMatches := runtime.GOOS == "linux" && (strings.Contains(tag, "linux") || strings.Contains(tag, "manylinux"))
-	if runtime.GOOS != "linux" {
-		osMatches = strings.Contains(tag, runtime.GOOS)
+	var problems []string
+	if !wheelPlatformMatchesHost(meta.WheelPlatform, runtime.GOOS, runtime.GOARCH) {
+		problems = append(problems, fmt.Sprintf("wheels were vendored for '%s' but this host is %s/%s",
+			meta.WheelPlatform, runtime.GOOS, runtime.GOARCH))
 	}
-	if archMatches && osMatches {
-		return
+	if meta.WheelPythonVersion != "" && benchPython != "" && meta.WheelPythonVersion != benchPython {
+		problems = append(problems, fmt.Sprintf("wheels were vendored for Python %s but the bench's env/bin/python is %s",
+			meta.WheelPythonVersion, benchPython))
 	}
-	fmt.Fprintf(os.Stderr,
-		"Warning: package wheels were vendored for '%s' but this host is %s/%s. "+
-			"pip may reject them as incompatible.\n",
-		meta.WheelPlatform, runtime.GOOS, runtime.GOARCH)
+	if len(problems) == 0 {
+		return nil
+	}
+	if ignore {
+		fmt.Fprintf(os.Stderr, "Warning: %s. Continuing because --ignore-platform-mismatch was given; pip may reject the wheels.\n",
+			strings.Join(problems, "; "))
+		return nil
+	}
+	fix := "fpm package --platform <tag> --python-version <version>"
+	if benchPython != "" {
+		fix = fmt.Sprintf("fpm package --platform <tag> --python-version %s", benchPython)
+	}
+	return fmt.Errorf("%w: %s.\nThere is no network fallback once pip installs offline. "+
+		"Repackage the app for this bench (%s), or pass --ignore-platform-mismatch to let pip decide",
+		ErrPlatformMismatch, strings.Join(problems, "; "), fix)
+}
+
+// wheelPlatformMatchesHost reports whether any of the vendored platform tags names
+// the given OS and architecture. Tags name both, e.g. manylinux2014_x86_64.
+func wheelPlatformMatchesHost(tag, goos, goarch string) bool {
+	// Linux tags spell the architecture the uname way (x86_64, aarch64); macOS tags
+	// use Apple's (x86_64, arm64). Accept either spelling.
+	arches := []string{goArchToWheelArch(goarch), goarch}
+	for _, platform := range wheels.ParseTag(tag) {
+		p := strings.ToLower(platform)
+		archMatches := false
+		for _, a := range arches {
+			if strings.Contains(p, a) {
+				archMatches = true
+			}
+		}
+		osMatches := strings.Contains(p, goos)
+		if goos == "linux" {
+			osMatches = strings.Contains(p, "linux")
+		} else if goos == "darwin" {
+			osMatches = strings.Contains(p, "macosx") || strings.Contains(p, "darwin")
+		}
+		if archMatches && osMatches {
+			return true
+		}
+	}
+	return false
+}
+
+// benchPythonVersion reports the MAJOR.MINOR version of the bench's virtualenv
+// interpreter, or "" when it cannot be determined (the check is then skipped).
+func benchPythonVersion(benchPath string) string {
+	python := filepath.Join(benchPath, "env", "bin", "python")
+	out, err := exec.Command(python, "-c", "import sys; print('%d.%d' % sys.version_info[:2])").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// checkRequiredApps enforces the offline contract for hooks.py required_apps: every
+// pinned requirement, transitively, must already be in the local FPM store — or
+// already be present in the bench itself (installed by other means: bench get-app, or
+// baked into an image such as the ERPNext single-node one) at the version the
+// package was built against. Nothing is fetched. When the app is also being installed
+// onto a site, each store-provided requirement must already be in the bench too,
+// since `bench install-app` installs required apps from the bench's own apps directory.
+func checkRequiredApps(cfg *config.FPMConfig, meta *metadata.AppMetadata, benchPath, packageID string, forSite, skip bool) error {
+	if meta == nil || len(meta.RequiredApps) == 0 {
+		return nil
+	}
+	closure, missing, err := resolver.CheckClosure(cfg.AppsBasePath, benchPath, meta.RequiredApps, packageID)
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		if !skip {
+			return resolver.MissingError(packageID, missing)
+		}
+		fmt.Fprintf(os.Stderr, "Warning: --skip-required-apps-check given; continuing without these required apps in the local store:\n")
+		for _, m := range missing {
+			fmt.Fprintf(os.Stderr, "  %s\n", m)
+		}
+	}
+
+	benchApps := benchAppNames(benchPath)
+	var notInBench []string
+	for _, entry := range closure {
+		if entry.ProvidedByBench {
+			fmt.Printf("Required app %s provided by the bench (%s); not reinstalled\n", entry.App.Identifier(), entry.StorePath)
+			continue
+		}
+		fmt.Printf("Required app %s satisfied from local FPM store (%s)\n", entry.App.Identifier(), entry.StorePath)
+		if !benchApps[entry.App.Name] {
+			notInBench = append(notInBench, entry.App.Identifier())
+		}
+	}
+	if len(notInBench) > 0 {
+		msg := fmt.Sprintf("required app(s) not yet installed in bench %s: %s. Install them first, in this order, with "+
+			"'fpm install <org>/<app>==<version> --bench-path %s'", benchPath, strings.Join(notInBench, ", "), benchPath)
+		if forSite && !skip {
+			return fmt.Errorf("%w: %s (bench install-app needs them present in the bench)", resolver.ErrMissing, msg)
+		}
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
+	}
+	return nil
+}
+
+// benchAppNames lists the apps a bench has: those in sites/apps.txt plus any
+// directory under apps/ that holds a Frappe app module.
+func benchAppNames(benchPath string) map[string]bool {
+	names := map[string]bool{}
+	if data, err := os.ReadFile(filepath.Join(benchPath, "sites", "apps.txt")); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				names[line] = true
+			}
+		}
+	}
+	if entries, err := os.ReadDir(filepath.Join(benchPath, "apps")); err == nil {
+		for _, e := range entries {
+			if _, err := os.Stat(filepath.Join(benchPath, "apps", e.Name(), e.Name(), "hooks.py")); err == nil {
+				names[e.Name()] = true
+			}
+		}
+	}
+	return names
+}
+
+// deployPackagedAssets makes the package's assets servable, the way bench does it.
+func deployPackagedAssets(benchPath, appName, appModulePath, baseVersionPath string) error {
+	// Packages built before fpm ran the asset build itself ship a compiled_assets/
+	// directory mirroring what is served at /assets/<app>/. Those files belong in the
+	// app's public/ directory, which is what sites/assets/<app> links to.
+	legacy := filepath.Join(baseVersionPath, "compiled_assets")
+	if info, err := os.Stat(legacy); err == nil && info.IsDir() {
+		publicDir := filepath.Join(appModulePath, "public")
+		fmt.Printf("Detected legacy 'compiled_assets' in package; merging into %s\n", publicDir)
+		if err := os.MkdirAll(publicDir, 0o755); err != nil {
+			return fmt.Errorf("failed to create %s: %w", publicDir, err)
+		}
+		if err := copyDirContents(legacy, publicDir); err != nil {
+			return fmt.Errorf("failed to merge compiled_assets into '%s': %w", publicDir, err)
+		}
+	}
+
+	deployed, err := assets.Deploy(benchPath, appName, appModulePath)
+	if err != nil {
+		return fmt.Errorf("failed to deploy assets for app '%s': %w", appName, err)
+	}
+	if !deployed.Linked {
+		fmt.Printf("App '%s' has no public/ directory; nothing to serve under /assets/%s.\n", appName, appName)
+		return nil
+	}
+	fmt.Printf("Linked %s -> %s\n", filepath.Join(assets.AssetsDir(benchPath), appName), filepath.Join(appModulePath, "public"))
+
+	total := len(deployed.LTR) + len(deployed.RTL)
+	if total == 0 {
+		fmt.Printf("No built bundles (public/dist) in package; %s left unchanged. "+
+			"Package with 'fpm package --bench-path <bench>' to ship compiled assets.\n", assets.ManifestFileName)
+		return nil
+	}
+	fmt.Printf("Recorded %d bundle(s) in sites/assets/%s and %s:\n", total, assets.ManifestFileName, assets.RTLManifestFileName)
+	keys := make([]string, 0, total)
+	for k := range deployed.LTR {
+		keys = append(keys, k)
+	}
+	for k := range deployed.RTL {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v, ok := deployed.LTR[k]
+		if !ok {
+			v = deployed.RTL[k]
+		}
+		fmt.Printf("  %s -> %s\n", k, v)
+	}
+
+	// Frappe caches the manifest in redis_cache; bench build deletes that key after
+	// writing the file, and so does this. A bench whose redis is not running (or
+	// not configured yet) just serves the new file when it next starts.
+	if err := assets.InvalidateCache(benchPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Note: could not clear the assets_json cache in redis (%v); "+
+			"a running site picks up the new bundles after 'bench --site <site> clear-cache' or a restart.\n", err)
+	} else {
+		fmt.Printf("Cleared assets_json cache in redis_cache.\n")
+	}
+	return nil
 }
 
 // goArchToWheelArch maps a Go architecture name onto the spelling used in wheel tags.
@@ -543,5 +780,7 @@ func init() {
 		fmt.Fprintf(os.Stderr, "Error marking 'bench-path' flag required for install cmd: %v\n", err)
 	}
 	installCmd.Flags().String("site", "", "Site to install the app onto after adding it to the bench (runs 'bench --site <site> install-app')")
+	installCmd.Flags().BoolVar(&installSkipRequiredAppsCheck, "skip-required-apps-check", false, "Do not fail when a required app (hooks.py required_apps) is missing from the local FPM store or bench; for benches whose required apps were installed outside fpm")
+	installCmd.Flags().BoolVar(&installIgnorePlatformMismatch, "ignore-platform-mismatch", false, "Do not fail when the package's vendored wheels were built for another platform or Python version; pip then decides")
 	rootCmd.AddCommand(installCmd)
 }

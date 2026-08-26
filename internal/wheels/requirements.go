@@ -137,7 +137,10 @@ func CollectFromArchive(fpmPath string) (req Requirements, bundledWheels []strin
 				return Requirements{}, nil, err
 			}
 		case strings.HasPrefix(f.Name, DirName+"/") && !strings.HasSuffix(f.Name, "/"):
-			bundledWheels = append(bundledWheels, path.Base(f.Name))
+			// Only distributions count; the lock file lives alongside them.
+			if isDistribution(f.Name) {
+				bundledWheels = append(bundledWheels, path.Base(f.Name))
+			}
 		}
 	}
 

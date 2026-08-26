@@ -207,7 +207,9 @@ func InitConfig() (*FPMConfig, error) {
 		if errSave := SaveConfig(defaultConf); errSave != nil {
 			return nil, fmt.Errorf("failed to save initial default config: %w", errSave)
 		}
-		return defaultConf, nil
+		// Load rather than return the defaults directly, so the FPM_APPS_BASE_PATH
+		// override applies on the very first run exactly as on every later one.
+		return LoadConfig()
 	} else if err != nil {
 		// Some other error trying to stat the file
 		return nil, fmt.Errorf("error checking config file %s: %w", configFilePath, err)
