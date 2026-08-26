@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"archive/zip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"fpm/internal/apputils"
 	"fpm/internal/config" // For FPM_APPS_BASE_PATH logic
 	"fpm/internal/metadata"
 
@@ -231,7 +233,7 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 	// }
 
 	t.Run("derivation success no flags", func(t *testing.T) {
-		// resetPackageCmdFlags() // Call the package-level helper
+		resetPackageCmdFlags()
 		baseTestDir := t.TempDir()
 		sourceDirName := "testapp_src_hooks" // Directory that will be source
 		sourceDir := filepath.Join(baseTestDir, sourceDirName)
@@ -361,7 +363,11 @@ func TestPackageCmd_DerivationAndOverrides(t *testing.T) {
 		executeErr := rootCmd.Execute()
 		assert.Error(t, executeErr)
 		if executeErr != nil {
-			assert.Contains(t, executeErr.Error(), "app_name could not be determined")
+			// No directory holds a Frappe app module, so validation — the very first
+			// step — rejects the tree with the typed error and its own exit code.
+			assert.True(t, errors.Is(executeErr, apputils.ErrNotFrappeApp), "got: %v", executeErr)
+			assert.Equal(t, ExitNotFrappeApp, ExitCodeFor(executeErr))
+			assert.Contains(t, executeErr.Error(), "Frappe app validation failed")
 		}
 	})
 
