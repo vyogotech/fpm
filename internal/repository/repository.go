@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"fpm/internal/config"
+	"fpm/internal/metadata"
 )
 
 // PackageVersionMetadata holds metadata for a specific version of a package.
@@ -42,6 +43,26 @@ type PackageVersionMetadata struct {
 	// for. A consumer installing on a different platform needs to know before
 	// it starts, not when pip fails.
 	WheelPlatform string `json:"wheel_platform,omitempty"`
+	// WheelPythonVersion is the CPython version the bundled wheels target.
+	WheelPythonVersion string `json:"wheel_python_version,omitempty"`
+
+	// CommitSHA is the exact source commit the package was built from. It lets
+	// an external build system ask "is this commit already published?" from a
+	// metadata read, without downloading the artifact.
+	CommitSHA string `json:"commit_sha,omitempty"`
+	GitRef    string `json:"git_ref,omitempty"`
+
+	// RequiredApps are the Frappe apps the package's hooks.py requires, pinned
+	// at packaging time, so a consumer can check the whole closure is published
+	// before starting an offline install.
+	RequiredApps []RequiredApp `json:"required_apps,omitempty"`
+}
+
+// RequiredApp is a pinned Frappe app dependency carried into repository metadata.
+type RequiredApp struct {
+	Org     string `json:"org,omitempty"`
+	AppName string `json:"appName"`
+	Version string `json:"version,omitempty"`
 }
 
 // DependenciesFrom converts a manifest's dependency map into published
@@ -77,6 +98,20 @@ func DependenciesFrom(dependencies map[string]string) []Dependency {
 			AppName:           appName,
 			VersionConstraint: dependencies[name],
 		})
+	}
+	return out
+}
+
+// RequiredAppsFrom converts a manifest's resolved required_apps into published
+// records, dropping nothing: an unresolved entry (no version) is still worth
+// publishing so a consumer can see the requirement exists.
+func RequiredAppsFrom(apps []metadata.RequiredApp) []RequiredApp {
+	if len(apps) == 0 {
+		return nil
+	}
+	out := make([]RequiredApp, 0, len(apps))
+	for _, a := range apps {
+		out = append(out, RequiredApp{Org: a.Org, AppName: a.Name, Version: a.Version})
 	}
 	return out
 }

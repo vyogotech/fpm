@@ -129,17 +129,18 @@ exit 0
 	expectedInitPyPath := filepath.Join(expectedAppCodeDir, "__init__.py")
 	assert.FileExists(t, expectedInitPyPath, "Expected __init__.py in FPM storage path")
 
-	// Assert Symlink
+	// Assert Symlink: <bench>/apps/<app> is the package root (the version directory in
+	// the store, holding pyproject.toml/requirements.txt with the module inside), which
+	// is what pip -e, Frappe and bench expect.
 	linkPath := filepath.Join(mockBenchDir, "apps", pkgAppName)
 	assert.FileExists(t, linkPath, "Symlink in bench/apps not found")
 
 	linkTarget, err := os.Readlink(linkPath)
 	require.NoError(t, err, "Failed to read symlink")
-	// Ensure linkTarget is absolute before comparing, or make expectedAppCodeDir absolute based on a known root.
-	// os.Symlink creates it based on what's passed. originalPath in install.go is absolute.
-	absExpectedAppCodeDir, err := filepath.Abs(expectedAppCodeDir)
+	absExpectedPackageRoot, err := filepath.Abs(filepath.Dir(expectedAppCodeDir))
 	require.NoError(t, err)
-	assert.Equal(t, absExpectedAppCodeDir, linkTarget, "Symlink does not point to the correct FPM storage path")
+	assert.Equal(t, absExpectedPackageRoot, linkTarget, "Symlink does not point to the package root in the FPM store")
+	assert.FileExists(t, filepath.Join(linkPath, pkgAppName, "__init__.py"), "module must be reachable as apps/<app>/<app>/")
 
 	// Assert Pip Call
 	pipCallsLogBytes, err := os.ReadFile(pipCallsLogPath)
@@ -252,6 +253,9 @@ func TestInstallCommand_NewPackageStructure(t *testing.T) {
 		"--version", testAppVersion,
 		"--org", testAppOrg,
 		"--app-name", testAppName, // Ensure consistent app naming
+		// This test covers the package layout and bench wiring, not wheel vendoring,
+		// which would need pip and network access for the declared requirement.
+		"--bundle-deps=false",
 	}
 	_, err = SharedRunFPMCommand(t, false, packageArgs...)
 	require.NoError(t, err, "fpm package command failed")
@@ -308,9 +312,12 @@ func TestInstallCommand_NewPackageStructure(t *testing.T) {
 
 	linkTarget, err := os.Readlink(benchAppSymlinkPath)
 	require.NoError(t, err)
-	absExpectedAppModuleInStorage, err := filepath.Abs(expectedAppModuleInStorage)
+	absExpectedPackageRoot, err := filepath.Abs(expectedFpmStorageAppPath)
 	require.NoError(t, err)
-	assert.Equal(t, absExpectedAppModuleInStorage, linkTarget, "symlink does not point to the correct FPM storage location")
+	assert.Equal(t, absExpectedPackageRoot, linkTarget, "symlink must point to the package root (version dir) in the FPM store")
+	// The layout Frappe and pip expect: apps/<app>/requirements.txt and apps/<app>/<app>/hooks.py.
+	assert.FileExists(t, filepath.Join(benchAppSymlinkPath, "requirements.txt"))
+	assert.FileExists(t, filepath.Join(benchAppSymlinkPath, testAppName, "hooks.py"))
 
 	appsTxtPath := filepath.Join(mockBenchPath, "sites", "apps.txt")
 	appsTxtBytes, err := os.ReadFile(appsTxtPath)
@@ -454,8 +461,8 @@ func TestInstallCommand_RemotePackage(t *testing.T) {
 	assert.True(t, linkFi.Mode()&os.ModeSymlink != 0, "bench app path is not a symlink for remote install")
 	linkTarget, err := os.Readlink(benchAppSymlinkPath)
 	require.NoError(t, err)
-	absExpectedAppModuleInStorage, _ := filepath.Abs(expectedAppModuleInStorage)
-	assert.Equal(t, absExpectedAppModuleInStorage, linkTarget, "symlink for remote install points to wrong FPM storage location")
+	absExpectedPackageRoot, _ := filepath.Abs(filepath.Dir(expectedAppModuleInStorage))
+	assert.Equal(t, absExpectedPackageRoot, linkTarget, "symlink for remote install must point to the package root in the FPM store")
 
 	// Check apps.txt
 	appsTxtPath := filepath.Join(mockBenchPath, "sites", "apps.txt")
@@ -590,10 +597,10 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 		_, err := SharedExecuteCommand(rootCmd, installArgs...)
 		require.NoError(t, err)
 
-		// Verify symlink target contains the local store marker
+		// Verify the linked package root's module contains the local store marker
 		linkPath := filepath.Join(mockBenchPath, "apps", "myapp")
 		linkTarget, _ := os.Readlink(linkPath)
-		initPyContent, _ := os.ReadFile(filepath.Join(linkTarget, "__init__.py"))
+		initPyContent, _ := os.ReadFile(filepath.Join(linkTarget, "myapp", "__init__.py"))
 		assert.Contains(t, string(initPyContent), "local_store_version_1.0.0")
 	})
 
@@ -610,10 +617,10 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 		// and it should contain the remote marker.
 		linkPath := filepath.Join(mockBenchPath, "apps", "myapp")
 		linkTarget, _ := os.Readlink(linkPath)
-		// Expected path in store will be .../myorg/myapp/1.2.0/myapp
-		assert.Contains(t, linkTarget, filepath.Join(mockAppsBasePath, "myorg", "myapp", "1.2.0", "myapp"))
+		// Expected path in store will be .../myorg/myapp/1.2.0 (the package root)
+		assert.Contains(t, linkTarget, filepath.Join(mockAppsBasePath, "myorg", "myapp", "1.2.0"))
 
-		hooksPyContent, _ := os.ReadFile(filepath.Join(linkTarget, "hooks.py")) // hooks.py from remote has specific marker
+		hooksPyContent, _ := os.ReadFile(filepath.Join(linkTarget, "myapp", "hooks.py")) // hooks.py from remote has specific marker
 		assert.Contains(t, string(hooksPyContent), "# Remote version 1.2.0 marker")
 	})
 
@@ -628,7 +635,7 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 
 		linkPath := filepath.Join(mockBenchPath, "apps", "myapp")
 		linkTarget, _ := os.Readlink(linkPath)
-		initPyContent, _ := os.ReadFile(filepath.Join(linkTarget, "__init__.py"))
+		initPyContent, _ := os.ReadFile(filepath.Join(linkTarget, "myapp", "__init__.py"))
 		assert.Contains(t, string(initPyContent), "local_v1.3.0_latest")
 		assert.Contains(t, linkTarget, "1.3.0") // Check path contains the version
 	})
@@ -645,7 +652,7 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 		// Remote server's latest is 1.2.0
 		linkPath := filepath.Join(mockBenchPath, "apps", "myapp")
 		linkTarget, _ := os.Readlink(linkPath)
-		hooksPyContent, _ := os.ReadFile(filepath.Join(linkTarget, "hooks.py"))
+		hooksPyContent, _ := os.ReadFile(filepath.Join(linkTarget, "myapp", "hooks.py"))
 		assert.Contains(t, string(hooksPyContent), "# Remote version 1.2.0 marker")
 		assert.Contains(t, linkTarget, "1.2.0") // Check path contains the version
 	})

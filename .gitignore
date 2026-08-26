@@ -67,3 +67,6 @@ vendor/
 .tldrignore
 
 
+
+# Offline integration test work dir (cross-built binary, fetched results)
+test/offline/.work/
