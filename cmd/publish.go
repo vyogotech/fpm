@@ -232,6 +232,12 @@ to publish from the local FPM app store.`,
 			Author:              currentAppMeta.Author,
 			PackageType:         currentAppMeta.PackageType,
 			WheelPlatform:       currentAppMeta.WheelPlatform,
+			WheelPythonVersion:  currentAppMeta.WheelPythonVersion,
+			// Identity and dependency closure, so `fpm exists` and orchestration
+			// tooling can answer from metadata alone.
+			CommitSHA:    currentAppMeta.CommitSHA,
+			GitRef:       currentAppMeta.GitRef,
+			RequiredApps: repository.RequiredAppsFrom(currentAppMeta.RequiredApps),
 		}
 		remoteMeta.Versions[appVersion] = versionEntry
 

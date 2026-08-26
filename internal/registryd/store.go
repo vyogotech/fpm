@@ -209,6 +209,10 @@ func (s *Store) Publish(in PublishInput) error {
 		Author:              manifest.Author,
 		PackageType:         manifest.PackageType,
 		WheelPlatform:       manifest.WheelPlatform,
+		WheelPythonVersion:  manifest.WheelPythonVersion,
+		CommitSHA:           manifest.CommitSHA,
+		GitRef:              manifest.GitRef,
+		RequiredApps:        repository.RequiredAppsFrom(manifest.RequiredApps),
 	}
 	// Recomputed over every version, so the answer is right even for packages
 	// whose metadata was written by the old string-comparing client.
