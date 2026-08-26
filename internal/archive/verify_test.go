@@ -176,8 +176,8 @@ func TestBundleDepsSkipsAppWithoutRequirements(t *testing.T) {
 		PackageType:    "prod",
 	}
 	err := CreateFPMArchive(srcDir, outDir, meta, "1.0.0", Options{
-		BundleDeps:    true,
-		WheelPlatform: wheels.DefaultProdPlatform,
+		BundleDeps:  true,
+		WheelTarget: wheels.Target{Platforms: []string{wheels.DefaultProdPlatform}, PythonVersion: "3.11"},
 	})
 	if err != nil {
 		t.Fatalf("vendoring an app with no requirements.txt should succeed, got: %v", err)
@@ -204,24 +204,24 @@ func TestVendoredWheelsAreStagedBeforeChecksum(t *testing.T) {
 		PackageType:    "prod",
 	}
 
-	fakeBundle := func(requirementsPath, destDir, platform string) (bool, error) {
+	fakeBundle := func(requirementsPath, destDir string, _ wheels.Target) (wheels.Result, error) {
 		if _, err := os.Stat(requirementsPath); err != nil {
-			return false, err // vendoring must run after requirements.txt is staged
+			return wheels.Result{}, err // vendoring must run after requirements.txt is staged
 		}
 		if err := os.MkdirAll(destDir, 0o755); err != nil {
-			return false, err
+			return wheels.Result{}, err
 		}
 		wheelPath := filepath.Join(destDir, "frappe-15.0.0-py3-none-any.whl")
 		if err := os.WriteFile(wheelPath, []byte("fake wheel payload"), 0o644); err != nil {
-			return false, err
+			return wheels.Result{}, err
 		}
-		return true, nil
+		return wheels.Result{Bundled: true}, nil
 	}
 
 	err := CreateFPMArchive(srcDir, outDir, meta, "1.0.0", Options{
-		BundleDeps:    true,
-		WheelPlatform: wheels.DefaultProdPlatform,
-		bundle:        fakeBundle,
+		BundleDeps:  true,
+		WheelTarget: wheels.Target{Platforms: []string{wheels.DefaultProdPlatform}, PythonVersion: "3.11"},
+		bundle:      fakeBundle,
 	})
 	if err != nil {
 		t.Fatalf("CreateFPMArchive failed: %v", err)

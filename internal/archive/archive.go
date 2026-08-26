@@ -22,6 +22,10 @@ var defaultIgnorePatterns = []string{
 	".git/",
 	"*.pyc",
 	"__pycache__/",
+	// Node packages are a build-time input for producing JS/CSS (installed by
+	// `fpm package --bench-path` when the app has a package.json); the package ships
+	// the built output under <app>/public/dist instead.
+	"node_modules/",
 	".DS_Store",
 	"*.swp",
 	"*.swo",
@@ -46,21 +50,17 @@ type Options struct {
 	// BundleDeps bundles the app's Python dependencies into the package so that
 	// installing it does not require network access.
 	BundleDeps bool
-	// WheelPlatform is the pip platform tag to vendor wheels for. An empty tag
-	// vendors for the packaging host.
-	WheelPlatform string
+	// WheelTarget is the platform and interpreter to vendor wheels for. The zero
+	// value vendors for the packaging host.
+	WheelTarget wheels.Target
 	// bundle performs the dependency bundling, defaulting to wheels.Bundle. Tests
 	// substitute it to exercise the staging order without requiring pip or network.
 	bundle bundleFunc
 }
 
 // bundleFunc resolves the dependencies declared in appDir into destDir for the given
-// platform, reporting whether anything was bundled.
-type bundleFunc func(appDir, destDir, platform string) (bool, error)
-
-// hostPlatformTag records in metadata that wheels were built for the packaging host,
-// whose exact tag pip determines at build time.
-const hostPlatformTag = "host"
+// target, reporting what was bundled.
+type bundleFunc func(appDir, destDir string, target wheels.Target) (wheels.Result, error)
 
 // CreateFPMArchive creates an .fpm package from the app source.
 // appSourcePath: Path to the Frappe app's source directory.
@@ -186,7 +186,7 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 		// go-gitignore expects paths relative to the .fpmignore file's location (absAppSourcePath)
 		// The app's main module directory (meta.AppName) should not be skipped by top-level rules like "test*"
 		// Its contents will be evaluated individually.
-		if relPath != meta.AppName && ignorer.MatchesPath(relPath) { // This ignorer now includes prod patterns if applicable
+		if relPath != meta.AppName && ignorer.MatchesPath(ignoreMatchPath(relPath, d.IsDir())) { // This ignorer now includes prod patterns if applicable
 			if d.IsDir() {
 				return filepath.SkipDir // Skip ignored directories
 			}
@@ -249,15 +249,13 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 		// Read manifests from the staging directory rather than the source tree, so
 		// bundling reflects exactly what the package ships.
 		wheelsStagePath := filepath.Join(stagingDir, wheels.DirName)
-		vendored, vendorErr := bundleInto(stagingDir, wheelsStagePath, options.WheelPlatform)
+		vendored, vendorErr := bundleInto(stagingDir, wheelsStagePath, options.WheelTarget)
 		if vendorErr != nil {
 			return fmt.Errorf("failed to vendor wheels: %w", vendorErr)
 		}
-		if vendored {
-			meta.WheelPlatform = options.WheelPlatform
-			if meta.WheelPlatform == "" {
-				meta.WheelPlatform = hostPlatformTag
-			}
+		if vendored.Bundled {
+			meta.WheelPlatform = options.WheelTarget.Tag()
+			meta.WheelPythonVersion = options.WheelTarget.PythonVersion
 		}
 	}
 
@@ -353,6 +351,18 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 	return nil
 }
 
+// ignoreMatchPath renders a path the way gitignore-style directory patterns expect
+// it: a directory is matched as "name/", so a pattern such as "node_modules/" or
+// "tests/" excludes the directory itself (and the walk skips it) rather than only
+// the files inside it, which would leave empty directory entries in the archive.
+func ignoreMatchPath(relPath string, isDir bool) string {
+	p := filepath.ToSlash(relPath)
+	if isDir && !strings.HasSuffix(p, "/") {
+		p += "/"
+	}
+	return p
+}
+
 // copyFile copies a single file from src to dst
 func copyFile(src, dst string) error {
 	sourceFileStat, err := os.Stat(src)
@@ -428,7 +438,7 @@ func copyDir(srcDir, dstDir string, ignorer *ignore.GitIgnore, ignoreRootPath st
 		}
 
 		// Check against ignorer if pathRelativeToIgnoreRoot is valid
-		if ignorer != nil && pathRelativeToIgnoreRoot != "" && ignorer.MatchesPath(pathRelativeToIgnoreRoot) {
+		if ignorer != nil && pathRelativeToIgnoreRoot != "" && ignorer.MatchesPath(ignoreMatchPath(pathRelativeToIgnoreRoot, d.IsDir())) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}

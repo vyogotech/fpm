@@ -1,0 +1,14 @@
+/* Built by esbuild + sass into public/dist/css/fpm_demo_child.bundle.<HASH>.css (and css-rtl/).
+   Styles the banner the JS bundle injects, so a screenshot proves the CSS loaded too. */
+$fpm_demo_child_color: #8250df;
+.fpm_demo_child-banner {
+	background: $fpm_demo_child_color;
+	color: #ffffff;
+	font: 600 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+	padding: 6px 16px;
+	position: sticky;
+	top: 36px;
+	z-index: 10000;
+	margin-left: 4px;
+	content: "FPM_DEMO_CHILD_MARKER";
+}

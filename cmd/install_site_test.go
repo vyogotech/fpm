@@ -9,22 +9,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// stubBench writes a fake bench executable that records the arguments it was called with,
-// so a test can assert the exact command without needing a real Frappe bench.
+// stubBench writes a fake bench virtualenv python that records the arguments it was
+// called with (and the directory it ran in), so a test can assert the exact frappe
+// command without needing a real Frappe bench.
 func stubBench(t *testing.T, benchPath string, exitCode int) string {
 	t.Helper()
 
 	envBin := filepath.Join(benchPath, "env", "bin")
 	require.NoError(t, os.MkdirAll(envBin, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(benchPath, "sites"), 0o755))
 
 	logPath := filepath.Join(benchPath, "bench_args.log")
-	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\n"
+	script := "#!/bin/sh\necho \"cwd=$(pwd) $@\" >> " + logPath + "\n"
 	if exitCode != 0 {
 		script += "echo 'site does not exist' >&2\n"
 	}
 	script += "exit " + strconv.Itoa(exitCode) + "\n"
 
-	require.NoError(t, os.WriteFile(filepath.Join(envBin, "bench"), []byte(script), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(envBin, "python"), []byte(script), 0o755))
 	return logPath
 }
 
@@ -39,8 +41,14 @@ func TestInstallAppOnSiteRunsBench(t *testing.T) {
 	require.NoError(t, err)
 
 	logged, readErr := os.ReadFile(logPath)
-	require.NoError(t, readErr, "bench should have been invoked")
-	require.Contains(t, string(logged), "--site mysite.local install-app my_app")
+	require.NoError(t, readErr, "frappe should have been invoked")
+	// Exactly what `bench --site mysite.local install-app my_app` execs, from sites/.
+	require.Contains(t, string(logged), "-m frappe.utils.bench_helper frappe --site mysite.local install-app my_app")
+	// Run from <bench>/sites, as bench's frappe_cmd does (paths may be reported through
+	// a symlinked temp dir, so only the tail is compared).
+	require.Regexp(t, `cwd=\S*/sites `, string(logged))
+	// And the site cache is cleared afterwards, explicitly.
+	require.Contains(t, string(logged), "frappe --site mysite.local clear-cache")
 }
 
 // TestInstallAppOnSitePropagatesFailure keeps a failed site install loud: the app is in

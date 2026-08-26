@@ -24,8 +24,62 @@ type AppMetadata struct {
 	// WheelPlatform is the pip platform tag the bundled wheels/ directory was vendored
 	// for, or "host" when built for the packaging machine. Empty means the package
 	// bundles no wheels and installs its Python dependencies from the network.
+	// Several tags may be joined with commas when the wheels satisfy more than one
+	// (e.g. "manylinux2014_x86_64,manylinux_2_28_x86_64").
 	WheelPlatform string `json:"wheel_platform,omitempty"`
-	// Add other fields as necessary
+	// WheelPythonVersion is the CPython version (e.g. "3.11") the bundled wheels were
+	// resolved for. Empty when no wheels are bundled or they were built for the host.
+	WheelPythonVersion string `json:"wheel_python_version,omitempty"`
+
+	// CommitSHA is the exact git commit the package was built from, so external
+	// caching and build-deduplication can key on a stable identity rather than a
+	// branch or tag name that moves.
+	CommitSHA string `json:"commit_sha,omitempty"`
+	// GitRef is the branch or tag HEAD pointed at when packaging, for humans; it
+	// is not stable and must not be used as a cache key.
+	GitRef string `json:"git_ref,omitempty"`
+	// GitDirty is set when the working tree had uncommitted changes to tracked
+	// files, meaning CommitSHA alone does not reproduce the package.
+	GitDirty bool `json:"git_dirty,omitempty"`
+
+	// RequiredApps lists the Frappe apps this app's hooks.py declares in
+	// `required_apps`, each resolved to a pinned package at packaging time. Frappe
+	// itself is never listed: every bench provides it.
+	RequiredApps []RequiredApp `json:"required_apps,omitempty"`
+
+	// AssetsBuilt records that `fpm package` ran the bench asset build and the
+	// package ships the built output under <app>/public/dist.
+	AssetsBuilt bool `json:"assets_built,omitempty"`
+	// AssetBundles maps each built bundle to its hashed path, as it will appear in
+	// the bench's sites/assets/assets.json (and assets-rtl.json for rtl_ keys)
+	// after install. It is what external tooling can read without unpacking.
+	AssetBundles map[string]string `json:"asset_bundles,omitempty"`
+}
+
+// RequiredApp is one entry of hooks.py `required_apps`, resolved to a package.
+type RequiredApp struct {
+	// Name is the bare Frappe app name, e.g. "erpnext".
+	Name string `json:"name"`
+	// Org is the organisation the app was resolved under.
+	Org string `json:"org,omitempty"`
+	// Version is the exact package version the requirement was pinned to.
+	Version string `json:"version,omitempty"`
+	// Requirement is the raw hooks.py entry, e.g. "frappe/erpnext" or a git URL.
+	Requirement string `json:"requirement,omitempty"`
+	// ResolvedFrom names where the pin came from: "local-store" or "repo:<name>".
+	ResolvedFrom string `json:"resolved_from,omitempty"`
+}
+
+// Identifier renders the requirement as <org>/<name>==<version>.
+func (r RequiredApp) Identifier() string {
+	id := r.Name
+	if r.Org != "" {
+		id = r.Org + "/" + r.Name
+	}
+	if r.Version != "" {
+		id += "==" + r.Version
+	}
+	return id
 }
 
 // LoadAppMetadata loads metadata from app_metadata.json file in the given appPath.
