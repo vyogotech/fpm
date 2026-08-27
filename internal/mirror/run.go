@@ -40,10 +40,13 @@ type Result struct {
 // (hooks.py inference, checksum, index update) on its already-tested path, and
 // isolates each app in its own process: one crash cannot end the run.
 type Runner struct {
-	FPMBin        string // path of the fpm binary to drive; typically os.Executable()
-	Workspace     *Workspace
-	OutputPath    string // where finished .fpm artifacts land
-	RepoName      string // configured repository to publish to
+	FPMBin     string // path of the fpm binary to drive; typically os.Executable()
+	Workspace  *Workspace
+	OutputPath string // where finished .fpm artifacts land
+	// RepoNames are the configured repositories every built package is published to,
+	// in order. More than one mirrors the same catalog into several backends at once
+	// (GHCR as OCI and an HTTP FPM registry, say) from a single build.
+	RepoNames     []string
 	SkipPublish   bool
 	PythonVersion string   // destination interpreter version for vendored wheels (e.g. "3.11")
 	Platforms     []string // target platforms for vendored wheels (e.g. "manylinux2014_x86_64")
@@ -144,20 +147,39 @@ func (r *Runner) runOne(item BuildItem) Result {
 		return result
 	}
 
-	out, err := r.fpm("publish", "--from-file", final, "--repo", r.RepoName)
-	if err != nil {
-		// The registry (and the CLI's own pre-check) refuse duplicates; in a
-		// bulk run that is idempotent success, not an error.
-		if strings.Contains(out, "already exists") {
-			result.Action = ActionSkippedExists
-			return result
+	// Published to every configured repository, whatever mix of backends they are.
+	// A repository that already has this version is not a failure: the plan builds a
+	// version missing from any one of them, so the others are expected to report it.
+	// The run's contract is that all of them hold it afterwards.
+	pushed, existed := make([]string, 0, len(r.RepoNames)), make([]string, 0, len(r.RepoNames))
+	for _, repoName := range r.RepoNames {
+		out, err := r.fpm("publish", "--from-file", final, "--repo", repoName)
+		if err != nil {
+			// The registry (and the CLI's own pre-check) refuse duplicates; in a
+			// bulk run that is idempotent success, not an error.
+			if strings.Contains(out, "already exists") {
+				existed = append(existed, repoName)
+				continue
+			}
+			return fail("publish to "+repoName, fmt.Errorf("%w\n%s", err, errorExcerpt(out)))
 		}
-		return fail("publish", fmt.Errorf("%w\n%s", err, errorExcerpt(out)))
+		pushed = append(pushed, repoName)
 	}
 
+	if len(pushed) == 0 {
+		result.Action = ActionSkippedExists
+		result.Detail = "already in " + strings.Join(existed, ", ")
+		return result
+	}
 	result.Action = ActionPublished
 	if noDeps {
 		result.Action = ActionPublishedNoDeps
+	}
+	if len(r.RepoNames) > 1 {
+		result.Detail = "published to " + strings.Join(pushed, ", ")
+		if len(existed) > 0 {
+			result.Detail += "; already in " + strings.Join(existed, ", ")
+		}
 	}
 	return result
 }

@@ -108,25 +108,48 @@ jobs:
       - name: Build FPM CLI
         run: make build
 
-      - name: Configure GHCR OCI Repository
+      # Two backends, one build. GHCR is always configured — it needs no secret beyond
+      # the pipeline's own GITHUB_TOKEN. The HTTP FPM registry is added only when its
+      # URL is configured, so a fork without one still mirrors to GHCR rather than
+      # failing on a missing variable.
+      - name: Configure Repositories
+        id: repos
+        env:
+          FPM_HTTP_URL: ${{ vars.FPM_REGISTRY_URL }}
+          FPM_HTTP_USER: ${{ secrets.FPM_REGISTRY_USERNAME }}
         run: |
           ./bin/fpm repo add ghcr ghcr.io/${{ github.repository }} --type oci --username ${{ github.actor }}
+          REPO_ARGS="--repo ghcr"
+
+          if [ -n "$FPM_HTTP_URL" ]; then
+            ./bin/fpm repo add fpm-http "$FPM_HTTP_URL" --type http --username "${FPM_HTTP_USER:-fpm}"
+            REPO_ARGS="$REPO_ARGS --repo fpm-http"
+            echo "Mirroring to GHCR (oci) and $FPM_HTTP_URL (http)."
+          else
+            echo "FPM_REGISTRY_URL is not set; mirroring to GHCR (oci) only."
+          fi
+
+          echo "repo_args=$REPO_ARGS" >> "$GITHUB_OUTPUT"
           ./bin/fpm repo list
 
       - name: Run FPM Mirror
         env:
           # fpm reads the password for repository <name> from FPM_REPO_<NAME>_PASSWORD
-          # (falling back to FPM_REPO_PASSWORD). The repository is added as "ghcr" above,
-          # so this is the variable it looks for — the previous REGISTRY_PASSWORD was
-          # never read, and every run failed here before building anything.
+          # (falling back to FPM_REPO_PASSWORD). The repositories are added as "ghcr" and
+          # "fpm-http" above, so these are the variables it looks for — the previous
+          # REGISTRY_PASSWORD was never read, and every run failed before building.
           FPM_REPO_GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          FPM_REPO_FPM_HTTP_PASSWORD: ${{ secrets.FPM_REGISTRY_PASSWORD }}
         run: |
           mkdir -p dist
           # --cache-dir is what makes the run reuse anything: git clones live in
           # <cache>/src and are fetched rather than re-cloned, and pip/npm/yarn are
           # pointed at <cache>/{pip,npm} for every build subprocess, within this run and
           # across runs via the cache above.
-          ARGS="--repo ghcr --catalog catalog/apps.csv --python-version 3.11 --cache-dir $HOME/.fpm/build-cache --output-path dist --report dist/mirror-report.json"
+          # --repo is repeatable: one build of each version, published to every backend.
+          # A version missing from any one of them is built, so the two converge even if
+          # they start out of step.
+          ARGS="${{ steps.repos.outputs.repo_args }} --catalog catalog/apps.csv --python-version 3.11 --cache-dir $HOME/.fpm/build-cache --output-path dist --report dist/mirror-report.json"
 
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             ARGS="$ARGS --dry-run"

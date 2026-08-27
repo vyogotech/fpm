@@ -46,10 +46,25 @@ func BuildPlan(apps []App, repoBaseURL string, client *http.Client, now string) 
 
 // BuildPlanForRepo discovers desired versions against a repository config (HTTP or OCI).
 func BuildPlanForRepo(apps []App, repo config.RepositoryConfig, client *http.Client, now string) (*Plan, error) {
+	return BuildPlanForRepos(apps, []config.RepositoryConfig{repo}, client, now)
+}
+
+// BuildPlanForRepos discovers desired versions against every repository the run
+// publishes to, of any mix of backends (HTTP and OCI).
+//
+// A version counts as published only when every repository already has it. Missing
+// from any one of them makes it a build item, because the run's job is to leave all
+// of them holding the same set — a version in GHCR but not in the HTTP registry still
+// has to be built and pushed. Publishing is idempotent per repository, so the ones
+// that already have it simply report it as such.
+func BuildPlanForRepos(apps []App, repos []config.RepositoryConfig, client *http.Client, now string) (*Plan, error) {
 	plan := &Plan{}
+	if len(repos) == 0 {
+		return nil, fmt.Errorf("no repository to mirror to")
+	}
 
 	for _, app := range apps {
-		published, err := publishedVersionsForRepo(repo, app, client)
+		published, err := publishedInAll(repos, app, client)
 		if err != nil {
 			return nil, err
 		}
@@ -139,6 +154,31 @@ func planBranch(app App, published map[string]struct{}, now string) (BuildItem, 
 
 func publishedVersions(repoBaseURL string, app App, client *http.Client) (map[string]struct{}, error) {
 	return publishedVersionsForRepo(config.RepositoryConfig{URL: repoBaseURL}, app, client)
+}
+
+// publishedInAll returns the versions of app that every repository already holds,
+// which is the intersection of their published sets.
+func publishedInAll(repos []config.RepositoryConfig, app App, client *http.Client) (map[string]struct{}, error) {
+	var common map[string]struct{}
+	for _, repo := range repos {
+		versions, err := publishedVersionsForRepo(repo, app, client)
+		if err != nil {
+			return nil, err
+		}
+		if common == nil {
+			common = versions
+			continue
+		}
+		for version := range common {
+			if _, ok := versions[version]; !ok {
+				delete(common, version)
+			}
+		}
+	}
+	if common == nil {
+		common = map[string]struct{}{}
+	}
+	return common, nil
 }
 
 func publishedVersionsForRepo(repo config.RepositoryConfig, app App, client *http.Client) (map[string]struct{}, error) {

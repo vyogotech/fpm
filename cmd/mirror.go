@@ -19,7 +19,7 @@ import (
 
 var (
 	mirrorCatalogPath     string
-	mirrorRepoName        string
+	mirrorRepoNames       []string
 	mirrorApps            string
 	mirrorDryRun          bool
 	mirrorJSON            bool
@@ -90,24 +90,46 @@ func runMirror() error {
 	if err != nil {
 		return err
 	}
-	repo, ok := config.GetRepository(conf, mirrorRepoName)
-	if !ok {
-		return fmt.Errorf("repository %q is not configured; add it with `fpm repo add %s <url> --username <name>`",
-			mirrorRepoName, mirrorRepoName)
+	// Every --repo is resolved before anything is built, so a typo in the third one
+	// fails immediately rather than after an hour of building.
+	repos := make([]config.RepositoryConfig, 0, len(mirrorRepoNames))
+	repoNames := make([]string, 0, len(mirrorRepoNames))
+	for _, name := range mirrorRepoNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		repo, ok := config.GetRepository(conf, name)
+		if !ok {
+			return fmt.Errorf("repository %q is not configured; add it with `fpm repo add %s <url> --username <name>`",
+				name, name)
+		}
+		repos = append(repos, repo)
+		repoNames = append(repoNames, repo.Name)
+	}
+	if len(repos) == 0 {
+		return fmt.Errorf("--repo is required")
 	}
 
 	// Publishing must not stall on a password prompt halfway through a long
 	// build, so resolve credentials up front and refuse to start without them.
 	if !mirrorDryRun && !mirrorSkipPublish {
-		if _, err := repository.ResolveCredentials(repo.Name, repo.Username, false); err != nil {
-			return err
+		for _, repo := range repos {
+			if _, err := repository.ResolveCredentials(repo.Name, repo.Username, false); err != nil {
+				return err
+			}
 		}
 	}
 
 	now := time.Now().UTC().Format("20060102")
-	plan, err := mirror.BuildPlanForRepo(apps, repo, nil, now)
+	// A version is built when any repository is missing it, so a run leaves them all
+	// holding the same set even if they started out of step.
+	plan, err := mirror.BuildPlanForRepos(apps, repos, nil, now)
 	if err != nil {
 		return err
+	}
+	if len(repos) > 1 {
+		fmt.Printf("Mirroring to %d repositories: %s\n", len(repos), strings.Join(repoNames, ", "))
 	}
 
 	if mirrorDryRun {
@@ -151,7 +173,7 @@ func runMirror() error {
 		FPMBin:        fpmBin,
 		Workspace:     workspace,
 		OutputPath:    mirrorOutputPath,
-		RepoName:      repo.Name,
+		RepoNames:     repoNames,
 		SkipPublish:   mirrorSkipPublish,
 		PythonVersion: pyVer,
 		Platforms:     platforms,
@@ -179,7 +201,7 @@ func runMirror() error {
 func init() {
 	rootCmd.AddCommand(mirrorCmd)
 	mirrorCmd.Flags().StringVar(&mirrorCatalogPath, "catalog", "catalog/apps.csv", "Path to the catalog CSV")
-	mirrorCmd.Flags().StringVar(&mirrorRepoName, "repo", "", "Configured repository to publish to (see `fpm repo add`)")
+	mirrorCmd.Flags().StringArrayVar(&mirrorRepoNames, "repo", nil, "Configured repository to publish to (see `fpm repo add`); repeat to mirror the same catalog into several backends at once, e.g. --repo ghcr --repo fpm-http. A version is built when any of them is missing it, and published to every one")
 	mirrorCmd.Flags().StringVar(&mirrorApps, "apps", "", "Comma-separated catalog slugs to restrict the run to")
 	mirrorCmd.Flags().BoolVar(&mirrorDryRun, "dry-run", false, "Show what would be built and stop")
 	mirrorCmd.Flags().BoolVar(&mirrorJSON, "json", false, "With --dry-run, emit the plan as JSON")
