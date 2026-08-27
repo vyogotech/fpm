@@ -304,9 +304,11 @@ func (r *Runner) installDependencyDeps(dir, label string) error {
 	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
 		return nil
 	}
-	if _, err := os.Stat(filepath.Join(dir, "node_modules")); err == nil {
-		return nil // already installed for this ref; the checkout clears them when it changes
-	}
+	// Deliberately not skipped when node_modules is already present. It may have been
+	// installed against a different ref of this dependency, or by the consumer's own
+	// guard, and a tree that merely exists is not a tree that has what this ref's source
+	// imports — which is exactly how @vueuse/core stayed missing. yarn --check-files and
+	// pnpm both reconcile an existing tree, so running it again is cheap and honest.
 	tool := "yarn"
 	args := []string{"install", "--check-files", "--non-interactive", "--production=false"}
 	if _, err := os.Stat(filepath.Join(dir, "pnpm-lock.yaml")); err == nil {
