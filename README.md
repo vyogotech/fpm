@@ -124,6 +124,12 @@ Bulk-build the catalog's apps and publish the versions the registries do not hav
 fpm mirror --repo ghcr --repo fpm-http --catalog catalog/apps.csv --python-version 3.11
 ```
 
+The mirror publishes **the frappe organisation's own apps**. A catalog row whose
+repository is outside `github.com/frappe` is disabled — naming it explicitly says so
+rather than silently skipping it — and `--allow-third-party=true` opts back in. `frappe`
+itself is not mirrored: every bench image already has the framework, and its assets come
+from `bench build` rather than an app frontend.
+
 `--repo` is **repeatable**, so one build of each version is published to several backends
 at once — GHCR as OCI and an HTTP FPM registry together. A version is built when *any*
 repository is missing it, so backends that started out of step converge on the same set;

@@ -223,7 +223,7 @@ func init() {
 	mirrorCmd.Flags().StringVar(&mirrorReportPath, "report", "", "Write a JSON run report to this path")
 	mirrorCmd.Flags().StringVar(&mirrorCacheDir, "cache-dir", "", "Persistent build cache (default ~/.fpm/build-cache)")
 	mirrorCmd.Flags().BoolVar(&mirrorNoClean, "no-clean", false, "Keep checkout state between builds (debugging)")
-	mirrorCmd.Flags().BoolVar(&mirrorAllowThirdParty, "allow-third-party", true, "Allow third-party / external git repositories in the catalog")
+	mirrorCmd.Flags().BoolVar(&mirrorAllowThirdParty, "allow-third-party", false, "Also build catalog entries whose repository is outside the frappe GitHub organisation. Off by default: the mirror publishes the frappe org's own apps, and a third-party entry is reported as disabled rather than silently skipped")
 	mirrorCmd.Flags().StringVar(&mirrorPythonVersion, "python-version", "", "Target Python version for vendored wheels (e.g. 3.11, 3.12; defaults to host python version)")
 	mirrorCmd.Flags().StringArrayVar(&mirrorPlatforms, "platform", nil, "Target wheel platform tags (defaults to "+wheels.DefaultProdPlatform+")")
 	mirrorCmd.Flags().BoolVar(&mirrorListSlugs, "list-slugs", false, "Print the enabled catalog slugs as a JSON array and exit, for sharding a run across machines. Needs no repository and no network")

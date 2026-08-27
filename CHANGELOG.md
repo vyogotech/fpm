@@ -26,6 +26,12 @@ build into several registry backends at once.
   it is inert behind nginx or a Kubernetes ingress, so the defaults produce the same bundle
   a real bench would; `--frontend-site-config` supplies real values where it matters and
   `--no-bench-scaffold` refuses synthesized ones.
+- `fpm mirror` now honours `--allow-third-party`, which was accepted and then never read
+  — every third-party catalog entry was built regardless. It defaults to false: the
+  mirror publishes the frappe organisation's own apps, and an entry from another
+  organisation is disabled rather than dropped, so naming it says why. `frappe` itself is
+  no longer mirrored: every bench image ships the framework, and its assets come from
+  `bench build`, not an app frontend.
 - `fpm mirror --repo` is repeatable, so one run builds each version once and publishes it
   to several backends — GHCR as OCI and an HTTP FPM registry together. A version is built
   when *any* repository is missing it, so backends that started out of step converge;

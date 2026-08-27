@@ -12,9 +12,9 @@ on:
         type: boolean
         default: false
       allow_third_party:
-        description: 'Include third-party apps in catalog'
+        description: 'Also build catalog entries outside the frappe GitHub org'
         type: boolean
-        default: true
+        default: false
       build_from_source:
         description: 'Compile the CLI from this branch instead of using the latest release (for validating an unreleased change)'
         type: boolean
@@ -101,8 +101,8 @@ jobs:
           if [ -n "${{ inputs.apps }}" ]; then
             ARGS="$ARGS --apps ${{ inputs.apps }}"
           fi
-          if [ "${{ inputs.allow_third_party }}" = "false" ]; then
-            ARGS="$ARGS --allow-third-party=false"
+          if [ "${{ inputs.allow_third_party }}" = "true" ]; then
+            ARGS="$ARGS --allow-third-party=true"
           fi
           SLUGS="$(./bin/fpm mirror $ARGS)"
           echo "Sharding across: $SLUGS"

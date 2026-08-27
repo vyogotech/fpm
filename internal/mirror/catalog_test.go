@@ -150,3 +150,64 @@ func TestShippedCatalogLoads(t *testing.T) {
 		t.Errorf("shipped catalog has %d apps, expected the seeded set", len(cat.Apps))
 	}
 }
+
+// TestIsFrappeOrg covers both URL forms a catalog row may use, and the near-misses
+// that must not pass for an organisation check.
+func TestIsFrappeOrg(t *testing.T) {
+	for _, c := range []struct {
+		repo string
+		want bool
+	}{
+		{"https://github.com/frappe/crm", true},
+		{"http://github.com/frappe/crm", true},
+		{"git@github.com:frappe/crm.git", true},
+		{"  https://github.com/frappe/erpnext  ", true},
+		{"https://github.com/The-Commit-Company/raven", false},
+		{"https://github.com/ucraft-com/POS-Awesome", false},
+		// Near-misses: an org that merely starts with or contains "frappe".
+		{"https://github.com/frappe-community/x", false},
+		{"https://github.com/notfrappe/x", false},
+		{"https://gitlab.com/frappe/x", false},
+	} {
+		if got := IsFrappeOrg(c.repo); got != c.want {
+			t.Errorf("IsFrappeOrg(%q) = %v, want %v", c.repo, got, c.want)
+		}
+	}
+}
+
+// TestCatalogExcludesThirdPartyByDefault: the mirror publishes the frappe org's own
+// apps. --allow-third-party was accepted and then never read, so every third-party
+// entry was built regardless of what the caller asked for.
+func TestCatalogExcludesThirdParty(t *testing.T) {
+	path := writeCatalog(t,
+		"crm,https://github.com/frappe/crm,,,,,,,,\n"+
+			"raven,https://github.com/The-Commit-Company/raven,,,,,,,,third party\n")
+
+	strict, err := LoadCatalogWithOptions(path, CatalogOptions{AllowThirdParty: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	apps, err := strict.Enabled(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(apps) != 1 || apps[0].Slug != "crm" {
+		t.Fatalf("enabled = %+v, want only crm", apps)
+	}
+
+	// Disabled rather than dropped, so naming it explicitly explains why.
+	if _, err := strict.Enabled([]string{"raven"}); err == nil {
+		t.Fatal("expected an error naming raven as disabled")
+	} else if !strings.Contains(err.Error(), "frappe org") {
+		t.Errorf("error should say why: %v", err)
+	}
+
+	// And it still builds when asked for.
+	loose, err := LoadCatalogWithOptions(path, CatalogOptions{AllowThirdParty: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if apps, err := loose.Enabled(nil); err != nil || len(apps) != 2 {
+		t.Fatalf("with third parties allowed: %+v (%v), want both", apps, err)
+	}
+}

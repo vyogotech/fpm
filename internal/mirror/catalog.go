@@ -78,6 +78,16 @@ func LoadCatalog(path string) (*Catalog, error) {
 	return LoadCatalogWithOptions(path, CatalogOptions{AllowThirdParty: true})
 }
 
+// frappeOrgRepo matches a repository under the frappe GitHub organisation, in either
+// URL form a catalog row may use.
+var frappeOrgRepo = regexp.MustCompile(`^(?:https?://github\.com/|git@github\.com:)frappe/`)
+
+// IsFrappeOrg reports whether a catalog repo URL belongs to the frappe organisation.
+// Everything else is a third-party listing.
+func IsFrappeOrg(repo string) bool {
+	return frappeOrgRepo.MatchString(strings.TrimSpace(repo))
+}
+
 // LoadCatalogWithOptions reads and validates a catalog CSV with explicit options.
 func LoadCatalogWithOptions(path string, opts CatalogOptions) (*Catalog, error) {
 	f, err := os.Open(path)
@@ -171,6 +181,14 @@ func LoadCatalogWithOptions(path string, opts CatalogOptions) (*Catalog, error) 
 		}
 		if app.Enabled, err = parseBool(get("enabled"), true); err != nil {
 			return nil, rowErr("enabled: %v", err)
+		}
+
+		// The mirror publishes the frappe organisation's own apps. A third-party
+		// listing is disabled rather than dropped, so `--apps <slug>` still says why
+		// it will not build instead of "not in the catalog".
+		if !opts.AllowThirdParty && !IsFrappeOrg(app.Repo) {
+			app.Enabled = false
+			app.Notes = strings.TrimSpace(app.Notes + " (not in the frappe org; excluded by --allow-third-party=false)")
 		}
 
 		script := filepath.Join(buildDir, app.Slug+".sh")

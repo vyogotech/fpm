@@ -1,5 +1,5 @@
 slug,repo,app_name,track,branch,branch_major,majors,bundle_deps,enabled,notes
-frappe,https://github.com/frappe/frappe,,,,,14;15;16,,,
+frappe,https://github.com/frappe/frappe,,,,,14;15;16,,false,"the framework itself: present in every bench image, and its assets come from bench build rather than an app frontend"
 erpnext,https://github.com/frappe/erpnext,,,,,14;15;16,,,
 hrms,https://github.com/frappe/hrms,,,,,14;15;16,,,
 payments,https://github.com/frappe/payments,,branch,develop,0,,,,no release tags upstream; tracked from develop
