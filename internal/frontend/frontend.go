@@ -363,13 +363,21 @@ func Build(opts BuildOptions) (Result, error) {
 		fmt.Fprintf(out, "Frozen install refused: %s's lockfile has drifted from its package.json. "+
 			"Retrying with %s — the build is reproducible from the lockfile that results, not the one committed.\n",
 			opts.AppName, strings.Join(relaxed, " "))
-		// The flag alone is not enough: an app's own postinstall may run a *nested*
-		// install of its own — drive's runs `cd frontend && pnpm install` — which sees
-		// none of the command line. npm and pnpm both read settings from npm_config_*
-		// environment variables, so the setting is passed that way too and every
-		// install in the tree honours it.
+		// The flag alone is not enough, and neither are npm_config_* variables: an
+		// app's own postinstall may run a *nested* install — drive's is
+		// `npm run check-pnpm && cd frontend && pnpm install` — and `npm run`
+		// re-derives npm_config_* for its children from npm's own config, dropping
+		// anything injected. A config *file* survives that, so the setting is written
+		// to one and pointed at with NPM_CONFIG_USERCONFIG. The user's own ~/.npmrc is
+		// carried into it, so registry credentials and mirrors still apply.
+		npmrc, cleanupNpmrc, npmrcErr := unfrozenNpmrc()
+		if npmrcErr != nil {
+			result.Log = log.String()
+			return fail(result, npmrcErr)
+		}
+		defer cleanupNpmrc()
 		if retryErr := run("install (unfrozen)", relaxed,
-			"npm_config_frozen_lockfile=false", "npm_config_prod=false"); retryErr != nil {
+			"NPM_CONFIG_USERCONFIG="+npmrc, "npm_config_frozen_lockfile=false", "npm_config_prod=false"); retryErr != nil {
 			result.Log = log.String()
 			return fail(result, retryErr)
 		}
@@ -789,6 +797,39 @@ func installArgs(p *Project) []string {
 		// and it repairs a node_modules left behind by an earlier partial install.
 		return []string{"yarn", "install", "--check-files", "--non-interactive", "--production=false"}
 	}
+}
+
+// unfrozenNpmrc writes a throwaway npm config that turns the frozen install off, and
+// returns its path. It is the only channel that reaches an install nested inside an
+// `npm run`, which rebuilds npm_config_* for its children and so loses anything passed
+// in the environment.
+//
+// The user's own ~/.npmrc is copied in first, so registry credentials, scopes and
+// mirrors keep working; only frozen-lockfile is added on top.
+func unfrozenNpmrc() (path string, cleanup func(), err error) {
+	noop := func() {}
+	dir, err := os.MkdirTemp("", "fpm-npmrc-")
+	if err != nil {
+		return "", noop, fmt.Errorf("%w: cannot create an npm config: %v", ErrBuildFailed, err)
+	}
+	cleanup = func() { os.RemoveAll(dir) }
+
+	var existing []byte
+	if home, homeErr := os.UserHomeDir(); homeErr == nil {
+		existing, _ = os.ReadFile(filepath.Join(home, ".npmrc"))
+	}
+	contents := string(existing)
+	if contents != "" && !strings.HasSuffix(contents, "\n") {
+		contents += "\n"
+	}
+	contents += "frozen-lockfile=false\n"
+
+	path = filepath.Join(dir, "npmrc")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		cleanup()
+		return "", noop, fmt.Errorf("%w: cannot write an npm config: %v", ErrBuildFailed, err)
+	}
+	return path, cleanup, nil
 }
 
 // unfrozenInstallArgs is the same install with the lockfile treated as a starting point
