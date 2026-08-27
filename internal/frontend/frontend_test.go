@@ -1172,3 +1172,52 @@ func TestFrozenLockfileRefusalIsDistinguishedFromRealFailures(t *testing.T) {
 		}
 	}
 }
+
+// TestUnfrozenRetryReachesNestedInstalls: the retry's flag only reaches the command fpm
+// runs. An app's own postinstall may run a nested install of its own — drive's runs
+// `cd frontend && pnpm install` — which sees none of the command line and, with CI set,
+// freezes again. npm and pnpm both read settings from npm_config_* environment
+// variables, so the setting has to travel that way to reach the whole tree.
+func TestUnfrozenRetryReachesNestedInstalls(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "frontend", "package.json"), `{"scripts":{"build":"vite build"}}`)
+	write(t, filepath.Join(root, "frontend", "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
+	write(t, filepath.Join(root, "app", "hooks.py"), "app_name = \"app\"\n")
+
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "env.log")
+	// Refuse the frozen install the way pnpm does, then record the environment the
+	// retry runs with and succeed.
+	script := "#!/bin/sh\n" +
+		"case \"$1\" in\n" +
+		"  install)\n" +
+		"    if [ \"$npm_config_frozen_lockfile\" != \"false\" ]; then\n" +
+		"      echo '[ERR_PNPM_LOCKFILE_CONFIG_MISMATCH] Cannot proceed with the frozen installation' >&2\n" +
+		"      exit 1\n" +
+		"    fi\n" +
+		"    echo \"retry saw npm_config_frozen_lockfile=$npm_config_frozen_lockfile\" >> " + logPath + "\n" +
+		"    exit 0 ;;\n" +
+		"esac\n" +
+		"mkdir -p \"$FAKE_ROOT/app/public/frontend\" && printf x > \"$FAKE_ROOT/app/public/frontend/index.html\"\n"
+	write(t, filepath.Join(binDir, "pnpm"), script)
+	if err := os.Chmod(filepath.Join(binDir, "pnpm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_ROOT", root)
+
+	var out strings.Builder
+	res, err := Build(BuildOptions{SourcePath: root, AppName: "app", Stdout: &out})
+	if err != nil {
+		t.Fatalf("Build: %v\n%s", err, out.String())
+	}
+	res.Cleanup()
+
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("the retry never ran: %v", err)
+	}
+	if !strings.Contains(string(log), "npm_config_frozen_lockfile=false") {
+		t.Errorf("a nested install would not see the setting: %q", log)
+	}
+}
