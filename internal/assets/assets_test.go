@@ -251,3 +251,57 @@ func TestInvalidateCache(t *testing.T) {
 	ln.Close()
 	assert.Error(t, InvalidateCache(bench))
 }
+
+func TestManifest_Delete(t *testing.T) {
+	m := &Manifest{values: map[string]string{}}
+	m.Set("a", "1")
+	m.Set("b", "2")
+	m.Set("c", "3")
+
+	assert.Equal(t, []string{"a", "b", "c"}, m.Keys())
+	m.Delete("b")
+	assert.Equal(t, []string{"a", "c"}, m.Keys())
+	_, ok := m.Get("b")
+	assert.False(t, ok)
+
+	// Deleting nonexistent key is a no-op
+	m.Delete("nonexistent")
+	assert.Equal(t, []string{"a", "c"}, m.Keys())
+}
+
+func TestUndeploy(t *testing.T) {
+	bench := t.TempDir()
+	assetsDir := AssetsDir(bench)
+	require.NoError(t, os.MkdirAll(assetsDir, 0o755))
+
+	// Deploy app1 and app2 manifest entries
+	p := filepath.Join(assetsDir, ManifestFileName)
+	manifestData := "{\n" +
+		"    \"app1.bundle.js\": \"/assets/app1/dist/js/app1.111.js\",\n" +
+		"    \"app2.bundle.js\": \"/assets/app2/dist/js/app2.222.js\"\n" +
+		"}"
+	require.NoError(t, os.WriteFile(p, []byte(manifestData), 0o644))
+
+	// Create symlinks for app1 and app2
+	app1Dir := filepath.Join(assetsDir, "app1")
+	app2Dir := filepath.Join(assetsDir, "app2")
+	require.NoError(t, os.MkdirAll(app1Dir, 0o755))
+	require.NoError(t, os.MkdirAll(app2Dir, 0o755))
+
+	// Undeploy app1
+	require.NoError(t, Undeploy(bench, "app1"))
+
+	// Verify app1 symlink is removed, app2 symlink is kept
+	_, err := os.Lstat(app1Dir)
+	assert.True(t, os.IsNotExist(err), "app1 dir/symlink should be removed")
+	_, err = os.Lstat(app2Dir)
+	assert.NoError(t, err, "app2 dir/symlink should remain")
+
+	// Verify app1 is deleted from manifest, app2 remains
+	m, err := ReadManifest(p)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"app2.bundle.js"}, m.Keys())
+	val, ok := m.Get("app2.bundle.js")
+	assert.True(t, ok)
+	assert.Equal(t, "/assets/app2/dist/js/app2.222.js", val)
+}
