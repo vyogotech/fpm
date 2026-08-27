@@ -16,17 +16,32 @@ on:
         type: boolean
         default: true
   schedule:
-    # Run every Sunday at 02:00 UTC
-    - cron: '0 2 * * 0'
+    # Daily at 02:00 UTC. Re-runs are idempotent — the plan queries the registry and
+    # skips versions it already has — so most days this only fetches tags and exits.
+    # Daily rather than weekly so a new upstream release is mirrored within a day.
+    - cron: '0 2 * * *'
 
+# GITHUB_TOKEN is the pipeline's own credential: `packages: write` lets it push to
+# ghcr.io/<owner>/<repo>, with no PAT to provision or rotate. `contents: read` is all
+# the catalog and source need.
 permissions:
   contents: read
   packages: write
+
+# One mirror at a time. Two concurrent runs would race on the same cache key and could
+# both build the same version; queueing rather than cancelling lets a long run finish.
+concurrency:
+  group: fpm-mirror
+  cancel-in-progress: false
 
 jobs:
   mirror-to-ghcr:
     name: Mirror Catalog to GHCR
     runs-on: ubuntu-latest
+    # A cold full-catalog run clones ~20 repos, installs their node dependencies and
+    # vendors wheels for each. Well under the 6h ceiling, but long enough to want a
+    # bound that fails loudly rather than hanging.
+    timeout-minutes: 330
 
     steps:
       - name: Checkout Code
@@ -53,17 +68,42 @@ jobs:
           python -m pip install --upgrade pip wheel
           npm install -g yarn
 
-      - name: Restore Persistent Build & Package Cache
-        uses: actions/cache@v4
+      # A runner has ~14 GB free. Twenty checkouts, their node_modules and the vendored
+      # wheels can exhaust that, and the failure ("no space left on device") looks like
+      # a build error rather than a capacity one. These toolchains are not used here.
+      - name: Free Disk Space
+        run: |
+          echo "Before:"; df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
+          echo "After:"; df -h / | tail -1
+
+      # Restore and save are separate on purpose. The combined actions/cache action only
+      # writes its cache in a post-job step when the job SUCCEEDS, so every failed run
+      # threw away the work it had done and the next one started cold — which is exactly
+      # why this job re-pulled everything every time. `cache/save` with `if: always()`
+      # keeps the clones and package-manager caches even when one app fails to build.
+      #
+      # The key is unique per run so each run writes a new entry; restore-keys prefix-
+      # matches the newest previous one. The catalog is deliberately NOT in the key: its
+      # contents say which apps to build, not what a git clone or an npm tarball holds,
+      # so hashing it would discard gigabytes of still-valid cache on every catalog edit.
+      - name: Restore Build Cache
+        id: restore-build-cache
+        uses: actions/cache/restore@v4
         with:
-          path: |
-            ~/.fpm/build-cache
-            ~/.fpm/apps
-            dist
-          key: ${{ runner.os }}-fpm-mirror-${{ hashFiles('catalog/apps.csv') }}-${{ github.run_id }}
+          path: ~/.fpm/build-cache
+          key: fpm-mirror-buildcache-v1-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            ${{ runner.os }}-fpm-mirror-${{ hashFiles('catalog/apps.csv') }}-
-            ${{ runner.os }}-fpm-mirror-
+            fpm-mirror-buildcache-v1-${{ runner.os }}-
+
+      - name: Report Cache State
+        run: |
+          if [ -d ~/.fpm/build-cache ]; then
+            echo "Restored from: ${{ steps.restore-build-cache.outputs.cache-matched-key || 'nothing (cold run)' }}"
+            du -sh ~/.fpm/build-cache/* 2>/dev/null || true
+          else
+            echo "Cold run: no build cache restored."
+          fi
 
       - name: Build FPM CLI
         run: make build
@@ -75,19 +115,27 @@ jobs:
 
       - name: Run FPM Mirror
         env:
-          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          # fpm reads the password for repository <name> from FPM_REPO_<NAME>_PASSWORD
+          # (falling back to FPM_REPO_PASSWORD). The repository is added as "ghcr" above,
+          # so this is the variable it looks for — the previous REGISTRY_PASSWORD was
+          # never read, and every run failed here before building anything.
+          FPM_REPO_GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dist
-          ARGS="--repo ghcr --catalog catalog/apps.csv --cache-dir ~/.fpm/build-cache --output-path dist --report dist/mirror-report.json"
-          
+          # --cache-dir is what makes the run reuse anything: git clones live in
+          # <cache>/src and are fetched rather than re-cloned, and pip/npm/yarn are
+          # pointed at <cache>/{pip,npm} for every build subprocess, within this run and
+          # across runs via the cache above.
+          ARGS="--repo ghcr --catalog catalog/apps.csv --python-version 3.11 --cache-dir $HOME/.fpm/build-cache --output-path dist --report dist/mirror-report.json"
+
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
           fi
-          
+
           if [ -n "${{ inputs.apps }}" ]; then
             ARGS="$ARGS --apps ${{ inputs.apps }}"
           fi
-          
+
           if [ "${{ inputs.allow_third_party }}" = "false" ]; then
             ARGS="$ARGS --allow-third-party=false"
           fi
@@ -95,6 +143,19 @@ jobs:
           echo "Running: ./bin/fpm mirror $ARGS"
           ./bin/fpm mirror $ARGS
 
+      # Always, so a run that failed on one app still leaves the clones and download
+      # caches warm for the next one. dist/ is deliberately not cached: it is this run's
+      # output, and restoring stale .fpm files into it would be actively wrong.
+      - name: Save Build Cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.fpm/build-cache
+          key: fpm-mirror-buildcache-v1-${{ runner.os }}-${{ github.run_id }}
+
+      # `fpm mirror` writes its own per-app table to $GITHUB_STEP_SUMMARY, so the run
+      # is readable in the Actions UI without opening this artifact. The JSON is the
+      # machine-readable form: a top-level array of per-app results.
       - name: Upload Mirror Report
         if: always()
         uses: actions/upload-artifact@v4
