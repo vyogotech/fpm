@@ -107,24 +107,25 @@ func Push(ctx context.Context, repoConfig config.RepositoryConfig, fpmFilePath s
 		ManifestAnnotations: annotations,
 	}
 
-	// If the package declares required_apps (e.g. hrms requires erpnext), link the first required app as Subject
-	if len(appMeta.RequiredApps) > 0 {
-		primaryReq := appMeta.RequiredApps[0]
-		reqOrg := primaryReq.Org
-		if reqOrg == "" {
-			reqOrg = appMeta.Org
-		}
-		reqApp := primaryReq.Name
-		reqVer := primaryReq.Version
-
-		if reqApp != "" && reqVer != "" {
-			if depRepo, err := NewRepository(repoConfig, reqOrg, reqApp); err == nil {
-				if depDesc, err := depRepo.Resolve(ctx, reqVer); err == nil {
-					packOpts.Subject = &depDesc
-				}
-			}
-		}
-	}
+	// No subject descriptor is set for required_apps, though it is tempting: the OCI
+	// referrers graph is per-repository. `subject` must name a manifest in the *same*
+	// repository, and fpm gives every app its own — hrms lives at
+	// <registry>/<repo>/frappe/hrms and erpnext at <registry>/<repo>/frappe/erpnext.
+	//
+	// Pointing across repositories produced a manifest whose subject the push could not
+	// resolve, and every affected app failed to publish at all:
+	//
+	//   failed to perform "FindSuccessors" on source: sha256:...:
+	//   application/vnd.oci.image.manifest.v1+json: not found
+	//
+	// oras walks a manifest's successors from the source it is copying out of, and the
+	// dependency's manifest is not there — it lives in the other repository. Satisfying
+	// it would mean duplicating the dependency's manifest into this app's repository,
+	// which is not what a reference means.
+	//
+	// The dependency information is not lost: required_apps are recorded in the
+	// AnnotationRequiredApps manifest annotation, which is queryable without pulling
+	// the payload, and `fpm deps` reads them from there.
 
 	manifestDesc, err := oras.PackManifest(ctx, memStore, oras.PackManifestVersion1_1, ArtifactType, packOpts)
 	if err != nil {

@@ -26,6 +26,19 @@ build into several registry backends at once.
   it is inert behind nginx or a Kubernetes ingress, so the defaults produce the same bundle
   a real bench would; `--frontend-site-config` supplies real values where it matters and
   `--no-bench-scaffold` refuses synthesized ones.
+- **Removed the OCI `subject` link for `required_apps`**, which could not work and
+  stopped affected apps publishing at all: `hrms` and `lms` failed with
+  `failed to perform "FindSuccessors" on source: ... not found`. The OCI referrers graph
+  is per-repository — `subject` must name a manifest in the *same* repository — and fpm
+  gives every app its own, so a subject resolved from the dependency's repository is not
+  in the source being pushed. The dependency information is unaffected: `required_apps`
+  are recorded in the `vnd.vyogo.fpm.required_apps` manifest annotation, queryable
+  without pulling the payload, which is where `fpm deps` reads them from.
+- A frontend install that a package manager refuses because the app's own lockfile has
+  drifted from its package.json is retried unfrozen instead of failing. pnpm stopped
+  reading `pnpm.overrides` from package.json, so drive's committed lockfile no longer
+  matches it and every install died with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`. Only that
+  class of refusal is retried; a missing dependency or a network error still fails.
 - The mirror fetches **build-time dependencies**: another bench app whose source a build
   reads off disk. fpm resolved `required_apps` to pinned versions when packaging and
   cascade-installed them when installing, but neither helps a build that runs

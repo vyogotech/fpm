@@ -210,6 +210,10 @@ func TestDriverRegistration(t *testing.T) {
 	require.NotNil(t, driver, "OCIDriver must be registered by internal/ociregistry package init()")
 }
 
+// TestReferrersSubjectLinking demonstrates oras' subject mechanics with both manifests
+// in ONE store — that is, one repository. It passed while publishing was broken in
+// production, because fpm was setting a subject that lived in a *different* repository;
+// see TestSubjectFromAnotherRepositoryCannotBePushed for what that does.
 func TestReferrersSubjectLinking(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
@@ -249,4 +253,40 @@ func TestReferrersSubjectLinking(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, manifest.Subject)
 	assert.Equal(t, baseManifest.Digest, manifest.Subject.Digest)
+}
+
+// TestSubjectFromAnotherRepositoryCannotBePushed reproduces the failure that stopped
+// hrms and lms publishing at all:
+//
+//	failed to perform "FindSuccessors" on source: sha256:...:
+//	application/vnd.oci.image.manifest.v1+json: not found
+//
+// The OCI referrers graph is per-repository: `subject` must name a manifest in the same
+// repository. fpm gives every app its own — frappe/hrms and frappe/erpnext are separate
+// repositories — so a subject resolved from the dependency's repository is not in the
+// source being copied, and the push cannot walk it. Satisfying it would mean duplicating
+// the dependency's manifest into this app's repository, which is not what a reference is.
+func TestSubjectFromAnotherRepositoryCannotBePushed(t *testing.T) {
+	ctx := context.Background()
+
+	// The dependency lives elsewhere: a descriptor for a manifest this store never has.
+	elsewhere := memory.New()
+	depLayer, err := oras.PushBytes(ctx, elsewhere, MediaTypePackage, []byte("erpnext-content"))
+	require.NoError(t, err)
+	depManifest, err := oras.PackManifest(ctx, elsewhere, oras.PackManifestVersion1_1, ArtifactType,
+		oras.PackManifestOptions{Layers: []ocispec.Descriptor{depLayer}})
+	require.NoError(t, err)
+
+	// The app being published, in its own repository, pointing at that descriptor.
+	source := memory.New()
+	appLayer, err := oras.PushBytes(ctx, source, MediaTypePackage, []byte("hrms-content"))
+	require.NoError(t, err)
+	appManifest, err := oras.PackManifest(ctx, source, oras.PackManifestVersion1_1, ArtifactType,
+		oras.PackManifestOptions{Layers: []ocispec.Descriptor{appLayer}, Subject: &depManifest})
+	require.NoError(t, err)
+	require.NoError(t, source.Tag(ctx, appManifest, "15.63.3"))
+
+	_, err = oras.Copy(ctx, source, "15.63.3", memory.New(), "15.63.3", oras.DefaultCopyOptions)
+	require.Error(t, err, "a cross-repository subject must not be pushable; that is why fpm sets none")
+	assert.Contains(t, err.Error(), "not found")
 }

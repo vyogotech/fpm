@@ -1132,3 +1132,43 @@ func TestDetectStillBuildsAnAppThatUsesEsbuildItself(t *testing.T) {
 		t.Fatalf("an app's own esbuild frontend must still build, got %+v", project)
 	}
 }
+
+func TestUnfrozenInstallArgsOnlyWhereFreezingExists(t *testing.T) {
+	if args, ok := unfrozenInstallArgs(&Project{PkgManager: "pnpm"}); !ok ||
+		!strings.Contains(strings.Join(args, " "), "--no-frozen-lockfile") {
+		t.Errorf("pnpm = %v (ok=%v)", args, ok)
+	}
+	if args, ok := unfrozenInstallArgs(&Project{PkgManager: "npm"}); !ok ||
+		strings.Contains(strings.Join(args, " "), " ci ") {
+		t.Errorf("npm must fall back off `npm ci`: %v (ok=%v)", args, ok)
+	}
+	// yarn 1 never freezes, so there is nothing to relax and nothing to retry.
+	if _, ok := unfrozenInstallArgs(&Project{PkgManager: "yarn"}); ok {
+		t.Error("yarn has no frozen mode to fall back from")
+	}
+}
+
+// TestFrozenLockfileRefusalIsDistinguishedFromRealFailures: retrying unfrozen is only
+// right when the manager declined over lockfile drift. A missing dependency or a
+// network error must still fail, not be papered over by a looser install.
+func TestFrozenLockfileRefusalIsDistinguishedFromRealFailures(t *testing.T) {
+	refusals := []string{
+		`[ERR_PNPM_LOCKFILE_CONFIG_MISMATCH] Cannot proceed with the frozen installation. The current "overrides" configuration doesn't match`,
+		"ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with frozen-lockfile",
+		"`npm ci` can only install packages when your package.json and package-lock.json are in sync",
+	}
+	for _, log := range refusals {
+		if !isFrozenLockfileRefusal(log) {
+			t.Errorf("should be recognised as lockfile drift: %q", log)
+		}
+	}
+	for _, log := range []string{
+		"ERR_PNPM_FETCH_404  GET https://registry.npmjs.org/nope: Not Found",
+		"error An unexpected error occurred: getaddrinfo ENOTFOUND registry.yarnpkg.com",
+		"Error: Cannot find module 'autoprefixer'",
+	} {
+		if isFrozenLockfileRefusal(log) {
+			t.Errorf("must NOT retry unfrozen for: %q", log)
+		}
+	}
+}

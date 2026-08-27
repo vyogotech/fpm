@@ -350,8 +350,23 @@ func Build(opts BuildOptions) (Result, error) {
 	before := publicFiles(root, opts.AppName)
 
 	if err := run("install", installArgs(project)); err != nil {
-		result.Log = log.String()
-		return fail(result, err)
+		// A frozen install refuses when the app's own lockfile has drifted from its
+		// package.json — pnpm stopped reading `pnpm.overrides` from package.json, so
+		// drive's committed lockfile no longer matches it and every install fails with
+		// ERR_PNPM_LOCKFILE_CONFIG_MISMATCH. That is the app's drift to resolve, not a
+		// reason to have no package at all, so retry unfrozen and say so.
+		relaxed, ok := unfrozenInstallArgs(project)
+		if !ok || !isFrozenLockfileRefusal(log.String()) {
+			result.Log = log.String()
+			return fail(result, err)
+		}
+		fmt.Fprintf(out, "Frozen install refused: %s's lockfile has drifted from its package.json. "+
+			"Retrying with %s — the build is reproducible from the lockfile that results, not the one committed.\n",
+			opts.AppName, strings.Join(relaxed, " "))
+		if retryErr := run("install (unfrozen)", relaxed); retryErr != nil {
+			result.Log = log.String()
+			return fail(result, retryErr)
+		}
 	}
 	if err := run("build", buildArgs(project)); err != nil {
 		result.Log = log.String()
@@ -768,6 +783,37 @@ func installArgs(p *Project) []string {
 		// and it repairs a node_modules left behind by an earlier partial install.
 		return []string{"yarn", "install", "--check-files", "--non-interactive", "--production=false"}
 	}
+}
+
+// unfrozenInstallArgs is the same install with the lockfile treated as a starting point
+// rather than a contract. Only pnpm and npm distinguish the two; yarn 1 never freezes.
+func unfrozenInstallArgs(p *Project) ([]string, bool) {
+	switch p.PkgManager {
+	case "pnpm":
+		return []string{"pnpm", "install", "--prod=false", "--no-frozen-lockfile"}, true
+	case "npm":
+		return []string{"npm", "install", "--include=dev", "--no-audit", "--no-fund"}, true
+	default:
+		return nil, false
+	}
+}
+
+// isFrozenLockfileRefusal recognises a package manager declining because the lockfile
+// does not match the manifest, as opposed to a network or dependency failure — which
+// retrying unfrozen would only paper over.
+func isFrozenLockfileRefusal(log string) bool {
+	for _, marker := range []string{
+		"ERR_PNPM_LOCKFILE_CONFIG_MISMATCH",
+		"ERR_PNPM_OUTDATED_LOCKFILE",
+		"Cannot proceed with the frozen installation",
+		"can only install packages when your package.json and package-lock.json",
+		"npm ci` can only install",
+	} {
+		if strings.Contains(log, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildArgs(p *Project) []string {
