@@ -1330,11 +1330,14 @@ func ensureBenchConfig(root, siteConfigPath string, out io.Writer) (ok bool, cle
 
 // siblingAppRef matches a build script reaching for another app in the bench:
 // `cd ../../frappe/ui`, `../../erpnext/...`. Two levels up from <bench>/apps/<app>/<sub>
-// is apps/, so the next segment names a sibling app.
-var siblingAppRef = regexp.MustCompile(`\.\./\.\./([a-z][a-z0-9_-]*)/`)
+// is apps/, so the next segment names a sibling app and the one after it, when present,
+// names the directory inside it that is actually used.
+var siblingAppRef = regexp.MustCompile(`\.\./\.\./([a-z][a-z0-9_-]*)/([a-z][a-z0-9_-]*)?`)
 
 // SiblingApps reports the other bench apps a project's package.json scripts read off
-// disk during the build, deduplicated and sorted.
+// disk during the build, deduplicated and sorted. An entry may name a directory inside
+// the app — "frappe/ui" — because that is the part the build actually compiles, and its
+// own dependencies have to be installed for it to.
 //
 // These are build-time dependencies, distinct from the `required_apps` fpm already
 // resolves: helpdesk's desk build runs `cd ../../frappe/ui && yarn install`, which needs
@@ -1354,9 +1357,14 @@ func SiblingApps(sourcePath, appName string) ([]string, error) {
 		}
 		for _, script := range pkg.Scripts {
 			for _, m := range siblingAppRef.FindAllStringSubmatch(script, -1) {
-				if m[1] != appName {
-					seen[m[1]] = true
+				if m[1] == appName {
+					continue
 				}
+				ref := m[1]
+				if m[2] != "" {
+					ref += "/" + m[2]
+				}
+				seen[ref] = true
 			}
 		}
 	}

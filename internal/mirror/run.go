@@ -256,20 +256,23 @@ func (r *Runner) ensureBuildDependencies(appName, checkout string) error {
 	if err != nil || len(siblings) == 0 {
 		return err
 	}
-	for _, slug := range siblings {
+	for _, ref := range siblings {
+		// A reference may name a directory inside the app — "frappe/ui" — which is the
+		// part the build actually compiles.
+		slug, subdir, _ := strings.Cut(ref, "/")
 		repoURL, ok := r.CatalogRepos[slug]
 		if !ok {
 			return fmt.Errorf("%s's build reads ../../%s off disk, but %q is not in the catalog, "+
-				"so there is nowhere to fetch it from", appName, slug, slug)
+				"so there is nowhere to fetch it from", appName, ref, slug)
 		}
-		ref, pinned := r.BuildDepRefs[appName][slug]
+		depRef, pinned := r.BuildDepRefs[appName][slug]
 		if !pinned {
 			// No pin: the newest release. Right for a dependency that only supplies
 			// source to read, wrong when the app is built against a specific line —
 			// helpdesk's own CI sets FRAPPE_BRANCH=version-15 — which is what the
 			// catalog's build_deps column is for.
 			var err error
-			if ref, err = latestReleaseRef(repoURL); err != nil {
+			if depRef, err = latestReleaseRef(repoURL); err != nil {
 				return fmt.Errorf("resolving a ref for build dependency %s: %w", slug, err)
 			}
 		}
@@ -277,10 +280,48 @@ func (r *Runner) ensureBuildDependencies(appName, checkout string) error {
 		if pinned {
 			how = "pinned by the catalog"
 		}
-		r.Log("  build dependency: %s at %s (%s; its source is read by %s's build)", slug, ref, how, appName)
-		if _, err := r.Workspace.EnsureBuildDependency(slug, repoURL, ref); err != nil {
+		r.Log("  build dependency: %s at %s (%s; its source is read by %s's build)", slug, depRef, how, appName)
+		dir, err := r.Workspace.EnsureBuildDependency(slug, repoURL, depRef)
+		if err != nil {
 			return err
 		}
+		// The consumer compiles this directory's source, so its own dependencies have
+		// to be there. helpdesk's build installs them itself only when a marker file is
+		// missing, which is not something to rely on — and the source it compiles
+		// imports packages that only the dependency's own manifest lists.
+		if subdir != "" {
+			if err := r.installDependencyDeps(filepath.Join(dir, subdir), slug+"/"+subdir); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// installDependencyDeps installs node dependencies for a directory inside a build
+// dependency, so a consumer compiling its source can resolve what that source imports.
+func (r *Runner) installDependencyDeps(dir, label string) error {
+	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(dir, "node_modules")); err == nil {
+		return nil // already installed for this ref; the checkout clears them when it changes
+	}
+	tool := "yarn"
+	args := []string{"install", "--check-files", "--non-interactive", "--production=false"}
+	if _, err := os.Stat(filepath.Join(dir, "pnpm-lock.yaml")); err == nil {
+		tool, args = "pnpm", []string{"install", "--prod=false", "--no-frozen-lockfile"}
+	}
+	if _, err := exec.LookPath(tool); err != nil {
+		return fmt.Errorf("build dependency %s needs %s to install its own dependencies: %w", label, tool, err)
+	}
+
+	r.Log("  build dependency: installing %s dependencies (%s)", label, tool)
+	cmd := exec.Command(tool, args...)
+	cmd.Dir = dir
+	cmd.Env = append(r.Workspace.BuildEnv(), "CI=false")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("installing %s dependencies failed: %w\n%s", label, err, tail(string(out), 1200))
 	}
 	return nil
 }
