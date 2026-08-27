@@ -26,6 +26,13 @@ build into several registry backends at once.
   it is inert behind nginx or a Kubernetes ingress, so the defaults produce the same bundle
   a real bench would; `--frontend-site-config` supplies real values where it matters and
   `--no-bench-scaffold` refuses synthesized ones.
+- The mirror fetches **build-time dependencies**: another bench app whose source a build
+  reads off disk. fpm resolved `required_apps` to pinned versions when packaging and
+  cascade-installed them when installing, but neither helps a build that runs
+  `cd ../../frappe/ui && yarn install`, as helpdesk's does — it failed with "can't cd to
+  ../../frappe/ui". Such references are found by scanning the project's package.json
+  scripts, and the apps are checked out beside it at their newest release. They are read,
+  never built or published.
 - The catalog gains a `tier` column, and the mirror workflow runs one wave per tier.
   Sharding the catalog one app per runner removed the ordering that used to make an
   app's `required_apps` available before it was built: `hrms` could not pin `erpnext`
