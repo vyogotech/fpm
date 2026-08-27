@@ -300,3 +300,30 @@ func TestPlanAdHocRejectsAnUnusableSlug(t *testing.T) {
 		t.Fatal("expected an error without a URL")
 	}
 }
+
+// TestRepublishBuildsWhatIsAlreadyPublished: the skip is what makes a nightly run cheap,
+// but it cannot see that the packaging itself changed — a version built before fpm
+// compiled app frontends installs and serves a blank page, and re-running would skip it
+// forever.
+func TestRepublishBuildsWhatIsAlreadyPublished(t *testing.T) {
+	repo := fixtureRepo(t, "v1.0.0", "v2.0.0")
+	server := registryStub(t, "wiki", "1.0.0", "2.0.0")
+	app := App{Slug: "wiki", Repo: repo, Track: TrackTags, BundleDeps: true}
+	repos := []config.RepositoryConfig{{Name: "r", URL: server.URL}}
+
+	skipped, err := BuildPlanForRepos([]App{app}, repos, server.Client(), "20260827")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skipped.Items) != 0 {
+		t.Fatalf("without --republish everything published must be skipped: %+v", skipped.Items)
+	}
+
+	forced, err := BuildPlanForRepos([]App{app}, repos, server.Client(), "20260827", Republish())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(forced.Items) == 0 {
+		t.Fatal("with Republish the published versions must be rebuilt")
+	}
+}

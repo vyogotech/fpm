@@ -164,6 +164,14 @@ unknown column is still rejected so a typo fails loudly. They are fetched to be 
 published, which is why `frappe` stays in the catalog even though it is no longer
 mirrored — the row is where its repository URL comes from.
 
+A version the registries already have is **skipped**, which is what makes a nightly run
+cheap and a re-run idempotent — and a published version is an artifact others may have
+pinned, so overwriting it hands them different bytes under the same name. `--republish`
+(or the workflow's `republish` input) rebuilds and pushes them anyway. That is for the
+one case the skip cannot see: the packaging itself changed, and what is already published
+would now be built differently. A package built before fpm compiled app frontends
+installs and then serves a blank page, and no amount of re-running would replace it.
+
 Apps are published in **tiers**. Everything in tier 0 goes first; tier 1 starts only
 once it is done, because an app whose `required_apps` name other catalog entries can only
 pin them — and hang its OCI referrers subject off them — once they are in the registry.

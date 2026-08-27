@@ -1,10 +1,12 @@
 package mirror
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -324,6 +326,47 @@ func (r *Runner) installDependencyDeps(dir, label string) error {
 	cmd.Env = append(r.Workspace.BuildEnv(), "CI=false")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("installing %s dependencies failed: %w\n%s", label, err, tail(string(out), 1200))
+	}
+	return r.installPeerDeps(dir, label)
+}
+
+// installPeerDeps installs a build dependency's peerDependencies into its own tree.
+//
+// A peer dependency is by definition the consumer's to provide, and normally that is
+// exactly what happens: helpdesk's desk depends on frappe-ui and supplies its peers from
+// its own node_modules. But here the consumer compiles the dependency's *source* in
+// place, and node resolution from apps/frappe/ui/src walks up through frappe/ui,
+// frappe and apps — it never reaches apps/helpdesk/desk/node_modules. frappe/ui
+// declares @vueuse/core as a peer, yarn does not install peers, and the build fails on
+// an import the dependency's own manifest never asked to have installed.
+//
+// Standing in for the consumer means satisfying them here. --no-save keeps the
+// dependency's manifest untouched: this is a build-time convenience, not a change to it.
+func (r *Runner) installPeerDeps(dir, label string) error {
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return nil
+	}
+	var pkg struct {
+		PeerDependencies map[string]string `json:"peerDependencies"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil || len(pkg.PeerDependencies) == 0 {
+		return nil
+	}
+
+	specs := make([]string, 0, len(pkg.PeerDependencies))
+	for name, constraint := range pkg.PeerDependencies {
+		specs = append(specs, name+"@"+constraint)
+	}
+	sort.Strings(specs)
+
+	r.Log("  build dependency: satisfying %s peer dependencies (%s)", label, strings.Join(specs, " "))
+	args := append([]string{"install", "--no-save", "--no-audit", "--no-fund", "--legacy-peer-deps"}, specs...)
+	cmd := exec.Command("npm", args...)
+	cmd.Dir = dir
+	cmd.Env = append(r.Workspace.BuildEnv(), "CI=false")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("satisfying %s peer dependencies failed: %w\n%s", label, err, tail(string(out), 1200))
 	}
 	return nil
 }
