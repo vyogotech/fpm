@@ -136,6 +136,12 @@ repository is missing it, so backends that started out of step converge on the s
 publishing is idempotent per repository, and one that already has a version reports it
 rather than failing the run.
 
+Apps are published in **tiers**. Everything in tier 0 goes first; tier 1 starts only
+once it is done, because an app whose `required_apps` name other catalog entries can only
+pin them — and hang its OCI referrers subject off them — once they are in the registry.
+`hrms` needs `erpnext`; `webshop` needs `erpnext` and `payments`. The `tier` column in
+`catalog/apps.csv` sets it, defaulting to 0.
+
 `--cache-dir` (default `~/.fpm/build-cache`) is what makes a run cheap: git checkouts live
 in `<cache>/src` and are fetched rather than re-cloned, and pip, npm and yarn are pointed at
 `<cache>/{pip,npm}` for every build subprocess — within a run and, when the directory is

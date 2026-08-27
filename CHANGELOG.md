@@ -26,6 +26,11 @@ build into several registry backends at once.
   it is inert behind nginx or a Kubernetes ingress, so the defaults produce the same bundle
   a real bench would; `--frontend-site-config` supplies real values where it matters and
   `--no-bench-scaffold` refuses synthesized ones.
+- The catalog gains a `tier` column, and the mirror workflow runs one wave per tier.
+  Sharding the catalog one app per runner removed the ordering that used to make an
+  app's `required_apps` available before it was built: `hrms` could not pin `erpnext`
+  or hang its OCI referrers subject off it, and `webshop` failed packaging outright.
+  `fpm mirror --list-tiers` and `--list-slugs --tier N` drive the waves.
 - `fpm mirror` now honours `--allow-third-party`, which was accepted and then never read
   — every third-party catalog entry was built regardless. It defaults to false: the
   mirror publishes the frappe organisation's own apps, and an entry from another

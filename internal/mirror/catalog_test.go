@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const header = "slug,repo,app_name,track,branch,branch_major,majors,bundle_deps,enabled,notes\n"
+const header = "slug,repo,app_name,track,branch,branch_major,majors,bundle_deps,enabled,tier,notes\n"
 
 func writeCatalog(t *testing.T, rows string) string {
 	t.Helper()
@@ -20,7 +20,7 @@ func writeCatalog(t *testing.T, rows string) string {
 }
 
 func TestLoadCatalogDefaults(t *testing.T) {
-	path := writeCatalog(t, "hrms,https://github.com/frappe/hrms,,,,,,,,\n")
+	path := writeCatalog(t, "hrms,https://github.com/frappe/hrms,,,,,,,,,\n")
 	cat, err := LoadCatalog(path)
 	if err != nil {
 		t.Fatal(err)
@@ -36,9 +36,9 @@ func TestLoadCatalogDefaults(t *testing.T) {
 
 func TestLoadCatalogParsesFields(t *testing.T) {
 	path := writeCatalog(t,
-		"frappe,https://github.com/frappe/frappe,,,,,14;15;16,,,\n"+
-			"health,https://github.com/frappe/health,healthcare,,,,,false,,differs\n"+
-			"drive,https://github.com/frappe/drive,,branch,main,2,,,false,no tags\n")
+		"frappe,https://github.com/frappe/frappe,,,,,14;15;16,,,,\n"+
+			"health,https://github.com/frappe/health,healthcare,,,,,false,,,differs\n"+
+			"drive,https://github.com/frappe/drive,,branch,main,2,,,false,,no tags\n")
 	cat, err := LoadCatalog(path)
 	if err != nil {
 		t.Fatal(err)
@@ -55,14 +55,14 @@ func TestLoadCatalogParsesFields(t *testing.T) {
 }
 
 func TestLoadCatalogValidatesGitURL(t *testing.T) {
-	path := writeCatalog(t, "evil,ftp://invalid.com/repo,,,,,,,,\n")
+	path := writeCatalog(t, "evil,ftp://invalid.com/repo,,,,,,,,,\n")
 	if _, err := LoadCatalog(path); err == nil || !strings.Contains(err.Error(), "valid git URL") {
 		t.Fatalf("expected invalid git URL rejection, got %v", err)
 	}
 }
 
 func TestLoadCatalogAllowsExternalGitRepo(t *testing.T) {
-	path := writeCatalog(t, "raven,https://github.com/The-Commit-Company/raven,,,,,,,,\n")
+	path := writeCatalog(t, "raven,https://github.com/The-Commit-Company/raven,,,,,,,,,\n")
 	cat, err := LoadCatalog(path)
 	if err != nil {
 		t.Fatalf("expected external repo allowed, got error: %v", err)
@@ -74,13 +74,13 @@ func TestLoadCatalogAllowsExternalGitRepo(t *testing.T) {
 
 func TestLoadCatalogRejectsBadRows(t *testing.T) {
 	cases := map[string]string{
-		"duplicate slug":  "wiki,https://github.com/frappe/wiki,,,,,,,,\nwiki,https://github.com/frappe/wiki,,,,,,,,\n",
-		"bad track":       "wiki,https://github.com/frappe/wiki,,nightly,,,,,,\n",
-		"branch required": "wiki,https://github.com/frappe/wiki,,branch,,,,,,\n",
-		"stray branch":    "wiki,https://github.com/frappe/wiki,,,develop,,,,,\n",
-		"bad majors":      "wiki,https://github.com/frappe/wiki,,,,,x;y,,,\n",
-		"bad bool":        "wiki,https://github.com/frappe/wiki,,,,,,yes,,\n",
-		"bad slug":        "Wiki!,https://github.com/frappe/wiki,,,,,,,,\n",
+		"duplicate slug":  "wiki,https://github.com/frappe/wiki,,,,,,,,,\nwiki,https://github.com/frappe/wiki,,,,,,,,,\n",
+		"bad track":       "wiki,https://github.com/frappe/wiki,,nightly,,,,,,,\n",
+		"branch required": "wiki,https://github.com/frappe/wiki,,branch,,,,,,,\n",
+		"stray branch":    "wiki,https://github.com/frappe/wiki,,,develop,,,,,,\n",
+		"bad majors":      "wiki,https://github.com/frappe/wiki,,,,,x;y,,,,\n",
+		"bad bool":        "wiki,https://github.com/frappe/wiki,,,,,,yes,,,\n",
+		"bad slug":        "Wiki!,https://github.com/frappe/wiki,,,,,,,,,\n",
 	}
 	for name, rows := range cases {
 		if _, err := LoadCatalog(writeCatalog(t, rows)); err == nil {
@@ -102,7 +102,7 @@ func TestLoadCatalogRejectsUnknownColumn(t *testing.T) {
 }
 
 func TestLoadCatalogFindsBuildScript(t *testing.T) {
-	path := writeCatalog(t, "crm,https://github.com/frappe/crm,,,,,,,,\n")
+	path := writeCatalog(t, "crm,https://github.com/frappe/crm,,,,,,,,,\n")
 	buildDir := filepath.Join(filepath.Dir(path), "build")
 	if err := os.MkdirAll(buildDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -122,8 +122,8 @@ func TestLoadCatalogFindsBuildScript(t *testing.T) {
 
 func TestEnabledFilter(t *testing.T) {
 	path := writeCatalog(t,
-		"wiki,https://github.com/frappe/wiki,,,,,,,,\n"+
-			"lms,https://github.com/frappe/lms,,,,,,,false,paused\n")
+		"wiki,https://github.com/frappe/wiki,,,,,,,,,\n"+
+			"lms,https://github.com/frappe/lms,,,,,,,false,,paused\n")
 	cat, err := LoadCatalog(path)
 	if err != nil {
 		t.Fatal(err)
@@ -180,8 +180,8 @@ func TestIsFrappeOrg(t *testing.T) {
 // entry was built regardless of what the caller asked for.
 func TestCatalogExcludesThirdParty(t *testing.T) {
 	path := writeCatalog(t,
-		"crm,https://github.com/frappe/crm,,,,,,,,\n"+
-			"raven,https://github.com/The-Commit-Company/raven,,,,,,,,third party\n")
+		"crm,https://github.com/frappe/crm,,,,,,,,,\n"+
+			"raven,https://github.com/The-Commit-Company/raven,,,,,,,,,third party\n")
 
 	strict, err := LoadCatalogWithOptions(path, CatalogOptions{AllowThirdParty: false})
 	if err != nil {

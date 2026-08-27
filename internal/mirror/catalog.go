@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -38,7 +39,10 @@ type App struct {
 	Majors      []int // allowlist of major lines; empty means every tagged major
 	BundleDeps  bool
 	Enabled     bool
-	Notes       string
+	// Tier orders a run: every app in a lower tier is published before a higher one
+	// starts. 0 for an app that requires nothing else in the catalog.
+	Tier  int
+	Notes string
 
 	// BuildScript is the absolute path of catalog/build/<slug>.sh when that
 	// script exists; empty otherwise. Its contract: run in the checkout root,
@@ -65,7 +69,7 @@ type Catalog struct {
 // applying defaults to every row.
 var catalogColumns = []string{
 	"slug", "repo", "app_name", "track", "branch", "branch_major",
-	"majors", "bundle_deps", "enabled", "notes",
+	"majors", "bundle_deps", "enabled", "tier", "notes",
 }
 
 // CatalogOptions configures catalog validation behavior.
@@ -159,6 +163,18 @@ func LoadCatalogWithOptions(path string, opts CatalogOptions) (*Catalog, error) 
 			return nil, rowErr("branch is only valid with track=branch")
 		}
 
+		// tier orders a run: everything in tier 0 is published before tier 1 starts,
+		// so an app whose required_apps name another catalog entry can resolve and
+		// reference them. hrms needs erpnext in the registry to pin it at packaging
+		// time and to hang its OCI referrers subject off; webshop needs erpnext and
+		// payments. Default 0: most apps depend on nothing in the catalog.
+		if raw := get("tier"); raw != "" {
+			app.Tier, err = strconv.Atoi(raw)
+			if err != nil || app.Tier < 0 {
+				return nil, rowErr("tier must be a non-negative integer")
+			}
+		}
+
 		if raw := get("branch_major"); raw != "" {
 			app.BranchMajor, err = strconv.Atoi(raw)
 			if err != nil || app.BranchMajor < 0 {
@@ -200,6 +216,31 @@ func LoadCatalogWithOptions(path string, opts CatalogOptions) (*Catalog, error) 
 	}
 
 	return catalog, nil
+}
+
+// Tiers returns the distinct tiers present among the given apps, ascending.
+func Tiers(apps []App) []int {
+	seen := map[int]bool{}
+	var out []int
+	for _, app := range apps {
+		if !seen[app.Tier] {
+			seen[app.Tier] = true
+			out = append(out, app.Tier)
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
+// InTier returns the apps belonging to one tier.
+func InTier(apps []App, tier int) []App {
+	var out []App
+	for _, app := range apps {
+		if app.Tier == tier {
+			out = append(out, app)
+		}
+	}
+	return out
 }
 
 // Enabled returns the enabled apps, restricted to the given slugs when the
