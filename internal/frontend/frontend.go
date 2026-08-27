@@ -207,7 +207,7 @@ func Detect(sourcePath, appName string) (*Project, error) {
 		// It is `bench build`, not an app frontend, and internal/benchbuild owns it —
 		// running it here fails on a missing apps.txt and would be duplicated work if
 		// it did not.
-		if isFrappeBundler(dir, pkg.Scripts["build"]) {
+		if isFrappeBundler(dir, pkg.Scripts["build"]) || isMissingTargetDir(dir, pkg.Scripts["build"]) {
 			continue
 		}
 		rel, relErr := filepath.Rel(root, dir)
@@ -343,11 +343,12 @@ func Build(opts BuildOptions) (Result, error) {
 		return nil
 	}
 
-	// What is already under <app>/public before the build, so the directories the
-	// build itself writes to can be identified afterwards. That is authoritative where
-	// scanning can only guess: an output directory with no index.html that is not
-	// called dist is invisible to a scan but is still what the build produced.
 	before := publicFiles(root, opts.AppName)
+
+	cleanupPM, pmErr := ensureLocalPackageManager(project.Dir, project.PkgManager)
+	if pmErr == nil && cleanupPM != nil {
+		defer cleanupPM()
+	}
 
 	if err := run("install", installArgs(project)); err != nil {
 		// A frozen install refuses when the app's own lockfile has drifted from its
@@ -1154,6 +1155,20 @@ func isFrappeBundler(dir, buildScript string) bool {
 	return false
 }
 
+func isMissingTargetDir(dir, buildScript string) bool {
+	buildScript = strings.TrimSpace(buildScript)
+	if strings.HasPrefix(buildScript, "cd ") {
+		parts := strings.Fields(buildScript)
+		if len(parts) >= 2 {
+			target := parts[1]
+			if _, err := os.Stat(filepath.Join(dir, target)); os.IsNotExist(err) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // RequiresBench reports whether the checkout's frontend sources import the bench's
 // common_site_config.json, and so can only be built from <bench>/apps/<app>.
 //
@@ -1385,4 +1400,39 @@ func SiblingApps(sourcePath, appName string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+func ensureLocalPackageManager(dir, pm string) (cleanup func(), err error) {
+	pkgPath := filepath.Join(dir, "package.json")
+	data, err := os.ReadFile(pkgPath)
+	if err != nil {
+		return func() {}, nil
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return func() {}, nil
+	}
+	if _, ok := raw["packageManager"]; ok {
+		return func() {}, nil
+	}
+	switch pm {
+	case "yarn":
+		raw["packageManager"] = "yarn@1.22.22"
+	case "pnpm":
+		raw["packageManager"] = "pnpm@9.0.0"
+	case "npm":
+		raw["packageManager"] = "npm@10.0.0"
+	default:
+		return func() {}, nil
+	}
+	updated, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return func() {}, nil
+	}
+	if err := os.WriteFile(pkgPath, updated, 0o644); err != nil {
+		return func() {}, err
+	}
+	return func() {
+		_ = os.WriteFile(pkgPath, data, 0o644)
+	}, nil
 }

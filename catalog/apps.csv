@@ -1,13 +1,13 @@
 slug,repo,app_name,track,branch,branch_major,majors,bundle_deps,enabled,tier,build_deps,notes
 frappe,https://github.com/frappe/frappe,,,,,14;15;16,,false,,,"the framework itself: present in every bench image, and its assets come from bench build rather than an app frontend"
-erpnext,https://github.com/frappe/erpnext,,,,,14;15;16,,,,,
+erpnext,https://github.com/frappe/erpnext,,,,,16,,,,,
 hrms,https://github.com/frappe/hrms,,,,,14;15;16,,,1,,
 payments,https://github.com/frappe/payments,,branch,develop,0,,,,,,no release tags upstream; tracked from develop
 builder,https://github.com/frappe/builder,,,,,,,,,,
 gameplan,https://github.com/frappe/gameplan,,branch,develop,0,,,,,,no release tags upstream; tracked from develop
 insights,https://github.com/frappe/insights,,,,,,,,,,
 wiki,https://github.com/frappe/wiki,,,,,,,,,,
-helpdesk,https://github.com/frappe/helpdesk,,,,,1,,,,frappe@develop,"v1 line only: its desk build reads ../../frappe/ui, and only frappe develop's ui package carries @vueuse/core. The dead 0.x line needs frappe/public/js/lib/posthog.js, which develop no longer has - the two lines want incompatible frappe refs"
+helpdesk,https://github.com/frappe/helpdesk,,,,,1,,false,,frappe@develop,"disabled: its desk build compiles frappe/ui's source in place, and that source imports frappe/ui's peerDependencies (@vueuse/core). Vite resolves those from the vite root (helpdesk/desk), not from the imported file, so they must be in the consumer's tree - which only happens inside a real bench where the whole apps/ directory is one hoisted install. Fetching frappe, pinning it to develop and installing frappe/ui's deps and peers all failed for this reason"
 crm,https://github.com/frappe/crm,,,,,,,,,,
 lms,https://github.com/frappe/lms,lms,,,,,,,,,
 drive,https://github.com/frappe/drive,,branch,develop,0,,,,,,"release tags stop at v0.3.0 and are long stale; develop is where the app is. The old tags also build with pnpm, which current drive no longer uses"

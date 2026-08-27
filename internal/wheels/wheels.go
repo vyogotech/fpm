@@ -186,6 +186,12 @@ func BuildCommand(pythonExe, requirementsPath, destDir string, target Target) Co
 	}
 	for _, p := range target.Platforms {
 		args = append(args, "--platform", p)
+		switch p {
+		case "manylinux2014_x86_64", "manylinux_2_17_x86_64":
+			args = append(args, "--platform", "manylinux_2_17_x86_64", "--platform", "manylinux_2_26_x86_64", "--platform", "manylinux_2_28_x86_64")
+		case "manylinux2014_aarch64", "manylinux_2_17_aarch64":
+			args = append(args, "--platform", "manylinux_2_17_aarch64", "--platform", "manylinux_2_26_aarch64", "--platform", "manylinux_2_28_aarch64")
+		}
 	}
 	impl := target.Implementation
 	if impl == "" {
