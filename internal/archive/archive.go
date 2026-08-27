@@ -26,6 +26,10 @@ var defaultIgnorePatterns = []string{
 	// `fpm package --bench-path` when the app has a package.json); the package ships
 	// the built output under <app>/public/dist instead.
 	"node_modules/",
+	// vite-plugin-pwa writes its dev-server service worker here. It is a dev
+	// artifact, listed in crm's own .gitignore, and never served from a package.
+	// The real frontend output lives in <app>/public/frontend and is not ignored.
+	"dev-dist/",
 	".DS_Store",
 	"*.swp",
 	"*.swo",

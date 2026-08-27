@@ -132,7 +132,10 @@ func Build(opts Options) (Result, error) {
 	// import. node_modules is a build-time artifact: the archive step leaves it out.
 	if _, statErr := os.Stat(filepath.Join(buildRoot, "package.json")); statErr == nil {
 		fmt.Fprintf(out, "Installing '%s' node dependencies (yarn install --check-files in %s)\n", opts.AppName, buildRoot)
-		yarn := exec.Command("yarn", "install", "--check-files", "--non-interactive")
+		// --production=false forces devDependencies on: a release pipeline that exports
+		// NODE_ENV=production would otherwise have yarn skip them, and the build then
+		// fails on a module that is only ever a devDependency (autoprefixer, postcss).
+		yarn := exec.Command("yarn", "install", "--check-files", "--non-interactive", "--production=false")
 		yarn.Dir = buildRoot
 		yarnOut, yarnErr := yarn.CombinedOutput()
 		if opts.Verbose {
