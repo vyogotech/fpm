@@ -88,7 +88,7 @@ func runMirror() error {
 	}
 
 	now := time.Now().UTC().Format("20060102")
-	plan, err := mirror.BuildPlan(apps, repo.URL, nil, now)
+	plan, err := mirror.BuildPlanForRepo(apps, repo, nil, now)
 	if err != nil {
 		return err
 	}

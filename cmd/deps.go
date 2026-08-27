@@ -9,10 +9,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"fpm/internal/config"
 	"fpm/internal/metadata"
+	"fpm/internal/repository"
 	"fpm/internal/resolver"
+	"fpm/internal/semver"
 	"fpm/internal/wheels"
 
 	"github.com/spf13/cobra"
@@ -22,7 +25,23 @@ var (
 	depsCheck     bool
 	depsJSON      bool
 	depsBenchPath string
+	depsRepoName  string
+	depsNoRemote  bool
 )
+
+// InstallPlanItem represents one app in the installation plan and what action will be taken.
+type InstallPlanItem struct {
+	Org             string `json:"org,omitempty"`
+	AppName         string `json:"app_name"`
+	Version         string `json:"version,omitempty"`
+	Identifier      string `json:"identifier"`
+	RequiredBy      string `json:"required_by"`
+	Status          string `json:"status"` // "will_install", "will_fetch_and_install", "in_local_store", "already_in_bench", "missing"
+	Action          string `json:"action"` // "install", "fetch_and_install", "skip_already_in_bench"
+	Source          string `json:"source"` // "local-store", "repo:<name>", "bench:<path>"
+	StorePath       string `json:"store_path,omitempty"`
+	ProvidedByBench bool   `json:"provided_by_bench,omitempty"`
+}
 
 // DepsReport is the machine-readable output of `fpm deps --json`.
 type DepsReport struct {
@@ -42,92 +61,104 @@ type DepsReport struct {
 	AllRequiredPresent bool              `json:"all_required_present"`
 	Dependencies       map[string]string `json:"declared_dependencies,omitempty"`
 	AssetBundles       map[string]string `json:"asset_bundles,omitempty"`
+	InstallPlan        []InstallPlanItem `json:"install_plan"`
+	InstallQueue       []string          `json:"install_queue"` // ordered identifiers of apps that will be installed into bench
 }
 
 // DepsRequiredApp is one entry of the transitive required-app closure.
 type DepsRequiredApp struct {
-	Org         string `json:"org,omitempty"`
-	Name        string `json:"name"`
-	Version     string `json:"version,omitempty"`
-	Requirement string `json:"requirement,omitempty"`
-	RequiredBy  string `json:"required_by"`
-	Present     bool   `json:"present_in_local_store"`
-	StorePath   string `json:"store_path,omitempty"`
-	// ProvidedByBench: satisfied by an app already in --bench-path, not by a package.
-	ProvidedByBench bool `json:"provided_by_bench,omitempty"`
+	Org             string `json:"org,omitempty"`
+	Name            string `json:"name"`
+	Version         string `json:"version,omitempty"`
+	Requirement     string `json:"requirement,omitempty"`
+	RequiredBy      string `json:"required_by"`
+	Present         bool   `json:"present_in_local_store"`
+	StorePath       string `json:"store_path,omitempty"`
+	ProvidedByBench bool   `json:"provided_by_bench,omitempty"`
+	Source          string `json:"source,omitempty"`
 }
 
 var depsCmd = &cobra.Command{
 	Use:   "deps <package>",
-	Short: "Inspect the dependencies a package declares, bundles and requires",
-	Long: `Shows the Python dependencies a package declares and whether it bundles them for
-offline installation, and the Frappe apps it requires (hooks.py required_apps) with
-their transitive closure and whether each is already in the local FPM store.
+	Short: "Inspect dependencies and list apps that will be installed into the bench",
+	Long: `Shows the Python dependencies a package declares and bundles, and the Frappe apps
+it requires (hooks.py required_apps) with their transitive closure and installation order.
 
-The package may be a path to a local .fpm file, or an identifier resolved from the local
-FPM app store in the form <org>/<app> or <org>/<app>==<version>. Without a version, the
-latest in the local store is used.
+The package may be:
+  - A path to a local .fpm file (e.g. ./hrms-15.2.0.fpm)
+  - A local app store identifier (e.g. frappe/hrms==15.2.0)
+  - A remote repository package identifier (e.g. frappe/hrms or frappe/hrms==15.2.0)
 
-Dependencies are read from the requirements.txt and pyproject.toml the package ships, so
-this reports what an install would actually resolve, not what the source tree declares
-today. Nothing is fetched: this is the question to ask before an offline install.
+When --bench-path is provided, fpm deps inspects the bench to report which dependencies
+are already satisfied by the bench and which will be freshly installed.
 
-With --check the command exits with status ` + fmt.Sprint(ExitMissingRequiredApps) + ` when a required app is missing.`,
+With --json, fpm deps emits a structured JSON object containing the complete dependency
+graph, install queue, and action per application for CI/CD and automation tooling.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fpmPath, err := resolveDepsTarget(args[0])
-		if err != nil {
-			return err
-		}
-
-		meta, err := metadata.ReadMetadataFromFPMArchive(fpmPath)
-		if err != nil {
-			return fmt.Errorf("failed to read metadata from %s: %w", fpmPath, err)
-		}
-
-		req, bundled, err := wheels.CollectFromArchive(fpmPath)
-		if err != nil {
-			return fmt.Errorf("failed to read dependencies from %s: %w", fpmPath, err)
-		}
-		pins, err := readLockFromArchive(fpmPath)
-		if err != nil {
-			return err
-		}
+		defer func() {
+			depsCheck = false
+			depsJSON = false
+			depsBenchPath = ""
+			depsRepoName = ""
+			depsNoRemote = false
+		}()
 
 		cfg, err := config.InitConfig()
 		if err != nil {
 			return fmt.Errorf("failed to initialize FPM configuration: %w", err)
 		}
+
+		targetArg := args[0]
+		meta, fpmPath, sourceDesc, req, bundled, pins, err := resolveDepsPackage(targetArg, cfg, depsRepoName, !depsNoRemote)
+		if err != nil {
+			return err
+		}
+
 		packageID := fmt.Sprintf("%s/%s==%s", meta.Org, meta.AppName, meta.PackageVersion)
-		closure, missing, err := resolver.CheckClosure(cfg.AppsBasePath, depsBenchPath, meta.RequiredApps, packageID)
+
+		// Resolve transitive closure across bench, local store, and remote repos
+		closure, missing, planItems, installQueue, err := buildInstallPlan(cfg, meta, packageID, depsBenchPath, depsRepoName, !depsNoRemote)
 		if err != nil {
 			return err
 		}
 
 		if depsJSON {
 			report := DepsReport{
-				Org: meta.Org, App: meta.AppName, Version: meta.PackageVersion, PackageType: meta.PackageType,
-				Source: fpmPath, CommitSHA: meta.CommitSHA,
-				PythonDependencies: nonNil(req.Specs), BundledWheels: nonNil(bundled),
-				WheelPlatform: meta.WheelPlatform, WheelPythonVersion: meta.WheelPythonVersion,
-				RequiredApps: []DepsRequiredApp{}, MissingRequired: []string{},
+				Org:                meta.Org,
+				App:                meta.AppName,
+				Version:            meta.PackageVersion,
+				PackageType:        meta.PackageType,
+				Source:             sourceDesc,
+				CommitSHA:          meta.CommitSHA,
+				PythonDependencies: nonNil(req.Specs),
+				BundledWheels:      nonNil(bundled),
+				WheelPlatform:      meta.WheelPlatform,
+				WheelPythonVersion: meta.WheelPythonVersion,
+				RequiredApps:       []DepsRequiredApp{},
+				MissingRequired:    []string{},
 				AllRequiredPresent: len(missing) == 0,
-				Dependencies:       meta.Dependencies, AssetBundles: meta.AssetBundles,
+				Dependencies:       meta.Dependencies,
+				AssetBundles:       meta.AssetBundles,
+				InstallPlan:        planItems,
+				InstallQueue:       installQueue,
 			}
 			for _, p := range pins {
 				report.Pins = append(report.Pins, p.String())
 			}
 			for _, e := range closure {
 				report.RequiredApps = append(report.RequiredApps, DepsRequiredApp{
-					Org: e.App.Org, Name: e.App.Name, Version: e.App.Version, Requirement: e.App.Requirement,
-					RequiredBy: e.RequiredBy, Present: !e.ProvidedByBench, StorePath: e.StorePath, ProvidedByBench: e.ProvidedByBench,
+					Org:             e.App.Org,
+					Name:            e.App.Name,
+					Version:         e.App.Version,
+					Requirement:     e.App.Requirement,
+					RequiredBy:      e.RequiredBy,
+					Present:         e.Present && !e.ProvidedByBench,
+					StorePath:       e.StorePath,
+					ProvidedByBench: e.ProvidedByBench,
 				})
 			}
 			for _, m := range missing {
-				report.RequiredApps = append(report.RequiredApps, DepsRequiredApp{
-					Org: m.App.Org, Name: m.App.Name, Version: m.App.Version, Requirement: m.App.Requirement,
-					RequiredBy: m.RequiredBy, Present: false,
-				})
 				report.MissingRequired = append(report.MissingRequired, m.App.Identifier())
 			}
 			enc := json.NewEncoder(cmd.OutOrStdout())
@@ -136,7 +167,7 @@ With --check the command exits with status ` + fmt.Sprint(ExitMissingRequiredApp
 				return err
 			}
 		} else {
-			printDeps(cmd.OutOrStdout(), fpmPath, meta, req, bundled, pins, closure, missing)
+			printDeps(cmd.OutOrStdout(), fpmPath, sourceDesc, meta, req, bundled, pins, closure, missing, planItems, installQueue, depsBenchPath)
 		}
 
 		if depsCheck && len(missing) > 0 {
@@ -146,6 +177,354 @@ With --check the command exits with status ` + fmt.Sprint(ExitMissingRequiredApp
 	},
 }
 
+func resolveDepsPackage(target string, cfg *config.FPMConfig, repoName string, allowRemote bool) (
+	meta *metadata.AppMetadata, fpmPath string, sourceDesc string, req wheels.Requirements, bundled []string, pins []wheels.Pin, err error,
+) {
+	// 1. Direct path to .fpm file
+	if strings.HasSuffix(strings.ToLower(target), ".fpm") {
+		abs, err := filepath.Abs(target)
+		if err != nil {
+			return nil, "", "", req, nil, nil, fmt.Errorf("failed to resolve path %s: %w", target, err)
+		}
+		if _, err := os.Stat(abs); err != nil {
+			return nil, "", "", req, nil, nil, fmt.Errorf("package file not found: %s", abs)
+		}
+		meta, err := metadata.ReadMetadataFromFPMArchive(abs)
+		if err != nil {
+			return nil, "", "", req, nil, nil, fmt.Errorf("failed to read metadata from %s: %w", abs, err)
+		}
+		req, bundled, _ := wheels.CollectFromArchive(abs)
+		pins, _ := readLockFromArchive(abs)
+		return meta, abs, abs, req, bundled, pins, nil
+	}
+
+	// 2. Package identifier <org>/<app>[==<version>]
+	org, appName, version, err := parseDepsIdentifier(target)
+	if err != nil {
+		return nil, "", "", req, nil, nil, err
+	}
+
+	// Check local store first
+	targetVersion := version
+	if targetVersion == "" || targetVersion == "latest" {
+		if resolved, err := resolveLatestVersionFromLocalStore(cfg.AppsBasePath, org, appName); err == nil && resolved != "" {
+			targetVersion = resolved
+		}
+	}
+
+	if targetVersion != "" && targetVersion != "latest" {
+		versionDir := filepath.Join(cfg.AppsBasePath, org, appName, targetVersion)
+		localFPMPath := filepath.Join(versionDir, fmt.Sprintf("_%s-%s.fpm", appName, targetVersion))
+		if _, err := os.Stat(localFPMPath); err == nil {
+			meta, err := metadata.ReadMetadataFromFPMArchive(localFPMPath)
+			if err == nil {
+				req, bundled, _ := wheels.CollectFromArchive(localFPMPath)
+				pins, _ := readLockFromArchive(localFPMPath)
+				return meta, localFPMPath, fmt.Sprintf("local-store:%s", localFPMPath), req, bundled, pins, nil
+			}
+		}
+		if meta, err := metadata.LoadAppMetadata(versionDir); err == nil {
+			return meta, "", fmt.Sprintf("local-store:%s", versionDir), req, bundled, pins, nil
+		}
+	}
+
+	// 3. Remote repository query if not found locally
+	if allowRemote {
+		repos := config.ListRepositories(cfg)
+		if repoName != "" {
+			r, ok := config.GetRepository(cfg, repoName)
+			if !ok {
+				return nil, "", "", req, nil, nil, fmt.Errorf("repository %q is not configured", repoName)
+			}
+			repos = []config.RepositoryConfig{r}
+		}
+
+		for _, repo := range repos {
+			client, cerr := resolver.NewHTTPClient(repo, 2*time.Second)
+			if cerr != nil {
+				continue
+			}
+			pkgMeta, found, err := repository.FetchRemotePackageMetadataForRepo(repo, org, appName, client)
+			if err != nil || !found || pkgMeta == nil {
+				continue
+			}
+
+			resolvedVer := version
+			if resolvedVer == "" || resolvedVer == "latest" {
+				resolvedVer = pkgMeta.LatestVersion
+			}
+			if resolvedVer == "" {
+				continue
+			}
+
+			vMeta, exists := pkgMeta.Versions[resolvedVer]
+			if !exists {
+				continue
+			}
+
+			appMeta := &metadata.AppMetadata{
+				Org:                 org,
+				AppName:             appName,
+				PackageVersion:      resolvedVer,
+				PackageType:         vMeta.PackageType,
+				CommitSHA:           vMeta.CommitSHA,
+				GitRef:              vMeta.GitRef,
+				WheelPlatform:       vMeta.WheelPlatform,
+				WheelPythonVersion:  vMeta.WheelPythonVersion,
+				FrappeCompatibility: vMeta.FrappeCompatibility,
+				Description:         vMeta.Notes,
+				RequiredApps:        make([]metadata.RequiredApp, len(vMeta.RequiredApps)),
+				Dependencies:        make(map[string]string),
+			}
+			for i, r := range vMeta.RequiredApps {
+				appMeta.RequiredApps[i] = metadata.RequiredApp{
+					Org:     r.Org,
+					Name:    r.AppName,
+					Version: r.Version,
+				}
+			}
+			for _, d := range vMeta.Dependencies {
+				appMeta.Dependencies[d.AppName] = d.VersionConstraint
+			}
+
+			source := fmt.Sprintf("repo:%s (%s)", repo.Name, repo.URL)
+			return appMeta, "", source, req, bundled, pins, nil
+		}
+	}
+
+	return nil, "", "", req, nil, nil, fmt.Errorf("package %s/%s version %q not found in local FPM store or configured repositories",
+		org, appName, version)
+}
+
+func buildInstallPlan(
+	cfg *config.FPMConfig,
+	rootMeta *metadata.AppMetadata,
+	rootID string,
+	benchPath string,
+	repoName string,
+	allowRemote bool,
+) (closure []resolver.ClosureEntry, missing []resolver.Missing, planItems []InstallPlanItem, installQueue []string, err error) {
+	benchApps := map[string]string{}
+	if benchPath != "" {
+		if data, err := os.ReadFile(filepath.Join(benchPath, "sites", "apps.txt")); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				if line = strings.TrimSpace(line); line != "" {
+					ver, _ := resolver.BenchAppVersion(benchPath, line)
+					benchApps[line] = ver
+				}
+			}
+		}
+	}
+
+	visited := map[string]bool{}
+
+	var walk func(list []metadata.RequiredApp, by string, depth int) error
+	walk = func(list []metadata.RequiredApp, by string, depth int) error {
+		if depth > 32 {
+			return fmt.Errorf("dependency chain deeper than 32 levels from %s", rootID)
+		}
+		for _, reqApp := range list {
+			if reqApp.Name == resolver.FrappeAppName {
+				continue
+			}
+			key := reqApp.Org + "/" + reqApp.Name
+			if visited[key] {
+				continue
+			}
+			visited[key] = true
+
+			org := reqApp.Org
+			if org == "" {
+				orgs := resolver.StoreOrgs(cfg.AppsBasePath, reqApp.Name)
+				if len(orgs) == 1 {
+					org = orgs[0]
+				}
+			}
+
+			reqVer := reqApp.Version
+			if reqVer == "" {
+				reqVer = semver.Latest(resolver.StoreVersions(cfg.AppsBasePath, org, reqApp.Name))
+			}
+
+			identifier := fmt.Sprintf("%s/%s==%s", org, reqApp.Name, reqVer)
+			if org == "" {
+				identifier = fmt.Sprintf("%s==%s", reqApp.Name, reqVer)
+			}
+
+			// 1. Check Bench
+			if benchVer, inBench := benchApps[reqApp.Name]; inBench {
+				if reqVer == "" || benchVer == "" || benchVer == reqVer {
+					item := InstallPlanItem{
+						Org:             org,
+						AppName:         reqApp.Name,
+						Version:         benchVer,
+						Identifier:      identifier,
+						RequiredBy:      by,
+						Status:          "already_in_bench",
+						Action:          "skip_already_in_bench",
+						Source:          fmt.Sprintf("bench:%s", benchPath),
+						ProvidedByBench: true,
+					}
+					planItems = append(planItems, item)
+					closure = append(closure, resolver.ClosureEntry{
+						App:             metadata.RequiredApp{Name: reqApp.Name, Org: org, Version: benchVer, Requirement: reqApp.Requirement},
+						RequiredBy:      by,
+						Present:         true,
+						ProvidedByBench: true,
+					})
+					continue
+				}
+			}
+
+			// 2. Check Local Store
+			inStore := org != "" && reqVer != "" && resolver.InStore(cfg.AppsBasePath, org, reqApp.Name, reqVer)
+			if inStore {
+				storePath := filepath.Join(cfg.AppsBasePath, org, reqApp.Name, reqVer)
+				depMeta, _ := metadata.LoadAppMetadata(storePath)
+				if depMeta != nil {
+					if err := walk(depMeta.RequiredApps, identifier, depth+1); err != nil {
+						return err
+					}
+				}
+
+				item := InstallPlanItem{
+					Org:        org,
+					AppName:    reqApp.Name,
+					Version:    reqVer,
+					Identifier: identifier,
+					RequiredBy: by,
+					Status:     "in_local_store",
+					Action:     "install",
+					Source:     "local-store",
+					StorePath:  storePath,
+				}
+				planItems = append(planItems, item)
+				installQueue = append(installQueue, identifier)
+				closure = append(closure, resolver.ClosureEntry{
+					App:        metadata.RequiredApp{Name: reqApp.Name, Org: org, Version: reqVer, Requirement: reqApp.Requirement},
+					RequiredBy: by,
+					Present:    true,
+					StorePath:  storePath,
+				})
+				continue
+			}
+
+			// 3. Check Remote Repositories
+			if allowRemote {
+				foundRepo := ""
+				var depMeta *metadata.AppMetadata
+				repos := config.ListRepositories(cfg)
+				if repoName != "" {
+					if r, ok := config.GetRepository(cfg, repoName); ok {
+						repos = []config.RepositoryConfig{r}
+					}
+				}
+
+				for _, repo := range repos {
+					client, cerr := resolver.NewHTTPClient(repo, 2*time.Second)
+					if cerr != nil {
+						continue
+					}
+					pkgMeta, found, err := repository.FetchRemotePackageMetadataForRepo(repo, org, reqApp.Name, client)
+					if err != nil || !found || pkgMeta == nil {
+						continue
+					}
+					targetVer := reqVer
+					if targetVer == "" || targetVer == "latest" {
+						targetVer = pkgMeta.LatestVersion
+					}
+					if vMeta, ok := pkgMeta.Versions[targetVer]; ok {
+						foundRepo = repo.Name
+						depMeta = &metadata.AppMetadata{
+							Org:            org,
+							AppName:        reqApp.Name,
+							PackageVersion: targetVer,
+							RequiredApps:   make([]metadata.RequiredApp, len(vMeta.RequiredApps)),
+						}
+						for i, r := range vMeta.RequiredApps {
+							depMeta.RequiredApps[i] = metadata.RequiredApp{
+								Org:     r.Org,
+								Name:    r.AppName,
+								Version: r.Version,
+							}
+						}
+						break
+					}
+				}
+
+				if foundRepo != "" && depMeta != nil {
+					if err := walk(depMeta.RequiredApps, identifier, depth+1); err != nil {
+						return err
+					}
+
+					item := InstallPlanItem{
+						Org:        org,
+						AppName:    reqApp.Name,
+						Version:    depMeta.PackageVersion,
+						Identifier: identifier,
+						RequiredBy: by,
+						Status:     "will_fetch_and_install",
+						Action:     "fetch_and_install",
+						Source:     fmt.Sprintf("repo:%s", foundRepo),
+					}
+					planItems = append(planItems, item)
+					installQueue = append(installQueue, identifier)
+					closure = append(closure, resolver.ClosureEntry{
+						App:        metadata.RequiredApp{Name: reqApp.Name, Org: org, Version: depMeta.PackageVersion, Requirement: reqApp.Requirement},
+						RequiredBy: by,
+						Present:    false,
+					})
+					continue
+				}
+			}
+
+			// Not found
+			m := resolver.Missing{
+				App:        metadata.RequiredApp{Name: reqApp.Name, Org: org, Version: reqVer, Requirement: reqApp.Requirement},
+				RequiredBy: by,
+				Reason:     "not found in bench, local store, or configured repositories",
+			}
+			missing = append(missing, m)
+			planItems = append(planItems, InstallPlanItem{
+				Org:        org,
+				AppName:    reqApp.Name,
+				Version:    reqVer,
+				Identifier: identifier,
+				RequiredBy: by,
+				Status:     "missing",
+				Action:     "missing",
+			})
+		}
+		return nil
+	}
+
+	if err := walk(rootMeta.RequiredApps, rootID, 0); err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	// Add the target root package to the end of the installation plan
+	rootAction := "install"
+	rootStatus := "will_install"
+	if _, inBench := benchApps[rootMeta.AppName]; inBench {
+		rootAction = "install (upgrade/reinstall in bench)"
+	}
+
+	rootPlanItem := InstallPlanItem{
+		Org:        rootMeta.Org,
+		AppName:    rootMeta.AppName,
+		Version:    rootMeta.PackageVersion,
+		Identifier: rootID,
+		RequiredBy: "(target package)",
+		Status:     rootStatus,
+		Action:     rootAction,
+		Source:     "target",
+	}
+	planItems = append(planItems, rootPlanItem)
+	installQueue = append(installQueue, rootID)
+
+	return closure, missing, planItems, installQueue, nil
+}
+
 func nonNil(s []string) []string {
 	if s == nil {
 		return []string{}
@@ -153,18 +532,29 @@ func nonNil(s []string) []string {
 	return s
 }
 
-func printDeps(out io.Writer, fpmPath string, meta *metadata.AppMetadata, req wheels.Requirements,
-	bundled []string, pins []wheels.Pin, closure []resolver.ClosureEntry, missing []resolver.Missing,
+func printDeps(
+	out io.Writer,
+	fpmPath string,
+	sourceDesc string,
+	meta *metadata.AppMetadata,
+	req wheels.Requirements,
+	bundled []string,
+	pins []wheels.Pin,
+	closure []resolver.ClosureEntry,
+	missing []resolver.Missing,
+	planItems []InstallPlanItem,
+	installQueue []string,
+	benchPath string,
 ) {
-	fmt.Fprintf(out, "Package:  %s/%s\n", meta.Org, meta.AppName)
-	fmt.Fprintf(out, "Version:  %s\n", meta.PackageVersion)
+	fmt.Fprintf(out, "Target Package:  %s/%s\n", meta.Org, meta.AppName)
+	fmt.Fprintf(out, "Version:         %s\n", meta.PackageVersion)
 	if meta.PackageType != "" {
-		fmt.Fprintf(out, "Type:     %s\n", meta.PackageType)
+		fmt.Fprintf(out, "Type:            %s\n", meta.PackageType)
 	}
 	if meta.CommitSHA != "" {
-		fmt.Fprintf(out, "Commit:   %s\n", meta.CommitSHA)
+		fmt.Fprintf(out, "Commit:          %s\n", meta.CommitSHA)
 	}
-	fmt.Fprintf(out, "Source:   %s\n", fpmPath)
+	fmt.Fprintf(out, "Source:          %s\n", sourceDesc)
 
 	fmt.Fprintf(out, "\nDeclared Python dependencies")
 	if len(req.Sources) > 0 {
@@ -203,25 +593,49 @@ func printDeps(out io.Writer, fpmPath string, meta *metadata.AppMetadata, req wh
 		}
 	}
 
-	// Frappe app requirements, pinned at packaging time, checked against the local store.
-	fmt.Fprintln(out, "\nRequired Frappe apps (hooks.py required_apps, pinned at packaging):")
+	// Required Frappe apps
+	fmt.Fprintln(out, "\nRequired Frappe apps (hooks.py required_apps):")
 	if len(meta.RequiredApps) == 0 {
 		fmt.Fprintln(out, "  none (only frappe)")
 	} else {
 		for _, e := range closure {
 			where := "present in local store"
 			if e.ProvidedByBench {
-				where = "provided by bench " + filepath.Dir(filepath.Dir(e.StorePath))
+				where = "provided by bench"
+			} else if !e.Present {
+				where = "will fetch from repository"
 			}
 			fmt.Fprintf(out, "  %s  [%s]  required by %s\n", e.App.Identifier(), where, e.RequiredBy)
 		}
 		for _, m := range missing {
 			fmt.Fprintf(out, "  %s  [MISSING: %s]  required by %s\n", m.App.Identifier(), m.Reason, m.RequiredBy)
 		}
-		if len(missing) == 0 {
-			fmt.Fprintln(out, "  all required apps are present; an offline install can proceed")
-		} else {
-			fmt.Fprintf(out, "  %d required app(s) missing; an offline install would fail\n", len(missing))
+	}
+
+	// Installation Plan Summary
+	fmt.Fprintln(out, "\n================================================================================")
+	if benchPath != "" {
+		fmt.Fprintf(out, "Installation Plan for bench %s:\n", benchPath)
+	} else {
+		fmt.Fprintln(out, "Installation Order & Planned Actions:")
+	}
+	fmt.Fprintln(out, "================================================================================")
+
+	toInstallCount := 0
+	for i, item := range planItems {
+		switch item.Action {
+		case "skip_already_in_bench":
+			fmt.Fprintf(out, "  %d. %s -> SKIP (already present in bench)\n", i+1, item.Identifier)
+		case "fetch_and_install":
+			toInstallCount++
+			fmt.Fprintf(out, "  %d. %s -> FETCH from %s and INSTALL into bench\n", i+1, item.Identifier, item.Source)
+		default:
+			toInstallCount++
+			suffix := ""
+			if item.RequiredBy == "(target package)" {
+				suffix = " (target)"
+			}
+			fmt.Fprintf(out, "  %d. %s%s -> INSTALL into bench\n", i+1, item.Identifier, suffix)
 		}
 	}
 
@@ -262,10 +676,20 @@ func printDeps(out io.Writer, fpmPath string, meta *metadata.AppMetadata, req wh
 			fmt.Fprintf(out, "  %s -> %s\n", k, meta.AssetBundles[k])
 		}
 	}
+
+	fmt.Fprintln(out, "--------------------------------------------------------------------------------")
+	if len(missing) > 0 {
+		fmt.Fprintf(out, "Status: %d missing dependency app(s) cannot be satisfied offline!\n", len(missing))
+	} else {
+		fmt.Fprintf(out, "Total apps to be installed / upgraded in bench: %d\n", toInstallCount)
+	}
+	fmt.Fprintln(out, "================================================================================")
 }
 
-// readLockFromArchive reads wheels/fpm-lock.txt from a package without extracting it.
 func readLockFromArchive(fpmPath string) ([]wheels.Pin, error) {
+	if fpmPath == "" {
+		return nil, nil
+	}
 	r, err := zip.OpenReader(fpmPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open FPM package %s: %w", fpmPath, err)
@@ -290,10 +714,28 @@ func readLockFromArchive(fpmPath string) ([]wheels.Pin, error) {
 	return nil, nil
 }
 
-// resolveDepsTarget turns a user-supplied target into a path to an .fpm file. The target
-// is either a path to a package, or an identifier resolved from the local app store.
+func parseDepsIdentifier(identifier string) (org, appName, version string, err error) {
+	parts := strings.Split(identifier, "/")
+	if len(parts) != 2 {
+		return "", "", "", fmt.Errorf("invalid package identifier %q. "+
+			"Expected a path to an .fpm file, or <org>/<app>[==<version>]", identifier)
+	}
+	org = strings.TrimSpace(parts[0])
+
+	appAndVersion := strings.SplitN(parts[1], "==", 2)
+	appName = strings.TrimSpace(appAndVersion[0])
+	if len(appAndVersion) == 2 {
+		version = strings.TrimSpace(appAndVersion[1])
+	}
+
+	if org == "" || appName == "" {
+		return "", "", "", fmt.Errorf("invalid package identifier %q: org and app name are both required", identifier)
+	}
+	return org, appName, version, nil
+}
+
+// resolveDepsTarget turns a user-supplied target into a path to an .fpm file.
 func resolveDepsTarget(target string) (string, error) {
-	// A path to an existing .fpm file is used directly.
 	if strings.HasSuffix(strings.ToLower(target), ".fpm") {
 		abs, err := filepath.Abs(target)
 		if err != nil {
@@ -321,8 +763,7 @@ func resolveDepsTarget(target string) (string, error) {
 			return "", fmt.Errorf("failed to resolve latest version for %s/%s: %w", org, appName, err)
 		}
 		if resolved == "" {
-			return "", fmt.Errorf("no versions of %s/%s found in the local FPM app store at %s. "+
-				"Install or package it first, or pass a path to an .fpm file",
+			return "", fmt.Errorf("no versions of %s/%s found in the local FPM app store at %s. Install or package it first, or pass a path to an .fpm file",
 				org, appName, cfg.AppsBasePath)
 		}
 		version = resolved
@@ -337,30 +778,11 @@ func resolveDepsTarget(target string) (string, error) {
 	return fpmPath, nil
 }
 
-// parseDepsIdentifier splits <org>/<app>[==<version>] into its parts.
-func parseDepsIdentifier(identifier string) (org, appName, version string, err error) {
-	parts := strings.Split(identifier, "/")
-	if len(parts) != 2 {
-		return "", "", "", fmt.Errorf("invalid package identifier %q. "+
-			"Expected a path to an .fpm file, or <org>/<app>[==<version>]", identifier)
-	}
-	org = strings.TrimSpace(parts[0])
-
-	appAndVersion := strings.SplitN(parts[1], "==", 2)
-	appName = strings.TrimSpace(appAndVersion[0])
-	if len(appAndVersion) == 2 {
-		version = strings.TrimSpace(appAndVersion[1])
-	}
-
-	if org == "" || appName == "" {
-		return "", "", "", fmt.Errorf("invalid package identifier %q: org and app name are both required", identifier)
-	}
-	return org, appName, version, nil
-}
-
 func init() {
-	depsCmd.Flags().BoolVar(&depsCheck, "check", false, "Exit non-zero when a required app (transitively) is missing from the local FPM store")
-	depsCmd.Flags().BoolVar(&depsJSON, "json", false, "Print the report as JSON")
-	depsCmd.Flags().StringVar(&depsBenchPath, "bench-path", "", "Also accept required apps already present in this bench (installed outside fpm)")
+	depsCmd.Flags().BoolVar(&depsCheck, "check", false, "Exit non-zero when a required app (transitively) is missing and cannot be satisfied")
+	depsCmd.Flags().BoolVar(&depsJSON, "json", false, "Print the dependency report and installation plan as JSON")
+	depsCmd.Flags().StringVar(&depsBenchPath, "bench-path", "", "Bench path to check which apps are already installed and satisfied")
+	depsCmd.Flags().StringVar(&depsRepoName, "repo", "", "Limit remote repository resolution to a specific configured repository")
+	depsCmd.Flags().BoolVar(&depsNoRemote, "no-remote", false, "Disable remote repository querying (local FPM store and bench only)")
 	rootCmd.AddCommand(depsCmd)
 }

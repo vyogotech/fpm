@@ -149,8 +149,54 @@ func TestLoadConfig(t *testing.T) {
 		loadedCfg, err := LoadConfig()
 		require.NoError(t, err)
 
-		expectedAppsBasePath := filepath.Join(mockHomeDir, ".fpm", "apps") // Should use default
+		expectedAppsBasePath := filepath.Join(mockHomeDir, ".fpm", "apps")
 		assert.Equal(t, expectedAppsBasePath, loadedCfg.AppsBasePath)
 	})
 
+	t.Run("RepositoryConfig OCI Fields", func(t *testing.T) {
+		mockHomeDir := t.TempDir()
+		t.Setenv("HOME", mockHomeDir)
+
+		fpmConfigDir := filepath.Join(mockHomeDir, ".fpm")
+		err := os.MkdirAll(fpmConfigDir, 0755)
+		require.NoError(t, err)
+
+		configFile := filepath.Join(fpmConfigDir, "config.json")
+		configData := []byte(`{
+			"repositories": {
+				"ghcr": {
+					"name": "ghcr",
+					"url": "ghcr.io/vyogotech/fpm",
+					"priority": 1,
+					"username": "bot",
+					"type": "oci",
+					"plain_http": true,
+					"insecure": true
+				},
+				"legacy": {
+					"name": "legacy",
+					"url": "https://fpm.example.com",
+					"priority": 10
+				}
+			}
+		}`)
+		err = os.WriteFile(configFile, configData, 0644)
+		require.NoError(t, err)
+
+		loadedCfg, err := LoadConfig()
+		require.NoError(t, err)
+		require.NotNil(t, loadedCfg.Repositories)
+
+		ghcrRepo, ok := loadedCfg.Repositories["ghcr"]
+		require.True(t, ok)
+		assert.Equal(t, "oci", ghcrRepo.Type)
+		assert.True(t, ghcrRepo.PlainHTTP)
+		assert.True(t, ghcrRepo.Insecure)
+
+		legacyRepo, ok := loadedCfg.Repositories["legacy"]
+		require.True(t, ok)
+		assert.Equal(t, "", legacyRepo.Type)
+		assert.False(t, legacyRepo.PlainHTTP)
+		assert.False(t, legacyRepo.Insecure)
+	})
 }
