@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"fpm/internal/config"
 	"fpm/internal/repository"
@@ -17,8 +18,11 @@ var repoCmd = &cobra.Command{
 }
 
 var (
-	repoAddPriority int    // Priority flag for the add command
-	repoAddUsername string // Username for repositories requiring authentication
+	repoAddPriority  int    // Priority flag for the add command
+	repoAddUsername  string // Username for repositories requiring authentication
+	repoAddType      string // Repository backend type: "http" or "oci"
+	repoAddPlainHTTP bool   // Use plain HTTP for OCI registries
+	repoAddInsecure  bool   // Skip TLS verification
 )
 
 // repoAddCmd represents the repo add command
@@ -36,11 +40,22 @@ var repoAddCmd = &cobra.Command{
 			return fmt.Errorf("failed to initialize FPM configuration: %w", err)
 		}
 
+		backendType := strings.ToLower(strings.TrimSpace(repoAddType))
+		if backendType != "" && backendType != "http" && backendType != "webdav" && backendType != "oci" {
+			return fmt.Errorf("invalid repository type %q: expected 'http' or 'oci'", repoAddType)
+		}
+		if backendType == "webdav" {
+			backendType = "http"
+		}
+
 		newRepo := config.RepositoryConfig{
-			Name:     repoName,
-			URL:      repoURL,
-			Priority: repoAddPriority,
-			Username: repoAddUsername,
+			Name:      repoName,
+			URL:       repoURL,
+			Priority:  repoAddPriority,
+			Username:  repoAddUsername,
+			Type:      backendType,
+			PlainHTTP: repoAddPlainHTTP,
+			Insecure:  repoAddInsecure,
 		}
 
 		if err := config.AddRepository(cfg, newRepo); err != nil {
@@ -51,7 +66,11 @@ var repoAddCmd = &cobra.Command{
 			return fmt.Errorf("failed to save updated FPM configuration: %w", err)
 		}
 
-		fmt.Printf("Repository '%s' (%s) added successfully with priority %d.\n", repoName, repoURL, repoAddPriority)
+		if backendType == "oci" {
+			fmt.Printf("Repository '%s' (%s, type: oci) added successfully with priority %d.\n", repoName, repoURL, repoAddPriority)
+		} else {
+			fmt.Printf("Repository '%s' (%s) added successfully with priority %d.\n", repoName, repoURL, repoAddPriority)
+		}
 		if repoAddUsername != "" {
 			// Say where the password comes from, since it is deliberately not stored.
 			fmt.Printf("Authenticating as '%s'. Supply the password via %s (or %s), "+
@@ -170,16 +189,19 @@ var repoListCmd = &cobra.Command{
 		}
 
 		// Print a header
-		// Consider using a table library for nicer output if more fields are added later
-		fmt.Printf("%-20s %-50s %-10s %s\n", "NAME", "URL", "PRIORITY", "USERNAME")
-		fmt.Printf("%-20s %-50s %-10s %s\n", "----", "---", "--------", "--------") // Simple separator
+		fmt.Printf("%-20s %-10s %-50s %-10s %s\n", "NAME", "TYPE", "URL", "PRIORITY", "USERNAME")
+		fmt.Printf("%-20s %-10s %-50s %-10s %s\n", "----", "----", "---", "--------", "--------")
 
 		for _, repo := range repos {
 			username := repo.Username
 			if username == "" {
 				username = "-"
 			}
-			fmt.Printf("%-20s %-50s %-10d %s\n", repo.Name, repo.URL, repo.Priority, username)
+			repoType := repo.Type
+			if repoType == "" {
+				repoType = "http"
+			}
+			fmt.Printf("%-20s %-10s %-50s %-10d %s\n", repo.Name, repoType, repo.URL, repo.Priority, username)
 		}
 
 		return nil
@@ -190,6 +212,9 @@ func init() {
 	// Flags for repoAddCmd
 	repoAddCmd.Flags().StringVar(&repoAddUsername, "username", "", "Username for a repository requiring authentication (the password is supplied via environment or prompt, never stored)")
 	repoAddCmd.Flags().IntVarP(&repoAddPriority, "priority", "p", 0, "Priority of the repository (lower number means higher priority)")
+	repoAddCmd.Flags().StringVar(&repoAddType, "type", "", "Repository type: 'http' (WebDAV/Nginx, default) or 'oci' (OCI container registry)")
+	repoAddCmd.Flags().BoolVar(&repoAddPlainHTTP, "plain-http", false, "Use plain HTTP for OCI registry connections (e.g. localhost:5000)")
+	repoAddCmd.Flags().BoolVar(&repoAddInsecure, "insecure", false, "Skip TLS verification for OCI registry connections")
 
 	// Add subcommands to repoCmd
 	repoCmd.AddCommand(repoAddCmd)

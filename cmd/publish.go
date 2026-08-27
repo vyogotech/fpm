@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,10 +14,11 @@ import (
 
 	"fpm/internal/archive" // For archive.VerifyArchiveContentChecksum
 	"fpm/internal/config"
-	"fpm/internal/metadata"   // For metadata.ReadMetadataFromFPMArchive
-	"fpm/internal/repository" // For repository.FetchRemotePackageMetadata, etc.
-	"fpm/internal/semver"     // For correct latest-version selection
-	"fpm/internal/utils"      // For utils.CalculateFileChecksum
+	"fpm/internal/metadata"    // For metadata.ReadMetadataFromFPMArchive
+	"fpm/internal/ociregistry" // For OCI registry publishing
+	"fpm/internal/repository"  // For repository.FetchRemotePackageMetadata, etc.
+	"fpm/internal/semver"      // For correct latest-version selection
+	"fpm/internal/utils"       // For utils.CalculateFileChecksum
 
 	"github.com/spf13/cobra"
 )
@@ -133,6 +135,46 @@ to publish from the local FPM app store.`,
 		}
 		fmt.Printf("Publishing to repository: %s (%s)\n", targetRepo.Name, targetRepo.URL)
 
+		// Verify the archive's payload still matches the checksum recorded inside it,
+		// before anything is uploaded, so a tampered package never reaches a repository.
+		if err := archive.VerifyArchiveContentChecksum(fpmFilePathToPublish, currentAppMeta.ContentChecksum); err != nil {
+			return fmt.Errorf("integrity check failed for %s: %w", fpmFilePathToPublish, err)
+		}
+		fmt.Printf("Verified package contents against checksum %s.\n", currentAppMeta.ContentChecksum)
+
+		// OCI Repository Backend
+		if targetRepo.Type == "oci" {
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+
+			// Check if version already exists
+			exists, _, err := ociregistry.Exists(ctx, targetRepo, appOrg, appName, appVersion)
+			if err != nil {
+				return fmt.Errorf("failed to check if version %s exists in OCI repository %s: %w", appVersion, targetRepo.Name, err)
+			}
+			if exists {
+				return fmt.Errorf("version %s for package %s/%s already exists in OCI repository %s", appVersion, appOrg, appName, targetRepo.Name)
+			}
+
+			var extraTags []string
+			if currentAppMeta.CommitSHA != "" {
+				extraTags = append(extraTags, currentAppMeta.CommitSHA)
+			}
+
+			fmt.Printf("Pushing OCI package layer and manifest to %s (%s/%s:%s)...\n", targetRepo.Name, appOrg, appName, appVersion)
+			manifestDesc, err := ociregistry.Push(ctx, targetRepo, fpmFilePathToPublish, currentAppMeta, extraTags)
+			if err != nil {
+				return fmt.Errorf("failed to publish to OCI repository %s: %w", targetRepo.Name, err)
+			}
+
+			fmt.Printf("Successfully published package %s/%s version %s to OCI repository %s.\n", appOrg, appName, appVersion, targetRepo.Name)
+			fmt.Printf("  Manifest Digest: %s (%d bytes)\n", manifestDesc.Digest.String(), manifestDesc.Size)
+			return nil
+		}
+
+		// WebDAV / HTTP Repository Backend
 		// Publishing writes to the repository, which is exactly what a secured repository
 		// requires credentials for, so resolve them before any request is made.
 		creds, err := repository.ResolveCredentials(targetRepo.Name, targetRepo.Username, true)
@@ -187,13 +229,6 @@ to publish from the local FPM app store.`,
 		if err != nil {
 			return fmt.Errorf("error constructing FPM upload URL: %w", err)
 		}
-
-		// Verify the archive's payload still matches the checksum recorded inside it,
-		// before anything is uploaded, so a tampered package never reaches a repository.
-		if err := archive.VerifyArchiveContentChecksum(fpmFilePathToPublish, currentAppMeta.ContentChecksum); err != nil {
-			return fmt.Errorf("integrity check failed for %s: %w", fpmFilePathToPublish, err)
-		}
-		fmt.Printf("Verified package contents against checksum %s.\n", currentAppMeta.ContentChecksum)
 
 		// ChecksumSHA256 in the repository metadata covers the raw .fpm bytes so clients
 		// can verify the download itself. It is intentionally a different value from

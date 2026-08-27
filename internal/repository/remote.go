@@ -2,6 +2,7 @@ package repository
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,10 +12,50 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
-	// "fpm/internal/config" // Not directly needed by these functions, URL is passed in
-	// "fpm/internal/utils" // For checksum of uploaded file, if done client-side before upload
+
+	"fpm/internal/config"
 )
+
+// OCIDriver defines the interface for OCI repository operations.
+type OCIDriver interface {
+	Pull(ctx context.Context, repo config.RepositoryConfig, org, appName, versionOrDigest, targetPath string) (*PackageVersionMetadata, error)
+	FetchMetadata(ctx context.Context, repo config.RepositoryConfig, org, appName string) (*PackageMetadata, bool, error)
+	FetchVersionMetadata(ctx context.Context, repo config.RepositoryConfig, org, appName, version string) (*PackageVersionMetadata, bool, error)
+	Exists(ctx context.Context, repo config.RepositoryConfig, org, appName, version string) (bool, *PackageVersionMetadata, error)
+}
+
+var (
+	driverMu        sync.RWMutex
+	globalOCIDriver OCIDriver
+)
+
+// RegisterOCIDriver registers the driver for type: oci.
+func RegisterOCIDriver(d OCIDriver) {
+	driverMu.Lock()
+	defer driverMu.Unlock()
+	globalOCIDriver = d
+}
+
+// GetOCIDriver returns the registered OCIDriver.
+func GetOCIDriver() OCIDriver {
+	driverMu.RLock()
+	defer driverMu.RUnlock()
+	return globalOCIDriver
+}
+
+// FetchRemotePackageMetadataForRepo fetches package metadata, automatically dispatching to OCI or HTTP.
+func FetchRemotePackageMetadataForRepo(repo config.RepositoryConfig, org, appName string, client *http.Client) (*PackageMetadata, bool, error) {
+	if repo.Type == "oci" {
+		driver := GetOCIDriver()
+		if driver == nil {
+			return nil, false, fmt.Errorf("OCI driver is not registered")
+		}
+		return driver.FetchMetadata(context.Background(), repo, org, appName)
+	}
+	return FetchRemotePackageMetadata(repo.URL, org, appName, client)
+}
 
 // FetchRemotePackageMetadata fetches the package-metadata.json from a remote repository.
 // The boolean return value indicates if metadata was found (true) or not (false, e.g. 404).
@@ -37,7 +78,7 @@ func FetchRemotePackageMetadata(repoBaseURL, org, appName string, client *http.C
 	}
 	req.Header.Set("User-Agent", userAgent)
 
-	fmt.Printf("Fetching remote metadata from %s...\n", fullMetadataURL)
+	fmt.Fprintf(os.Stderr, "Fetching remote metadata from %s...\n", fullMetadataURL)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to fetch metadata %s: %w", fullMetadataURL, err)

@@ -13,11 +13,14 @@ type RepositoryConfig struct {
 	Name     string `json:"name"`     // User-defined unique name for the repository
 	URL      string `json:"url"`      // Base URL of the FPM repository
 	Priority int    `json:"priority"` // Lower numbers mean higher priority
-	// Username for repositories requiring HTTP Basic Auth. The password is deliberately
+	// Username for repositories requiring authentication. The password is deliberately
 	// not stored here: this file is plain text and commonly ends up in backups and
 	// dotfile repositories. It is supplied through the environment or an interactive
 	// prompt instead.
-	Username string `json:"username,omitempty"`
+	Username  string `json:"username,omitempty"`
+	Type      string `json:"type,omitempty"`       // Repository backend type: "" or "http" (default), "oci"
+	PlainHTTP bool   `json:"plain_http,omitempty"` // Use plain HTTP for OCI registries (e.g. localhost:5000)
+	Insecure  bool   `json:"insecure,omitempty"`   // Skip TLS verification for OCI registries
 }
 
 // FPMConfig defines the structure for FPM's configuration.

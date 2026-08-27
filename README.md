@@ -123,7 +123,7 @@ fpm package --version 1.0.0 --org myorg [--app-name my_app]
 `required_apps` · `1` anything else.
 
 #### `fpm install`
-Install a Frappe application package.
+Install a Frappe application package with automatic transitive dependency resolution.
 
 ```bash
 fpm install <org>/<app>==<version> --bench-path /path/to/bench [--site mysite.local]
@@ -131,33 +131,20 @@ fpm install <org>/<app>==<version> --bench-path /path/to/bench [--site mysite.lo
 
 **Flags:**
 - `--bench-path`: the Frappe bench to install into
-- `--site`: also install the app onto a site, by running what
-  `bench --site <site> install-app <app>` runs (`env/bin/python -m frappe.utils.bench_helper
-  frappe …`, so the `bench` CLI itself need not be installed). Without it the app is added
-  to the bench but not activated on any site — creating its DocTypes and running its
-  patches is a separate step only Frappe can perform.
-- `--skip-required-apps-check`: do not fail when a required app is missing from the local
-  store/bench (for benches whose required apps were installed outside fpm)
-- `--ignore-platform-mismatch`: do not fail when the vendored wheels target another
-  platform or Python version; pip then decides
+- `--deps`: automatically resolve, fetch, and cascade-install missing transitive dependencies into the bench (default: true)
+- `--no-deps`: install only the specified package without pulling dependencies
+- `--dry-run`: compute and print the full installation plan and actions without mutating the bench
+- `--rollback`: automatically rollback bench state on mid-flight failure using transactional LIFO journals (default: true)
+- `--site`: also install the app onto a site, by running what `bench --site <site> install-app <app>` runs (`env/bin/python -m frappe.utils.bench_helper frappe …`)
+- `--skip-required-apps-check`: do not fail when a required app is missing from the local store/bench
+- `--ignore-platform-mismatch`: do not fail when the vendored wheels target another platform or Python version
 
-**Pre-install checks** (nothing is fetched; the bench is not touched until they pass):
-
-- every `required_apps` pin, transitively, must already be in the local FPM store — a
-  missing one fails with exit code 6 (with `--site`, each must also already be in the bench);
-- the package's vendored wheels must match this host's OS/architecture and the bench's
-  `env/bin/python` version — a mismatch fails with exit code 7.
-
-Then the app is linked into `apps/`, its assets are deployed (see [Assets](#assets)),
-pip installs it with `--no-index --find-links wheels/`, and `sites/apps.txt` is updated.
-
-**Install never builds.** No node, yarn or esbuild runs and no wheel is compiled on the
-target: everything was produced by `fpm package`. The only pip build step in an install
-log is `Building editable for <app>` — pip writing the app's own editable metadata with
-the vendored `flit_core`, exactly as `bench install-app` does.
+**Pre-install checks & Transitive Resolution:**
+- By default, FPM traverses `required_apps` (and any nested requirements), fetches missing packages from configured repositories (HTTP or OCI) into the local store, and installs them in deepest-first topological order.
+- Before mutating the bench, an in-memory snapshot is recorded. On any installation error, the rollback engine restores the bench cleanly without deleting pre-existing apps.
 
 #### `fpm publish`
-Publish a package to a repository.
+Publish a package to an HTTP or OCI container repository.
 
 ```bash
 fpm publish <org>/<app>==<version> [--repo repository-name]
@@ -167,48 +154,41 @@ fpm publish --from-file ./my-app-1.0.0.fpm --repo repository-name
 ### Repository Management
 
 #### `fpm repo add`
-Add a new FPM package repository.
+Add a new FPM package repository (WebDAV/Nginx or OCI container registry).
 
 ```bash
-fpm repo add <name> <url> [--priority <number>] [--username <user>]
-```
-
-**Example:**
-```bash
+# HTTP/WebDAV Repository
 fpm repo add company-repo https://fpm.company.com --priority 10 --username deployer
-fpm repo add local-dev http://localhost:8080 --priority 1
+
+# OCI Container Registry (e.g. GitHub Container Registry or local registry)
+fpm repo add ghcr ghcr.io/vyogotech/fpm --type oci --username myuser
+fpm repo add local-oci localhost:5000/fpm --type oci --plain-http
 ```
+
+**Flags:**
+- `--type`: Repository type (`http` [default] or `oci`)
+- `--priority`: Priority order for package resolution (lower number = higher priority)
+- `--username`: Username for authenticated operations
+- `--plain-http`: Use plain HTTP for OCI registries (e.g. localhost development)
+- `--insecure`: Skip TLS verification for self-signed OCI registries
 
 ### Authenticating to a Repository
 
-The bundled repository server requires HTTP Basic Auth for all writes, so publishing to
-one needs credentials. Record the username with `--username`; the **password is never
-stored in `~/.fpm/config.json`**, which is plain text and tends to end up in backups and
-dotfile repositories.
+Passwords and tokens are **never stored in plaintext `~/.fpm/config.json`**. Credentials are automatically resolved in priority order:
 
-The password is resolved in order:
-
-1. `FPM_REPO_<NAME>_PASSWORD` — repository-specific (`company-repo` → `FPM_REPO_COMPANY_REPO_PASSWORD`)
-2. `FPM_REPO_PASSWORD` — applies to any repository, for single-repository and CI setups
-3. An interactive prompt, with no echo
+1. **Generic environment variables**: `REGISTRY_PASSWORD`, `FPM_REGISTRY_PASSWORD`, `FPM_REGISTRY_TOKEN`, `REGISTRY_USERNAME`, `FPM_REGISTRY_USERNAME`
+2. **Repository-specific variables**: `FPM_REPO_<NAME>_PASSWORD` (`ghcr` → `FPM_REPO_GHCR_PASSWORD`)
+3. **Docker/Podman credential store**: `~/.docker/config.json` (for OCI repositories)
+4. **Interactive prompt**: masked prompt with no terminal echo
 
 ```bash
-# CI / scripted
-export FPM_REPO_COMPANY_REPO_PASSWORD=...
-fpm publish myorg/my-app==1.0.0 --repo company-repo
-
-# interactive - prompts, nothing lands in shell history
-fpm publish myorg/my-app==1.0.0 --repo company-repo
+# Scripted / CI (GitHub Actions)
+export REGISTRY_PASSWORD=${{ secrets.GITHUB_TOKEN }}
+fpm publish myorg/my-app==1.0.0 --repo ghcr
 ```
 
-Credentials are scoped to the repository host, so they are not forwarded if a repository
-redirects to a CDN or object store on another origin. A repository configured without a
-username is treated as public and no credentials are sent.
-
-Create repository users with [`scripts/add-user.sh`](scripts/add-user.sh).
-
 #### `fpm repo list`
-List all configured repositories.
+List all configured repositories and their types (`http` vs `oci`).
 
 ```bash
 fpm repo list
@@ -298,23 +278,21 @@ fpm get-app company-repo/frappe/erpnext  # Gets latest
 ### Utilities
 
 #### `fpm deps`
-Inspect the dependencies a package declares and bundles.
+Inspect the dependencies a package declares and bundles, and calculate the exact installation plan and actions for a target bench.
 
 ```bash
-fpm deps ./my-app-1.0.0.fpm      # a package file
-fpm deps myorg/my-app            # latest in the local store
-fpm deps myorg/my-app==1.0.0     # a specific version
+fpm deps ./my-app-1.0.0.fpm                      # a package file
+fpm deps myorg/my-app                            # latest in local store / configured repos
+fpm deps frappe/hrms==15.2.0 --bench-path /bench # check against bench apps
+fpm deps frappe/hrms --json                      # machine-readable installation queue & plan
 ```
 
-Reports the Python dependencies declared in the `requirements.txt` and `pyproject.toml`
-the package ships, whether it bundles wheels for offline installation (and the locked
-versions from `wheels/fpm-lock.txt`), and the Frappe apps it requires — the transitive
-`required_apps` closure, each marked present in or missing from the local FPM store — so you
-can tell before installing whether it will reach the network or be refused.
+Reports:
+- Declared and vendored Python dependencies / wheels.
+- Required Frappe apps (`hooks.py` `required_apps`) with transitive closure.
+- Installation Plan & Order: Categorizes each app as `SKIP` (already satisfied in `--bench-path`), `INSTALL` (in local store), or `FETCH & INSTALL` (from configured HTTP/OCI repository).
 
-**Flags:** `--check` exits with status 6 when a required app is missing; `--json` prints a
-machine-readable report (`required_apps`, `missing_required_apps`, `all_required_present`,
-`pins`, `commit_sha`, `asset_bundles`, …).
+**Flags:** `--bench-path <path>`, `--repo <name>`, `--no-remote`, `--check` (exit non-zero if requirements cannot be satisfied), `--json` (emits `install_plan` and `install_queue` arrays).
 
 #### `fpm mirror`
 Bulk-build and publish official Frappe apps from the checked-in catalog.
