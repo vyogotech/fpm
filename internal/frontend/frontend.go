@@ -202,6 +202,14 @@ func Detect(sourcePath, appName string) (*Project, error) {
 		if !ok || strings.TrimSpace(pkg.Scripts["build"]) == "" {
 			continue
 		}
+		// frappe's own root build script is `node esbuild`: the framework's bundler,
+		// which compiles every app in a bench and reads sites/apps.txt to know which.
+		// It is `bench build`, not an app frontend, and internal/benchbuild owns it —
+		// running it here fails on a missing apps.txt and would be duplicated work if
+		// it did not.
+		if isFrappeBundler(dir, pkg.Scripts["build"]) {
+			continue
+		}
 		rel, relErr := filepath.Rel(root, dir)
 		if relErr != nil {
 			rel = dir
@@ -1029,6 +1037,25 @@ var defaultSiteConfig = map[string]any{
 	"webserver_port":     8000,
 }
 
+// isFrappeBundler reports whether a build script is frappe's own esbuild entry point
+// rather than an app's frontend. Both conditions must hold: the script invokes esbuild
+// and the directory actually ships frappe's bundler, so an app that merely happens to
+// use esbuild for its own frontend is not skipped.
+func isFrappeBundler(dir, buildScript string) bool {
+	if !strings.Contains(buildScript, "esbuild") {
+		return false
+	}
+	for _, entry := range []string{
+		filepath.Join(dir, "esbuild", "esbuild.js"),
+		filepath.Join(dir, "esbuild", "index.js"),
+	} {
+		if fileExists(entry) {
+			return true
+		}
+	}
+	return false
+}
+
 // RequiresBench reports whether the checkout's frontend sources import the bench's
 // common_site_config.json, and so can only be built from <bench>/apps/<app>.
 //
@@ -1117,6 +1144,13 @@ func scaffoldBench(root, appName, siteConfigPath string, out io.Writer) (buildRo
 
 // siteConfig returns the common_site_config.json contents to build against and a
 // human description of where they came from.
+// DefaultSiteConfigJSON is frappe's default sites/common_site_config.json, rendered.
+// Exported so anything that lays out a bench-shaped working directory — the catalog
+// mirror's workspace, for one — writes the same contents this package would.
+func DefaultSiteConfigJSON() ([]byte, error) {
+	return json.MarshalIndent(defaultSiteConfig, "", " ")
+}
+
 func siteConfig(path string) (data []byte, source string, err error) {
 	if path != "" {
 		data, err = os.ReadFile(path)

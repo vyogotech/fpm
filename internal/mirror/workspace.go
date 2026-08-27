@@ -5,11 +5,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"fpm/internal/frontend"
 )
 
 // Workspace is the persistent build cache: git checkouts reused across runs,
 // plus the pip and npm/yarn caches every subprocess is pointed at. Reusing all
 // three is what keeps a full-catalog run from re-downloading the world.
+//
+// The checkouts are laid out as a real bench — <cache>/bench/apps/<slug> beside
+// <cache>/bench/sites — because that is what frappe app frontends assume. They reach
+// the bench by relative path (crm's socket module imports
+// ../../../../sites/common_site_config.json), frappe-ui's vite plugin derives an app's
+// name and its www template from the apps/<app> segment, and helpdesk's build script
+// runs `cd ../../frappe/ui`. A checkout in a flat src/ directory satisfies none of
+// that, and each app fails differently and confusingly.
 type Workspace struct {
 	CacheDir string
 	NoClean  bool // keep checkout state between builds, for debugging
@@ -18,15 +28,31 @@ type Workspace struct {
 // NewWorkspace creates the cache layout under root.
 func NewWorkspace(root string, noClean bool) (*Workspace, error) {
 	w := &Workspace{CacheDir: root, NoClean: noClean}
-	for _, dir := range []string{w.srcRoot(), w.pipCache(), w.npmCache(), w.yarnCache()} {
+	for _, dir := range []string{w.srcRoot(), w.sitesDir(), w.pipCache(), w.npmCache(), w.yarnCache()} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create cache directory %s: %w", dir, err)
+		}
+	}
+	// The one file that makes the layout a bench as far as an app build is concerned.
+	// Never overwritten, so a caller pointing --cache-dir at a real bench keeps its own.
+	config := filepath.Join(w.sitesDir(), "common_site_config.json")
+	if _, err := os.Stat(config); os.IsNotExist(err) {
+		data, err := frontend.DefaultSiteConfigJSON()
+		if err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(config, data, 0o644); err != nil {
+			return nil, fmt.Errorf("failed to write %s: %w", config, err)
 		}
 	}
 	return w, nil
 }
 
-func (w *Workspace) srcRoot() string   { return filepath.Join(w.CacheDir, "src") }
+// BenchRoot is the bench-shaped directory the checkouts live under.
+func (w *Workspace) BenchRoot() string { return filepath.Join(w.CacheDir, "bench") }
+
+func (w *Workspace) srcRoot() string   { return filepath.Join(w.BenchRoot(), "apps") }
+func (w *Workspace) sitesDir() string  { return filepath.Join(w.BenchRoot(), "sites") }
 func (w *Workspace) pipCache() string  { return filepath.Join(w.CacheDir, "pip") }
 func (w *Workspace) npmCache() string  { return filepath.Join(w.CacheDir, "npm") }
 func (w *Workspace) yarnCache() string { return filepath.Join(w.CacheDir, "npm", "yarn") }
