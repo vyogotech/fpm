@@ -197,3 +197,50 @@ func TestDepsOutputDoesNotClaimFPMDependencyResolution(t *testing.T) {
 	require.True(t, strings.Contains(output, "not resolved during install"),
 		"output must not imply FPM dependency resolution exists:\n%s", output)
 }
+
+func TestDepsInstallationPlanAndBenchDetection(t *testing.T) {
+	dir := t.TempDir()
+	benchDir := filepath.Join(dir, "frappe-bench")
+	require.NoError(t, os.MkdirAll(filepath.Join(benchDir, "apps", "payments", "payments"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(benchDir, "sites"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(benchDir, "sites", "apps.txt"), []byte("frappe\npayments\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(benchDir, "apps", "payments", "payments", "hooks.py"), []byte("app_name = 'payments'\napp_version = '15.0.0'\n"), 0o644))
+
+	fpmPath := buildDepsFixture(t, dir, "frappe", "hrms", "15.2.0",
+		metadata.AppMetadata{
+			PackageType: "prod",
+			RequiredApps: []metadata.RequiredApp{
+				{Org: "frappe", Name: "payments", Version: "15.0.0"},
+			},
+		}, nil)
+
+	output, err := SharedExecuteCommand(rootCmd, "deps", fpmPath, "--bench-path", benchDir)
+	require.NoError(t, err)
+
+	require.Contains(t, output, "payments==15.0.0 -> SKIP (already present in bench)")
+	require.Contains(t, output, "frappe/hrms==15.2.0 (target) -> INSTALL into bench")
+	require.Contains(t, output, "Total apps to be installed / upgraded in bench: 1")
+}
+
+func TestDepsJSONOutputWithInstallQueue(t *testing.T) {
+	dir := t.TempDir()
+	fpmPath := buildDepsFixture(t, dir, "frappe", "hrms", "15.2.0",
+		metadata.AppMetadata{
+			PackageType: "prod",
+			RequiredApps: []metadata.RequiredApp{
+				{Org: "frappe", Name: "erpnext", Version: "15.2.0"},
+			},
+		}, nil)
+
+	output, err := SharedExecuteCommand(rootCmd, "deps", fpmPath, "--json", "--no-remote")
+	require.NoError(t, err)
+
+	var report DepsReport
+	require.NoError(t, json.Unmarshal([]byte(output), &report))
+
+	require.Equal(t, "frappe", report.Org)
+	require.Equal(t, "hrms", report.App)
+	require.Equal(t, "15.2.0", report.Version)
+	require.Contains(t, report.InstallQueue, "frappe/hrms==15.2.0")
+	require.NotEmpty(t, report.InstallPlan)
+}

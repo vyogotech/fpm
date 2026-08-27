@@ -231,7 +231,7 @@ func lookupExists(cfg *config.FPMConfig, org, app, version string, q existsQuery
 				fmt.Fprintf(os.Stderr, "Skipping repository %s: %v\n", repo.Name, err)
 				continue
 			}
-			pkg, ok, err := repository.FetchRemotePackageMetadata(repo.URL, org, app, client)
+			pkg, ok, err := repository.FetchRemotePackageMetadataForRepo(repo, org, app, client)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error querying repository %s: %v\n", repo.Name, err)
 				continue

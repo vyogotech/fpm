@@ -93,6 +93,13 @@ func TestRepoAddCmd(t *testing.T) {
 			repoToVerify: &config.RepositoryConfig{Name: "local", URL: "file:///var/tmp/fpm-repo", Priority: 0},
 		},
 		{
+			name:         "add oci repo",
+			args:         []string{"repo", "add", "ghcr", "ghcr.io/vyogotech/fpm", "--type", "oci", "--priority", "2", "--plain-http"},
+			expectedOut:  "Repository 'ghcr' (ghcr.io/vyogotech/fpm, type: oci) added successfully with priority 2.",
+			expectErr:    false,
+			repoToVerify: &config.RepositoryConfig{Name: "ghcr", URL: "ghcr.io/vyogotech/fpm", Priority: 2, Type: "oci", PlainHTTP: true},
+		},
+		{
 			name:      "add existing repo",
 			args:      []string{"repo", "add", "central", "http://new-url.com"}, // "central" already added
 			expectErr: true,
@@ -115,11 +122,23 @@ func TestRepoAddCmd(t *testing.T) {
 			// This is crucial because it's not reset automatically by Cobra for package-level vars.
 			originalRepoAddPriority := repoAddPriority // Save to restore if needed, though not strictly necessary here
 			repoAddPriority = 0                        // Reset to its default value (as defined by its flag)
+			repoAddType = ""
+			repoAddPlainHTTP = false
+			repoAddInsecure = false
 
 			// Also reset the flag value in the command's flagset to its default.
 			// This ensures that if a previous test case set it, it doesn't persist for cases that don't set it.
 			if repoAddCmd.Flags().Lookup("priority") != nil {
 				repoAddCmd.Flags().Lookup("priority").Value.Set(repoAddCmd.Flags().Lookup("priority").DefValue)
+			}
+			if repoAddCmd.Flags().Lookup("type") != nil {
+				repoAddCmd.Flags().Lookup("type").Value.Set("")
+			}
+			if repoAddCmd.Flags().Lookup("plain-http") != nil {
+				repoAddCmd.Flags().Lookup("plain-http").Value.Set("false")
+			}
+			if repoAddCmd.Flags().Lookup("insecure") != nil {
+				repoAddCmd.Flags().Lookup("insecure").Value.Set("false")
 			}
 
 			output, err := SharedExecuteCommand(rootCmd, tc.args...)
@@ -138,11 +157,17 @@ func TestRepoAddCmd(t *testing.T) {
 					assert.True(t, found, "Repository %s not found in config after adding", tc.repoToVerify.Name)
 					if found {
 						assert.Equal(t, tc.repoToVerify.URL, repoConf.URL, "Repo URL not saved correctly")
-						assert.Equal(t, tc.repoToVerify.Priority, repoConf.Priority, "Repo priority not saved correctly")
+						assert.Equal(t, tc.repoToVerify.Priority, repoConf.Priority, "Repo Priority not saved correctly")
+						if tc.repoToVerify.Type != "" {
+							assert.Equal(t, tc.repoToVerify.Type, repoConf.Type, "Repo Type not saved correctly")
+						}
+						if tc.repoToVerify.PlainHTTP {
+							assert.True(t, repoConf.PlainHTTP, "Repo PlainHTTP not saved correctly")
+						}
 					}
 				}
 			}
-			repoAddPriority = originalRepoAddPriority // Restore, mainly for clarity
+			_ = originalRepoAddPriority
 		})
 	}
 }
@@ -160,8 +185,14 @@ func TestRepoListCmd(t *testing.T) {
 	// Helper to reset repoAddCmd flags and priority var
 	resetAddCmd := func() {
 		repoAddPriority = 0
+		repoAddType = ""
+		repoAddPlainHTTP = false
+		repoAddInsecure = false
 		if repoAddCmd.Flags().Lookup("priority") != nil {
 			repoAddCmd.Flags().Lookup("priority").Value.Set(repoAddCmd.Flags().Lookup("priority").DefValue)
+		}
+		if repoAddCmd.Flags().Lookup("type") != nil {
+			repoAddCmd.Flags().Lookup("type").Value.Set("")
 		}
 	}
 
@@ -184,12 +215,9 @@ func TestRepoListCmd(t *testing.T) {
 
 	// Output should be sorted: repo3 (prio 0), then repo2 (prio 5), then repo1 (prio 10)
 	expectedLines := []string{
-		// Header lines are present in the actual output, so we check for content lines
-		// "NAME                 URL                                                PRIORITY",
-		// "----                 ---                                                --------",
-		"repo3                url3                                               0          -",
-		"repo2                url2                                               5          -",
-		"repo1                url1                                               10         -",
+		"repo3 http url3 0 -",
+		"repo2 http url2 5 -",
+		"repo1 http url1 10 -",
 	}
 
 	normalizedOutput := strings.ReplaceAll(strings.TrimSpace(output), "\r\n", "\n")
