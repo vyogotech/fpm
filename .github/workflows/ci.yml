@@ -160,3 +160,37 @@ jobs:
 
       - name: Registry write-protection acceptance tests
         run: go test -tags integration -count=1 -v ./test/registry/...
+
+  offline-integration:
+    name: SNE Offline Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Run SNE Integration Test Suite
+        run: |
+          FPM_OFFLINE_LOCAL=1 ./test/offline/run.sh all
+
+      - name: Upload SNE Test Results Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sne-offline-results
+          path: test/offline/.work/local/out/
+

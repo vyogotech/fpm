@@ -125,24 +125,9 @@ func exportBundle(rootFpm, outDir string, cfg *config.FPMConfig, remote bool, re
 	}
 	rootID := fmt.Sprintf("%s/%s==%s", meta.Org, meta.AppName, meta.PackageVersion)
 
-	var closure []resolver.ClosureEntry
-	for attempt := 0; ; attempt++ {
-		var missing []resolver.Missing
-		closure, missing, err = resolver.CheckClosure(cfg.AppsBasePath, benchPath, meta.RequiredApps, rootID)
-		if err != nil {
-			return nil, err
-		}
-		if len(missing) == 0 {
-			break
-		}
-		if !remote || attempt >= 32 {
-			return nil, resolver.MissingError(rootID, missing)
-		}
-		for _, m := range missing {
-			if err := fetchIntoStore(cfg, m.App, repoName); err != nil {
-				return nil, fmt.Errorf("%w: %s (required by %s): %v", resolver.ErrMissing, m.App.Identifier(), m.RequiredBy, err)
-			}
-		}
+	closure, err := resolveTransitiveDeps(cfg, meta.RequiredApps, rootID, benchPath, repoName, remote)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
@@ -194,6 +179,33 @@ func copyIntoBundle(src, outDir, org, app, version, requiredBy string) (BundleEn
 		entry.CommitSHA = m.CommitSHA
 	}
 	return entry, nil
+}
+
+// resolveTransitiveDeps walks required_apps, fetching missing dependencies from
+// configured repositories into the local store until the closure is satisfied.
+// Returns the closure in topological (deepest-first) order.
+func resolveTransitiveDeps(cfg *config.FPMConfig, requiredApps []metadata.RequiredApp, rootID, benchPath, repoName string, remote bool) ([]resolver.ClosureEntry, error) {
+	var closure []resolver.ClosureEntry
+	var err error
+	for attempt := 0; ; attempt++ {
+		var missing []resolver.Missing
+		closure, missing, err = resolver.CheckClosure(cfg.AppsBasePath, benchPath, requiredApps, rootID)
+		if err != nil {
+			return nil, err
+		}
+		if len(missing) == 0 {
+			break
+		}
+		if !remote || attempt >= 32 {
+			return nil, resolver.MissingError(rootID, missing)
+		}
+		for _, m := range missing {
+			if err := fetchIntoStore(cfg, m.App, repoName); err != nil {
+				return nil, fmt.Errorf("%w: %s (required by %s): %v", resolver.ErrMissing, m.App.Identifier(), m.RequiredBy, err)
+			}
+		}
+	}
+	return closure, nil
 }
 
 // fetchIntoStore downloads a required package from the configured repositories (or

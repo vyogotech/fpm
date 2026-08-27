@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json" // For serving JSON metadata
+	"errors"
 	"fmt"
-	"fpm/internal/config"     // For config.LoadConfig() to find AppsBasePath
+	"fpm/internal/config"   // For config.LoadConfig() to find AppsBasePath
+	"fpm/internal/metadata" // For metadata types
 	"fpm/internal/repository" // For PackageMetadata struct
 	"github.com/spf13/pflag"
 	"io"
@@ -667,4 +669,271 @@ func resetInstallCmdFlags() {
 		f.Value.Set(f.DefValue)
 		f.Changed = false
 	})
+}
+
+// helper to build dummy .fpm with specific required_apps
+func buildFpmWithDeps(t *testing.T, org, app, version string, required []metadata.RequiredApp) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	meta := metadata.AppMetadata{
+		Org:            org,
+		AppName:        app,
+		PackageName:    app,
+		PackageVersion: version,
+		RequiredApps:   required,
+	}
+	metaBytes, err := json.Marshal(meta)
+	require.NoError(t, err)
+	w, err := zw.Create("app_metadata.json")
+	require.NoError(t, err)
+	_, err = w.Write(metaBytes)
+	require.NoError(t, err)
+
+	for _, f := range []string{"__init__.py", "hooks.py", "modules.txt"} {
+		w, err := zw.Create(app + "/" + f)
+		require.NoError(t, err)
+		_, err = w.Write([]byte(fmt.Sprintf("# %s\n__version__ = '%s'\n", app, version)))
+		require.NoError(t, err)
+	}
+	require.NoError(t, zw.Close())
+	return buf.Bytes()
+}
+
+func TestInstall_TransitiveDependencies_MultiRepo(t *testing.T) {
+	_, cleanup := setupTempFPMConfig(t)
+	defer cleanup()
+
+	// Repo 1: hosts frappe/payments==1.0.0 and frappe/erpnext==16.0.0 (requires payments)
+	paymentsFpm := buildFpmWithDeps(t, "frappe", "payments", "1.0.0", nil)
+	paymentsSum := sha256.Sum256(paymentsFpm)
+	erpnextFpm := buildFpmWithDeps(t, "frappe", "erpnext", "16.0.0", []metadata.RequiredApp{
+		{Name: "payments", Org: "frappe", Version: "1.0.0"},
+	})
+	erpnextSum := sha256.Sum256(erpnextFpm)
+
+	repo1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/metadata/frappe/payments/package-metadata.json":
+			json.NewEncoder(w).Encode(repository.PackageMetadata{
+				Org: "frappe", AppName: "payments", LatestVersion: "1.0.0",
+				Versions: map[string]repository.PackageVersionMetadata{
+					"1.0.0": {FPMPath: "artifacts/frappe/payments/1.0.0/payments-1.0.0.fpm", ChecksumSHA256: hex.EncodeToString(paymentsSum[:])},
+				},
+			})
+		case "/artifacts/frappe/payments/1.0.0/payments-1.0.0.fpm":
+			w.Write(paymentsFpm)
+		case "/metadata/frappe/erpnext/package-metadata.json":
+			json.NewEncoder(w).Encode(repository.PackageMetadata{
+				Org: "frappe", AppName: "erpnext", LatestVersion: "16.0.0",
+				Versions: map[string]repository.PackageVersionMetadata{
+					"16.0.0": {FPMPath: "artifacts/frappe/erpnext/16.0.0/erpnext-16.0.0.fpm", ChecksumSHA256: hex.EncodeToString(erpnextSum[:])},
+				},
+			})
+		case "/artifacts/frappe/erpnext/16.0.0/erpnext-16.0.0.fpm":
+			w.Write(erpnextFpm)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer repo1.Close()
+
+	// Repo 2: hosts acme/hrms==16.0.0 (requires erpnext)
+	hrmsFpm := buildFpmWithDeps(t, "acme", "hrms", "16.0.0", []metadata.RequiredApp{
+		{Name: "erpnext", Org: "frappe", Version: "16.0.0"},
+	})
+	hrmsSum := sha256.Sum256(hrmsFpm)
+
+	repo2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/metadata/acme/hrms/package-metadata.json":
+			json.NewEncoder(w).Encode(repository.PackageMetadata{
+				Org: "acme", AppName: "hrms", LatestVersion: "16.0.0",
+				Versions: map[string]repository.PackageVersionMetadata{
+					"16.0.0": {FPMPath: "artifacts/acme/hrms/16.0.0/hrms-16.0.0.fpm", ChecksumSHA256: hex.EncodeToString(hrmsSum[:])},
+				},
+			})
+		case "/artifacts/acme/hrms/16.0.0/hrms-16.0.0.fpm":
+			w.Write(hrmsFpm)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer repo2.Close()
+
+	// Add repos
+	SharedResetRepoCmdFlags()
+	_, err := SharedExecuteCommand(rootCmd, "repo", "add", "repo1", repo1.URL)
+	require.NoError(t, err)
+	SharedResetRepoCmdFlags()
+	_, err = SharedExecuteCommand(rootCmd, "repo", "add", "repo2", repo2.URL)
+	require.NoError(t, err)
+
+	// Mock Bench
+	bench := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(bench, "apps"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(bench, "sites"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(bench, "env", "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(bench, "env", "bin", "pip"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+
+	// Execute install
+	resetInstallCmdFlags()
+	out, err := SharedExecuteCommand(rootCmd, "install", "acme/hrms==16.0.0", "--bench-path", bench)
+	require.NoError(t, err, out)
+
+	// Verify apps were symlinked in bench
+	for _, app := range []string{"payments", "erpnext", "hrms"} {
+		_, err := os.Lstat(filepath.Join(bench, "apps", app))
+		assert.NoError(t, err, "app %s should be symlinked in bench", app)
+	}
+
+	// Verify apps.txt order
+	appsTxtBytes, err := os.ReadFile(filepath.Join(bench, "sites", "apps.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "payments\nerpnext\nhrms\n", string(appsTxtBytes))
+}
+
+func TestInstall_NoDepsFlag(t *testing.T) {
+	_, cleanup := setupTempFPMConfig(t)
+	defer cleanup()
+
+	// Package declaring required_apps
+	fpmBytes := buildFpmWithDeps(t, "acme", "solo", "1.0.0", []metadata.RequiredApp{
+		{Name: "missing_dep", Org: "acme", Version: "1.0.0"},
+	})
+	fpmFile := filepath.Join(t.TempDir(), "solo-1.0.0.fpm")
+	require.NoError(t, os.WriteFile(fpmFile, fpmBytes, 0o644))
+
+	bench := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(bench, "apps"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(bench, "sites"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(bench, "env", "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(bench, "env", "bin", "pip"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+
+	// With --no-deps and --skip-required-apps-check
+	resetInstallCmdFlags()
+	_, err := SharedExecuteCommand(rootCmd, "install", fpmFile, "--bench-path", bench, "--no-deps", "--skip-required-apps-check")
+	require.NoError(t, err)
+
+	_, err = os.Lstat(filepath.Join(bench, "apps", "solo"))
+	assert.NoError(t, err)
+}
+
+func TestInstall_DryRun(t *testing.T) {
+	_, cleanup := setupTempFPMConfig(t)
+	defer cleanup()
+
+	fpmBytes := buildFpmWithDeps(t, "acme", "dryapp", "1.0.0", nil)
+	fpmFile := filepath.Join(t.TempDir(), "dryapp-1.0.0.fpm")
+	require.NoError(t, os.WriteFile(fpmFile, fpmBytes, 0o644))
+
+	bench := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(bench, "apps"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(bench, "sites"), 0o755))
+
+	resetInstallCmdFlags()
+	out, err := SharedExecuteCommand(rootCmd, "install", fpmFile, "--bench-path", bench, "--dry-run")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Dry-run mode: 1 package(s) would be installed in order")
+	assert.Contains(t, out, "acme/dryapp==1.0.0")
+
+	// Bench should remain completely untouched
+	_, err = os.Lstat(filepath.Join(bench, "apps", "dryapp"))
+	assert.True(t, os.IsNotExist(err), "dry-run must not create symlink")
+}
+
+func TestInstall_RollbackSkipsPreExisting(t *testing.T) {
+	_, cleanup := setupTempFPMConfig(t)
+	defer cleanup()
+
+	bench := t.TempDir()
+	appsDir := filepath.Join(bench, "apps")
+	sitesDir := filepath.Join(bench, "sites")
+	envBinDir := filepath.Join(bench, "env", "bin")
+	require.NoError(t, os.MkdirAll(appsDir, 0o755))
+	require.NoError(t, os.MkdirAll(sitesDir, 0o755))
+	require.NoError(t, os.MkdirAll(envBinDir, 0o755))
+
+	// Pre-existing app in bench: "pre_app"
+	preAppDir := filepath.Join(appsDir, "pre_app", "pre_app")
+	require.NoError(t, os.MkdirAll(preAppDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(preAppDir, "__init__.py"), []byte("__version__ = '1.0.0'\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(preAppDir, "hooks.py"), []byte("app_name = 'pre_app'\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(sitesDir, "apps.txt"), []byte("frappe\npre_app\n"), 0o644))
+
+	// Failing pip script: fails when installing "failing_app"
+	pipScript := `#!/bin/sh
+for arg in "$@"; do
+    if echo "$arg" | grep -q "failing_app"; then
+        echo "Pip mock error on failing_app" >&2
+        exit 1
+    fi
+done
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(envBinDir, "pip"), []byte(pipScript), 0o755))
+
+	// Package "failing_app" that requires pre_app (satisfied)
+	fpmBytes := buildFpmWithDeps(t, "acme", "failing_app", "1.0.0", []metadata.RequiredApp{
+		{Name: "pre_app", Org: "acme", Version: "1.0.0"},
+	})
+	fpmFile := filepath.Join(t.TempDir(), "failing_app-1.0.0.fpm")
+	require.NoError(t, os.WriteFile(fpmFile, fpmBytes, 0o644))
+
+	resetInstallCmdFlags()
+	_, err := SharedExecuteCommand(rootCmd, "install", fpmFile, "--bench-path", bench)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRolledBack), "expected ErrRolledBack, got: %v", err)
+	assert.Equal(t, ExitRolledBack, ExitCodeFor(err))
+
+	// Verify failing_app symlink was removed
+	_, err = os.Lstat(filepath.Join(appsDir, "failing_app"))
+	assert.True(t, os.IsNotExist(err))
+
+	// Verify pre_app directory was NOT deleted
+	_, err = os.Stat(preAppDir)
+	assert.NoError(t, err, "pre-existing app must be preserved")
+
+	// Verify apps.txt was restored
+	appsTxtBytes, err := os.ReadFile(filepath.Join(sitesDir, "apps.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "frappe\npre_app\n", string(appsTxtBytes))
+}
+
+func TestInstall_VersionConflict(t *testing.T) {
+	_, cleanup := setupTempFPMConfig(t)
+	defer cleanup()
+
+	cfg, err := config.LoadConfig()
+	require.NoError(t, err)
+	populateAppInLocalStore(t, cfg.AppsBasePath, "frappe", "payments", "1.0.0", "payments-1.0.0")
+
+	bench := t.TempDir()
+	appsDir := filepath.Join(bench, "apps")
+	sitesDir := filepath.Join(bench, "sites")
+	envBinDir := filepath.Join(bench, "env", "bin")
+	require.NoError(t, os.MkdirAll(appsDir, 0o755))
+	require.NoError(t, os.MkdirAll(sitesDir, 0o755))
+	require.NoError(t, os.MkdirAll(envBinDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(envBinDir, "pip"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+
+	// Pre-existing payments app with version 2.0.0 in bench
+	paymentsDir := filepath.Join(appsDir, "payments", "payments")
+	require.NoError(t, os.MkdirAll(paymentsDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(paymentsDir, "__init__.py"), []byte("__version__ = '2.0.0'\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(paymentsDir, "hooks.py"), []byte("app_name = 'payments'\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(sitesDir, "apps.txt"), []byte("frappe\npayments\n"), 0o644))
+
+	// Target app requiring payments==1.0.0
+	targetFpm := buildFpmWithDeps(t, "acme", "target", "1.0.0", []metadata.RequiredApp{
+		{Name: "payments", Org: "frappe", Version: "1.0.0"},
+	})
+	targetFile := filepath.Join(t.TempDir(), "target-1.0.0.fpm")
+	require.NoError(t, os.WriteFile(targetFile, targetFpm, 0o644))
+
+	resetInstallCmdFlags()
+	_, err = SharedExecuteCommand(rootCmd, "install", targetFile, "--bench-path", bench)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrVersionConflict), "expected ErrVersionConflict, got: %v", err)
+	assert.Equal(t, ExitVersionConflict, ExitCodeFor(err))
 }

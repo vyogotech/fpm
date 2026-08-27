@@ -194,6 +194,21 @@ func (m *Manifest) Set(key, value string) {
 	m.values[key] = value
 }
 
+// Delete removes a key from the manifest if present, preserving relative order of others.
+func (m *Manifest) Delete(key string) {
+	if _, exists := m.values[key]; !exists {
+		return
+	}
+	delete(m.values, key)
+	newKeys := make([]string, 0, len(m.keys)-1)
+	for _, k := range m.keys {
+		if k != key {
+			newKeys = append(newKeys, k)
+		}
+	}
+	m.keys = newKeys
+}
+
 // Get returns a value.
 func (m *Manifest) Get(key string) (string, bool) {
 	v, ok := m.values[key]
@@ -418,6 +433,52 @@ func Deploy(benchPath, appName, appModuleDir string) (Deployed, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+// Undeploy removes an app's deployed assets from benchPath during rollback:
+// 1. Removes symlinks under sites/assets/ (<app>, <app>_docs, <app>/node_modules).
+// 2. Removes entries from assets.json and assets-rtl.json whose value path starts
+//    with "/assets/<appName>/dist/" or "/assets/<appName>/".
+// 3. Invalidates the redis_cache assets_json key.
+func Undeploy(benchPath, appName string) error {
+	assetsDir := AssetsDir(benchPath)
+
+	// 1. Remove symlinks
+	for _, link := range []string{
+		filepath.Join(assetsDir, appName),
+		filepath.Join(assetsDir, appName+"_docs"),
+	} {
+		if _, err := os.Lstat(link); err == nil {
+			_ = os.RemoveAll(link)
+		}
+	}
+
+	// 2. Remove entries from manifests
+	prefix := fmt.Sprintf("/assets/%s/", appName)
+	for _, manifestName := range []string{ManifestFileName, RTLManifestFileName} {
+		p := filepath.Join(assetsDir, manifestName)
+		m, err := ReadManifest(p)
+		if err != nil || m.Len() == 0 {
+			continue
+		}
+		toDelete := make([]string, 0)
+		for _, key := range m.Keys() {
+			val, _ := m.Get(key)
+			if strings.HasPrefix(val, prefix) {
+				toDelete = append(toDelete, key)
+			}
+		}
+		if len(toDelete) > 0 {
+			for _, key := range toDelete {
+				m.Delete(key)
+			}
+			_ = m.Write(p)
+		}
+	}
+
+	// 3. Best-effort cache invalidation
+	_ = InvalidateCache(benchPath)
+	return nil
 }
 
 // InvalidateCache deletes the `assets_json` key from the bench's redis_cache, as
