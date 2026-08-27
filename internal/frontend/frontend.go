@@ -313,12 +313,12 @@ func Build(opts BuildOptions) (Result, error) {
 	result := Result{Project: project, BuildRoot: root, Cleanup: cleanup}
 
 	var log strings.Builder
-	run := func(step string, args []string) error {
+	run := func(step string, args []string, extraEnv ...string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 		cmd.Dir = project.Dir
-		cmd.Env = env
+		cmd.Env = append(append([]string{}, env...), extraEnv...)
 		fmt.Fprintf(out, "Running: %s (in %s)\n", strings.Join(args, " "), project.Rel)
 
 		var buf strings.Builder
@@ -363,7 +363,13 @@ func Build(opts BuildOptions) (Result, error) {
 		fmt.Fprintf(out, "Frozen install refused: %s's lockfile has drifted from its package.json. "+
 			"Retrying with %s — the build is reproducible from the lockfile that results, not the one committed.\n",
 			opts.AppName, strings.Join(relaxed, " "))
-		if retryErr := run("install (unfrozen)", relaxed); retryErr != nil {
+		// The flag alone is not enough: an app's own postinstall may run a *nested*
+		// install of its own — drive's runs `cd frontend && pnpm install` — which sees
+		// none of the command line. npm and pnpm both read settings from npm_config_*
+		// environment variables, so the setting is passed that way too and every
+		// install in the tree honours it.
+		if retryErr := run("install (unfrozen)", relaxed,
+			"npm_config_frozen_lockfile=false", "npm_config_prod=false"); retryErr != nil {
 			result.Log = log.String()
 			return fail(result, retryErr)
 		}
