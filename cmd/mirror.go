@@ -191,11 +191,20 @@ func runMirror() error {
 		platforms = []string{wheels.DefaultProdPlatform}
 	}
 
+	// Every catalog entry's repo, including the disabled ones: frappe is no longer
+	// published but helpdesk's build still reads its source, so the mirror has to know
+	// where to fetch it from.
+	catalogRepos := map[string]string{}
+	for _, app := range catalog.Apps {
+		catalogRepos[app.Slug] = app.Repo
+	}
+
 	runner := &mirror.Runner{
 		FPMBin:        fpmBin,
 		Workspace:     workspace,
 		OutputPath:    mirrorOutputPath,
 		RepoNames:     repoNames,
+		CatalogRepos:  catalogRepos,
 		SkipPublish:   mirrorSkipPublish,
 		PythonVersion: pyVer,
 		Platforms:     platforms,

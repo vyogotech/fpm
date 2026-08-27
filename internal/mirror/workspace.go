@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"fpm/internal/frontend"
 )
@@ -127,4 +128,54 @@ func tail(s string, max int) string {
 		return s
 	}
 	return "…" + s[len(s)-max:]
+}
+
+// EnsureBuildDependency puts another app's source beside the one being built, at
+// <bench>/apps/<slug>, and returns its directory.
+//
+// This is a build-time dependency, which is a different thing from the package
+// dependencies fpm already resolves. `required_apps` are resolved to pinned versions at
+// packaging time (metadata only — no code is fetched, because packaging never runs the
+// app) and cascade-installed at install time. Neither helps a *build* that reads another
+// app's source off disk: helpdesk's desk build runs
+//
+//	[ -f ../../frappe/ui/node_modules/.yarn-integrity ] || (cd ../../frappe/ui && yarn install)
+//
+// which needs frappe checked out as a sibling, exactly as a real bench has it. The app is
+// fetched to be read, never built or published — it may not even be in the catalog's
+// enabled set, as frappe no longer is.
+//
+// Unlike Checkout, the tree is not scrubbed: a dependency's node_modules is the point of
+// keeping it around, and nothing here is packaged.
+func (w *Workspace) EnsureBuildDependency(slug, repoURL, ref string) (string, error) {
+	dir := filepath.Join(w.srcRoot(), slug)
+
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		if err := gitRun("", "clone", "--filter=blob:none", repoURL, dir); err != nil {
+			return "", fmt.Errorf("build dependency %s: %w", slug, err)
+		}
+	}
+	if ref == "" {
+		return dir, nil
+	}
+	// A ref that is already checked out costs one cheap rev-parse rather than a fetch.
+	if current, err := gitOutput(dir, "rev-parse", "HEAD"); err == nil {
+		if resolved, err := gitOutput(dir, "rev-parse", ref+"^{commit}"); err == nil && current == resolved {
+			return dir, nil
+		}
+	}
+	if err := gitRun(dir, "fetch", "--tags", "--prune", "origin"); err != nil {
+		return "", fmt.Errorf("build dependency %s: %w", slug, err)
+	}
+	if err := gitRun(dir, "checkout", "--detach", "-f", ref); err != nil {
+		return "", fmt.Errorf("build dependency %s at %s: %w", slug, ref, err)
+	}
+	return dir, nil
+}
+
+func gitOutput(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
 }

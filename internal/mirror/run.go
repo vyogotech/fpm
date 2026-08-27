@@ -10,6 +10,7 @@ import (
 
 	"fpm/internal/frontend"
 	"fpm/internal/metadata"
+	"fpm/internal/semver"
 	"fpm/internal/utils"
 )
 
@@ -46,8 +47,12 @@ type Runner struct {
 	// RepoNames are the configured repositories every built package is published to,
 	// in order. More than one mirrors the same catalog into several backends at once
 	// (GHCR as OCI and an HTTP FPM registry, say) from a single build.
-	RepoNames     []string
-	SkipPublish   bool
+	RepoNames   []string
+	SkipPublish bool
+	// CatalogRepos maps every catalog slug to its git URL, including entries that are
+	// disabled for publishing. A build-time dependency is fetched from here: frappe is
+	// no longer mirrored, but helpdesk's build still reads its source off disk.
+	CatalogRepos  map[string]string
 	PythonVersion string   // destination interpreter version for vendored wheels (e.g. "3.11")
 	Platforms     []string // target platforms for vendored wheels (e.g. "manylinux2014_x86_64")
 	Log           func(format string, args ...any)
@@ -204,6 +209,14 @@ func (r *Runner) runOne(item BuildItem) Result {
 // the build may have written a bench config next to the checkout or staged a copy of
 // it, and neither is the workspace's to keep.
 func (r *Runner) autoBuildFrontendAssets(appName, checkout string) (buildRoot string, cleanup func(), err error) {
+	// Build-time dependencies first: another app's source this build reads off disk.
+	// fpm resolves `required_apps` to pinned versions at packaging time and installs
+	// them at install time, but neither puts a sibling app's tree where a build script
+	// can `cd` into it. Pulling them is the same idea applied one stage earlier.
+	if err := r.ensureBuildDependencies(appName, checkout); err != nil {
+		return checkout, func() {}, err
+	}
+
 	res, buildErr := frontend.Build(frontend.BuildOptions{
 		SourcePath: checkout,
 		AppName:    appName,
@@ -230,6 +243,53 @@ func (r *Runner) autoBuildFrontendAssets(appName, checkout string) (buildRoot st
 		return res.BuildRoot, cleanup, nil
 	}
 	return checkout, cleanup, nil
+}
+
+// ensureBuildDependencies checks out the bench apps this app's build reads off disk.
+// A dependency that is not in the catalog is reported rather than guessed at, and one
+// that is already present costs nothing.
+func (r *Runner) ensureBuildDependencies(appName, checkout string) error {
+	siblings, err := frontend.SiblingApps(checkout, appName)
+	if err != nil || len(siblings) == 0 {
+		return err
+	}
+	for _, slug := range siblings {
+		repoURL, ok := r.CatalogRepos[slug]
+		if !ok {
+			return fmt.Errorf("%s's build reads ../../%s off disk, but %q is not in the catalog, "+
+				"so there is nowhere to fetch it from", appName, slug, slug)
+		}
+		ref, err := latestReleaseRef(repoURL)
+		if err != nil {
+			return fmt.Errorf("resolving a ref for build dependency %s: %w", slug, err)
+		}
+		r.Log("  build dependency: %s at %s (its source is read by %s's build)", slug, ref, appName)
+		if _, err := r.Workspace.EnsureBuildDependency(slug, repoURL, ref); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// latestReleaseRef is the newest release tag of a repository, or its default branch when
+// it publishes none. A build-time dependency supplies source to read — frappe's ui
+// package, say — so the newest release is the right default; it is not a package whose
+// version is pinned into anything.
+func latestReleaseRef(repoURL string) (string, error) {
+	tags, err := ListRemoteTags(repoURL)
+	if err != nil {
+		return "", err
+	}
+	best := ""
+	for _, tag := range tags {
+		if best == "" || semver.Compare(NormalizeVersion(tag.Name), NormalizeVersion(best)) > 0 {
+			best = tag.Name
+		}
+	}
+	if best == "" {
+		return "origin/HEAD", nil
+	}
+	return "refs/tags/" + best, nil
 }
 
 // logWriter adapts a printf-style logger to io.Writer so the frontend build's

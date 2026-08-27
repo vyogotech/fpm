@@ -1229,3 +1229,54 @@ func ensureBenchConfig(root, siteConfigPath string, out io.Writer) (ok bool, cle
 		}
 	}
 }
+
+// siblingAppRef matches a build script reaching for another app in the bench:
+// `cd ../../frappe/ui`, `../../erpnext/...`. Two levels up from <bench>/apps/<app>/<sub>
+// is apps/, so the next segment names a sibling app.
+var siblingAppRef = regexp.MustCompile(`\.\./\.\./([a-z][a-z0-9_-]*)/`)
+
+// SiblingApps reports the other bench apps a project's package.json scripts read off
+// disk during the build, deduplicated and sorted.
+//
+// These are build-time dependencies, distinct from the `required_apps` fpm already
+// resolves: helpdesk's desk build runs `cd ../../frappe/ui && yarn install`, which needs
+// frappe's source present, not a pinned version recorded in metadata. A caller that lays
+// out a bench-shaped workspace can fetch them before building.
+func SiblingApps(sourcePath, appName string) ([]string, error) {
+	project, err := Detect(sourcePath, appName)
+	if err != nil || project == nil {
+		return nil, err
+	}
+
+	seen := map[string]bool{}
+	scan := func(dir string) {
+		pkg, ok, err := readPackageJSON(dir)
+		if err != nil || !ok {
+			return
+		}
+		for _, script := range pkg.Scripts {
+			for _, m := range siblingAppRef.FindAllStringSubmatch(script, -1) {
+				if m[1] != appName {
+					seen[m[1]] = true
+				}
+			}
+		}
+	}
+	// The root script usually delegates, so the subdirectory it delegates to is where
+	// the reference actually lives.
+	scan(project.Dir)
+	root, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range subdirCandidates {
+		scan(filepath.Join(root, name))
+	}
+
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
+}

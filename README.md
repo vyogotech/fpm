@@ -136,6 +136,15 @@ repository is missing it, so backends that started out of step converge on the s
 publishing is idempotent per repository, and one that already has a version reports it
 rather than failing the run.
 
+**Build-time dependencies are fetched.** fpm resolves an app's `required_apps` to pinned
+versions when packaging and cascade-installs them when installing, but neither puts
+another app's *source* where a build script can read it — and some builds need exactly
+that: helpdesk's desk build runs `cd ../../frappe/ui && yarn install`. The mirror scans a
+project's package.json scripts for `../../<app>/` references and checks those apps out
+beside it first, at their newest release. They are fetched to be read, never built or
+published, which is why `frappe` stays in the catalog even though it is no longer
+mirrored — the row is where its repository URL comes from.
+
 Apps are published in **tiers**. Everything in tier 0 goes first; tier 1 starts only
 once it is done, because an app whose `required_apps` name other catalog entries can only
 pin them — and hang its OCI referrers subject off them — once they are in the registry.
