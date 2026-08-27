@@ -156,7 +156,11 @@ versions when packaging and cascade-installs them when installing, but neither p
 another app's *source* where a build script can read it — and some builds need exactly
 that: helpdesk's desk build runs `cd ../../frappe/ui && yarn install`. The mirror scans a
 project's package.json scripts for `../../<app>/` references and checks those apps out
-beside it first, at their newest release. They are fetched to be read, never built or
+beside it first. At their newest release by default, or at the ref the catalog's
+`build_deps` column pins — helpdesk's own CI builds against `FRAPPE_BRANCH=version-15`,
+so its row says `frappe@version-15` and the newest frappe is the wrong source to hand it.
+`build_deps` is an optional column: a catalog written without it still loads, while an
+unknown column is still rejected so a typo fails loudly. They are fetched to be read, never built or
 published, which is why `frappe` stays in the catalog even though it is no longer
 mirrored — the row is where its repository URL comes from.
 

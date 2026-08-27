@@ -55,6 +55,12 @@ build into several registry backends at once.
   reading `pnpm.overrides` from package.json, so drive's committed lockfile no longer
   matches it and every install died with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`. Only that
   class of refusal is retried; a missing dependency or a network error still fails.
+- The catalog gains an optional `build_deps` column pinning a build-time dependency's
+  ref (`frappe@version-15`). The newest release is right for a dependency that only
+  supplies source to read and wrong when the app is built against a specific line:
+  helpdesk's own CI sets `FRAPPE_BRANCH=version-15`, and handing its build the newest
+  frappe failed on a file that line does not carry. Optional means a catalog written
+  before it still loads; an unknown column is still rejected.
 - The mirror fetches **build-time dependencies**: another bench app whose source a build
   reads off disk. fpm resolved `required_apps` to pinned versions when packaging and
   cascade-installed them when installing, but neither helps a build that runs

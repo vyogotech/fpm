@@ -41,8 +41,13 @@ type App struct {
 	Enabled     bool
 	// Tier orders a run: every app in a lower tier is published before a higher one
 	// starts. 0 for an app that requires nothing else in the catalog.
-	Tier  int
-	Notes string
+	Tier int
+	// BuildDeps pins the ref of another app this app's build reads off disk, by slug.
+	// helpdesk's own CI builds against FRAPPE_BRANCH=version-15, and its desk build
+	// reads ../../frappe/ui, so the newest frappe is the wrong source to hand it.
+	// Empty means the dependency's newest release.
+	BuildDeps map[string]string
+	Notes     string
 
 	// BuildScript is the absolute path of catalog/build/<slug>.sh when that
 	// script exists; empty otherwise. Its contract: run in the checkout root,
@@ -71,6 +76,11 @@ var catalogColumns = []string{
 	"slug", "repo", "app_name", "track", "branch", "branch_major",
 	"majors", "bundle_deps", "enabled", "tier", "notes",
 }
+
+// catalogOptionalColumns may be absent from a catalog. Everything in catalogColumns is
+// still required and an unknown column is still rejected, so a typo fails loudly; this
+// is only so adding a column does not invalidate every existing catalog.
+var catalogOptionalColumns = []string{"build_deps"}
 
 // CatalogOptions configures catalog validation behavior.
 type CatalogOptions struct {
@@ -120,7 +130,13 @@ func LoadCatalogWithOptions(path string, opts CatalogOptions) (*Catalog, error) 
 	seen := map[string]bool{}
 
 	for line, record := range records[1:] {
-		get := func(name string) string { return strings.TrimSpace(record[col[name]]) }
+		get := func(name string) string {
+			idx, ok := col[name]
+			if !ok || idx >= len(record) {
+				return ""
+			}
+			return strings.TrimSpace(record[idx])
+		}
 
 		app := App{
 			Slug:       get("slug"),
@@ -207,6 +223,24 @@ func LoadCatalogWithOptions(path string, opts CatalogOptions) (*Catalog, error) 
 			app.Notes = strings.TrimSpace(app.Notes + " (not in the frappe org; excluded by --allow-third-party=false)")
 		}
 
+		// build_deps: "frappe@version-15;erpnext@v16.0.0"
+		if idx, ok := col["build_deps"]; ok {
+			if raw := strings.TrimSpace(record[idx]); raw != "" {
+				app.BuildDeps = map[string]string{}
+				for _, part := range strings.Split(raw, ";") {
+					part = strings.TrimSpace(part)
+					if part == "" {
+						continue
+					}
+					depSlug, ref, found := strings.Cut(part, "@")
+					if !found || strings.TrimSpace(depSlug) == "" || strings.TrimSpace(ref) == "" {
+						return nil, rowErr("build_deps entry %q must be <slug>@<ref>", part)
+					}
+					app.BuildDeps[strings.TrimSpace(depSlug)] = strings.TrimSpace(ref)
+				}
+			}
+		}
+
 		script := filepath.Join(buildDir, app.Slug+".sh")
 		if info, err := os.Stat(script); err == nil && !info.IsDir() {
 			app.BuildScript = script
@@ -284,8 +318,9 @@ func headerIndex(header []string) (map[string]int, error) {
 		col[name] = i
 	}
 	for name := range col {
-		if !contains(catalogColumns, name) {
-			return nil, fmt.Errorf("unknown column %q; expected %v", name, catalogColumns)
+		if !contains(catalogColumns, name) && !contains(catalogOptionalColumns, name) {
+			return nil, fmt.Errorf("unknown column %q; expected %v (optional: %v)",
+				name, catalogColumns, catalogOptionalColumns)
 		}
 	}
 	for _, name := range catalogColumns {

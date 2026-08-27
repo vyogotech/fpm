@@ -211,3 +211,69 @@ func TestCatalogExcludesThirdParty(t *testing.T) {
 		t.Fatalf("with third parties allowed: %+v (%v), want both", apps, err)
 	}
 }
+
+// TestBuildDepsPinsADependencyRef: the newest release is the right default for a
+// dependency that only supplies source to read, and wrong when the app is built against
+// a specific line. helpdesk's own CI sets FRAPPE_BRANCH=version-15 and its desk build
+// reads ../../frappe/ui, so handing it the newest frappe failed on a file that line does
+// not have.
+// writeCatalogWithBuildDeps writes a catalog carrying the optional build_deps column,
+// which the shared header deliberately omits so both shapes stay covered.
+func writeCatalogWithBuildDeps(t *testing.T, rows string) string {
+	t.Helper()
+	const h = "slug,repo,app_name,track,branch,branch_major,majors,bundle_deps,enabled,tier,build_deps,notes\n"
+	path := filepath.Join(t.TempDir(), "apps.csv")
+	if err := os.WriteFile(path, []byte(h+rows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestBuildDepsPinsADependencyRef(t *testing.T) {
+	path := writeCatalogWithBuildDeps(t, "helpdesk,https://github.com/frappe/helpdesk,,,,,,,,,frappe@version-15,\n")
+	cat, err := LoadCatalog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cat.Apps[0].BuildDeps["frappe"]; got != "version-15" {
+		t.Fatalf("BuildDeps = %+v, want frappe -> version-15", cat.Apps[0].BuildDeps)
+	}
+}
+
+// build_deps is optional: a catalog written before it existed still loads.
+func TestBuildDepsColumnIsOptional(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "apps.csv")
+	old := "slug,repo,app_name,track,branch,branch_major,majors,bundle_deps,enabled,tier,notes\n" +
+		"crm,https://github.com/frappe/crm,,,,,,,,,\n"
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cat, err := LoadCatalog(path)
+	if err != nil {
+		t.Fatalf("a catalog without the optional column must still load: %v", err)
+	}
+	if len(cat.Apps) != 1 || cat.Apps[0].BuildDeps != nil {
+		t.Errorf("apps = %+v", cat.Apps)
+	}
+}
+
+// A typo is still rejected: optional does not mean anything goes.
+func TestUnknownColumnIsStillRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "apps.csv")
+	bad := "slug,repo,app_name,track,branch,branch_major,majours,bundle_deps,enabled,tier,build_deps,notes\n"
+	if err := os.WriteFile(path, []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadCatalog(path); err == nil || !strings.Contains(err.Error(), "unknown column") {
+		t.Fatalf("want an unknown-column error, got %v", err)
+	}
+}
+
+func TestBuildDepsRejectsAMalformedEntry(t *testing.T) {
+	path := writeCatalogWithBuildDeps(t, "helpdesk,https://github.com/frappe/helpdesk,,,,,,,,,frappe,\n")
+	if _, err := LoadCatalog(path); err == nil || !strings.Contains(err.Error(), "<slug>@<ref>") {
+		t.Fatalf("want a build_deps format error, got %v", err)
+	}
+}

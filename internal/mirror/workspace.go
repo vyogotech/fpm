@@ -168,7 +168,11 @@ func (w *Workspace) EnsureBuildDependency(slug, repoURL, ref string) (string, er
 		return "", fmt.Errorf("build dependency %s: %w", slug, err)
 	}
 	if err := gitRun(dir, "checkout", "--detach", "-f", ref); err != nil {
-		return "", fmt.Errorf("build dependency %s at %s: %w", slug, ref, err)
+		// A branch pin such as "version-15" names no local ref in a fresh clone; the
+		// fetch above put it at origin/version-15.
+		if err2 := gitRun(dir, "checkout", "--detach", "-f", "origin/"+ref); err2 != nil {
+			return "", fmt.Errorf("build dependency %s at %s: %w", slug, ref, err)
+		}
 	}
 	return dir, nil
 }
