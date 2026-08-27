@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"fpm/internal/config"
 	"fpm/internal/mirror"
 	"fpm/internal/repository"
+	"fpm/internal/wheels"
 
 	"github.com/spf13/cobra"
 )
@@ -27,6 +29,8 @@ var (
 	mirrorCacheDir        string
 	mirrorNoClean         bool
 	mirrorAllowThirdParty bool
+	mirrorPythonVersion   string
+	mirrorPlatforms       []string
 )
 
 // Exit codes: 0 clean, 1 one or more apps failed, 2 configuration/catalog
@@ -50,6 +54,19 @@ var mirrorCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+func detectPythonVersion() string {
+	pythonExe, err := wheels.FindPython()
+	if err != nil {
+		return "3.11"
+	}
+	cmd := exec.Command(pythonExe, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+	out, err := cmd.Output()
+	if err != nil {
+		return "3.11"
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func runMirror() error {
@@ -121,12 +138,23 @@ func runMirror() error {
 		return err
 	}
 
+	pyVer := mirrorPythonVersion
+	if pyVer == "" {
+		pyVer = detectPythonVersion()
+	}
+	platforms := mirrorPlatforms
+	if len(platforms) == 0 {
+		platforms = []string{wheels.DefaultProdPlatform}
+	}
+
 	runner := &mirror.Runner{
-		FPMBin:      fpmBin,
-		Workspace:   workspace,
-		OutputPath:  mirrorOutputPath,
-		RepoName:    repo.Name,
-		SkipPublish: mirrorSkipPublish,
+		FPMBin:        fpmBin,
+		Workspace:     workspace,
+		OutputPath:    mirrorOutputPath,
+		RepoName:      repo.Name,
+		SkipPublish:   mirrorSkipPublish,
+		PythonVersion: pyVer,
+		Platforms:     platforms,
 	}
 	results := runner.Run(plan)
 
@@ -161,5 +189,7 @@ func init() {
 	mirrorCmd.Flags().StringVar(&mirrorCacheDir, "cache-dir", "", "Persistent build cache (default ~/.fpm/build-cache)")
 	mirrorCmd.Flags().BoolVar(&mirrorNoClean, "no-clean", false, "Keep checkout state between builds (debugging)")
 	mirrorCmd.Flags().BoolVar(&mirrorAllowThirdParty, "allow-third-party", true, "Allow third-party / external git repositories in the catalog")
+	mirrorCmd.Flags().StringVar(&mirrorPythonVersion, "python-version", "", "Target Python version for vendored wheels (e.g. 3.11, 3.12; defaults to host python version)")
+	mirrorCmd.Flags().StringArrayVar(&mirrorPlatforms, "platform", nil, "Target wheel platform tags (defaults to "+wheels.DefaultProdPlatform+")")
 	mirrorCmd.MarkFlagRequired("repo")
 }

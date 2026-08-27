@@ -102,6 +102,18 @@ fpm package --version 1.0.0 --org myorg [--app-name my_app]
 - `--bench-path`: a Frappe bench with node/yarn available; runs Frappe's own
   `bench build --app <app> --production` so the package ships compiled JS/CSS (see
   [Assets](#assets))
+- `--build-frontend`: compile the app's JavaScript frontend — the Vite SPA apps like
+  `frappe/crm` build into `<app>/public/frontend` (default: true, when the checkout
+  declares one). `--build-frontend=false` packages without it (see
+  [App frontends](#app-frontends))
+- `--frontend-timeout`: time limit for the frontend install and for the frontend build,
+  each (default `20m`)
+- `--frontend-site-config`: a bench's `sites/common_site_config.json` to build the frontend
+  against. Apps like `frappe/crm` compile `socketio_port` into their bundle; without this,
+  Frappe's defaults are synthesized (see
+  [Frontends that read the bench](#frontends-that-read-the-bench))
+- `--no-bench-scaffold`: fail rather than build a bench-resolving frontend against a
+  synthesized config
 - `--repo`: repository to resolve `required_apps` against (default: local store, then every
   configured repository)
 
@@ -117,7 +129,9 @@ fpm package --version 1.0.0 --org myorg [--app-name my_app]
    packaging with exit code 5. Required apps are **not** bundled — see
    [Required apps](#required-apps).
 4. With `--bench-path`, assets are built; any build error fails packaging (exit code 4).
-5. Python dependencies are vendored as wheels for the target, with a lock file.
+5. The app's JavaScript frontend is compiled when the checkout declares one, and its output
+   packaged (see [App frontends](#app-frontends)); a build error fails packaging.
+6. Python dependencies are vendored as wheels for the target, with a lock file.
 
 **Exit codes:** `3` not a Frappe app · `4` asset build failed · `5` unresolved
 `required_apps` · `1` anything else.
@@ -381,12 +395,16 @@ FPM packages are ZIP archives with a standardized structure:
 
 ```
 my-app-1.0.0.fpm
-├── app_metadata.json         # Metadata: name, version, commit_sha, required_apps, wheel target, asset_bundles
+├── app_metadata.json         # Metadata: name, version, commit_sha, required_apps, wheel target,
+│                             #   asset_bundles, frontend_dirs, frontend_routes
 ├── my_app/                   # Main application module
 │   ├── __init__.py
 │   ├── hooks.py
 │   ├── public/
-│   │   └── dist/             # Compiled JS/CSS from `fpm package --bench-path` (js/, css/, css-rtl/)
+│   │   ├── dist/             # Compiled JS/CSS from `fpm package --bench-path` (js/, css/, css-rtl/)
+│   │   └── frontend/         # Compiled Vite SPA (crm, helpdesk, …); served at /assets/<app>/frontend/
+│   ├── www/
+│   │   └── my_app.html       # The SPA's route, rendered by Frappe at /my_app
 │   └── ...
 ├── requirements.txt          # Python dependencies (either or both)
 ├── pyproject.toml            # PEP 621 project metadata
@@ -432,6 +450,101 @@ prebuilt `public/dist`, ported from `frappe/build.py` and `esbuild/esbuild.js`:
   running site picks up the new bundle paths.
 
 No Node toolchain is needed on the target machine.
+
+### App frontends
+
+Apps like `frappe/crm`, `frappe/helpdesk`, `frappe/insights` and `frappe/gameplan` ship a
+second, different asset scheme: a **Vite single-page app** in its own directory with its own
+`package.json`. `bench build` never produces it — Frappe's esbuild only globs `*.bundle.*`
+and an SPA has none — and the output is listed in the app's own `.gitignore`, so it is
+absent from every fresh checkout:
+
+```
+crm/                          the checkout
+├── package.json              "build": "cd frontend && yarn build"
+├── frontend/                 the Vite project (src/, vite.config.js, yarn.lock)
+└── crm/                      the Python module
+    ├── public/frontend/      ← BUILD OUTPUT, gitignored: served at /assets/crm/frontend/
+    └── www/crm.html          ← BUILD OUTPUT, gitignored: Frappe renders it at /crm
+```
+
+`fpm package` compiles it by default and ships the result, so the package installs into a
+bench that has no Node toolchain at all. Concretely it:
+
+- **finds the project**, preferring the checkout's root `package.json` when it has a `build`
+  script — that is the app's own entry point and it already delegates (`cd frontend && yarn
+  build`), so the root and the subdirectory are never built twice. Otherwise `frontend/`,
+  `desk/` (helpdesk), `dashboard/`, `ui/` and `<app>/frontend/` are tried in that order;
+- **installs and builds** with the package manager the lockfile names (yarn, pnpm or npm),
+  always forcing `devDependencies` on — crm keeps `autoprefixer`, `postcss` and `tailwindcss`
+  there, so an install that honours an inherited `NODE_ENV=production` succeeds and the build
+  then dies on a missing module;
+- **discovers the output** rather than assuming a name, because there is no convention to
+  assume. A directory under `<app>/public` holding an `index.html` is an SPA root; one named
+  `dist` holding files is bundler output; and whatever the build itself just wrote to counts
+  regardless of what it is called;
+- **reads the route from the app's `hooks.py`**, never from the app or directory name. The
+  `to_route` values of `website_route_rules` are the only reliable source — see the table
+  below for how little the names have in common. A template is treated as *this frontend's*
+  route only when it actually loads the built output (it links `/assets/<app>/<dir>/…`, or
+  is the byte-identical copy `copy-html-entry` makes), so erpnext's two dozen DocType portal
+  routes are not mistaken for frontend routes;
+- **writes the route template** when the app's build script does not — crm's and erpnext's
+  end in `copy-html-entry`, others stop at `vite build` and leave the SPA with no route at
+  all. Only when the app declares exactly one route and builds exactly one SPA, so the
+  mapping is certain; otherwise fpm reports it rather than inventing a filename. An existing
+  template is never overwritten;
+- **fails packaging** when a declared frontend builds but writes nothing servable. A package
+  that installs cleanly and then serves a blank page is worse than a failed build.
+
+Nothing about the layout is conventional, which is why every part of it is read rather than
+guessed:
+
+| app | build script | output directory | route (`hooks.py` `to_route`) |
+|---|---|---|---|
+| `frappe/crm` | `cd frontend && yarn build` | `crm/public/frontend` | `crm` |
+| `frappe/drive` | `cd frontend && yarn build` | `drive/public/frontend` | `drive` |
+| `frappe/insights` | `cd frontend && yarn build` | `insights/public/frontend` | `_insights` |
+| `frappe/builder` | `cd frontend && yarn build` | `builder/public/frontend` | `_builder` |
+| `frappe/gameplan` | `cd frontend && yarn build` | `gameplan/public/frontend` | `g` |
+| `frappe/helpdesk` | `cd desk && yarn build` | `helpdesk/public/desk` | `helpdesk` (as `www/helpdesk/index.html`) |
+| `frappe/erpnext` | `cd banking && yarn build` | `erpnext/public/banking` | `banking`, plus 23 unrelated DocType routes |
+| `frappe/hrms` | `yarn build-pwa && yarn build-roster` | two outputs | `hrms`, `roster` |
+
+The results are recorded as `frontend_built`, `frontend_dirs` and `frontend_routes` in
+`app_metadata.json`. `fpm install` serves them through the same `sites/assets/<app>` →
+`<app>/public` symlink, so `crm/public/frontend/…` is reachable at `/assets/crm/frontend/…`
+with no manifest entry — `assets.json` only ever tracks `*.bundle.*` files.
+
+#### Frontends that read the bench
+
+Some of these frontends resolve the bench from their own physical path. crm, gameplan,
+helpdesk and drive each carry one such import, in their socket module:
+
+```js
+import { socketio_port } from '../../../../sites/common_site_config.json'
+```
+
+Four levels up from `<bench>/apps/<app>/frontend/src` is the bench root, so the file only
+exists when the checkout sits at `<bench>/apps/<app>`. (insights and builder have no such
+import and build anywhere.)
+
+fpm handles this without a bench: it scans the frontend's sources for the import and, when
+the file is missing, **writes Frappe's default `sites/common_site_config.json` next to the
+checkout for the build and removes it afterwards.** An existing config — a real bench — is
+never touched, and if that location cannot be written the checkout is staged into a
+throwaway bench instead. So `fpm package ./crm` works from any directory.
+
+The defaults are the right contents for a normal deployment. `socketio_port` is the only key
+any app's frontend reads, and it is compiled in only to be used when `window.location.port`
+is set — a bench served directly on a port. Behind nginx or a Kubernetes ingress on 80/443
+the browser sees no port and the value is never read, so a real bench's config would produce
+an identical bundle. Where it does matter, pass
+`--frontend-site-config <bench>/sites/common_site_config.json`; `--no-bench-scaffold` refuses
+to build against synthesized values at all.
+
+Use `--build-frontend=false` to package without the frontend — for a checkout you have
+already built yourself, or a deliberately source-only package.
 
 ### Required apps
 

@@ -151,6 +151,11 @@ func TestPackageAndInstallDeployBuiltAssets(t *testing.T) {
 	require.NoError(t, err)
 	fpmPath := filepath.Join(outDir, "builtapp-2.0.0.fpm")
 
+	meta, err := metadata.ReadMetadataFromFPMArchive(fpmPath)
+	require.NoError(t, err)
+	assert.True(t, meta.AssetsBuilt, "meta.AssetsBuilt should be true for discovered prebuilt assets")
+	assert.Len(t, meta.AssetBundles, 3, "meta.AssetBundles should contain the discovered bundles (js, css, rtl-css)")
+
 	store := t.TempDir()
 	t.Setenv("FPM_APPS_BASE_PATH", store)
 	t.Setenv("HOME", t.TempDir())

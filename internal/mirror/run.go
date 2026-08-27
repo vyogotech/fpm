@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"fpm/internal/frontend"
 	"fpm/internal/metadata"
 	"fpm/internal/utils"
 )
@@ -39,12 +40,14 @@ type Result struct {
 // (hooks.py inference, checksum, index update) on its already-tested path, and
 // isolates each app in its own process: one crash cannot end the run.
 type Runner struct {
-	FPMBin      string // path of the fpm binary to drive; typically os.Executable()
-	Workspace   *Workspace
-	OutputPath  string // where finished .fpm artifacts land
-	RepoName    string // configured repository to publish to
-	SkipPublish bool
-	Log         func(format string, args ...any)
+	FPMBin        string // path of the fpm binary to drive; typically os.Executable()
+	Workspace     *Workspace
+	OutputPath    string // where finished .fpm artifacts land
+	RepoName      string // configured repository to publish to
+	SkipPublish   bool
+	PythonVersion string   // destination interpreter version for vendored wheels (e.g. "3.11")
+	Platforms     []string // target platforms for vendored wheels (e.g. "manylinux2014_x86_64")
+	Log           func(format string, args ...any)
 }
 
 // Run executes every planned item, isolating failures per app.
@@ -78,13 +81,23 @@ func (r *Runner) runOne(item BuildItem) Result {
 		return fail("checkout", err)
 	}
 
+	buildRoot := checkout
 	if item.buildScript != "" {
 		if err := r.runBuildScript(item.buildScript, checkout); err != nil {
 			return fail("asset build", err)
 		}
+	} else {
+		root, cleanup, err := r.autoBuildFrontendAssets(item.AppName, checkout)
+		// Runs after packageApp below, which is the point: the staged tree has to
+		// outlive the build and be gone before the next app is checked out.
+		defer cleanup()
+		if err != nil {
+			return fail("asset build", err)
+		}
+		buildRoot = root
 	}
 
-	artifact, noDeps, err := r.packageApp(item, checkout)
+	artifact, noDeps, err := r.packageApp(item, buildRoot)
 	if err != nil {
 		return fail("package", err)
 	}
@@ -105,6 +118,13 @@ func (r *Runner) runOne(item BuildItem) Result {
 	if manifest.AppName != expected {
 		r.Log("  note: %s's app name is %q, not %q — add app_name=%s to the catalog so "+
 			"skip-if-published checks the right metadata", item.Slug, manifest.AppName, expected, manifest.AppName)
+	}
+
+	if manifest.AssetsBuilt {
+		r.Log("  assets: verified %d compiled bundle(s)", len(manifest.AssetBundles))
+	}
+	if manifest.WheelPlatform != "" {
+		r.Log("  wheels: verified vendored wheels for %s (python %s)", manifest.WheelPlatform, manifest.WheelPythonVersion)
 	}
 
 	final := filepath.Join(r.OutputPath, filepath.Base(artifact))
@@ -142,6 +162,64 @@ func (r *Runner) runOne(item BuildItem) Result {
 	return result
 }
 
+// autoBuildFrontendAssets compiles the app's JavaScript frontend when the catalog
+// entry declares no build script of its own.
+//
+// It delegates to internal/frontend so the mirror, `fpm package` and anything else
+// build these apps identically. That matters: this used to build every directory that
+// had a build script, which for frappe/crm meant the root (whose script is `cd
+// frontend && yarn build`) and frontend/ — the same Vite build twice — and it
+// installed without forcing devDependencies, so a runner with NODE_ENV=production
+// failed on crm's autoprefixer.
+//
+// It returns the tree to package from, which is the checkout itself unless the build
+// had to be staged elsewhere, and a cleanup the caller must run after packaging —
+// the build may have written a bench config next to the checkout or staged a copy of
+// it, and neither is the workspace's to keep.
+func (r *Runner) autoBuildFrontendAssets(appName, checkout string) (buildRoot string, cleanup func(), err error) {
+	res, buildErr := frontend.Build(frontend.BuildOptions{
+		SourcePath: checkout,
+		AppName:    appName,
+		Stdout:     logWriter{r.Log},
+		Env: []string{
+			"npm_config_cache=" + r.Workspace.npmCache(),
+			"YARN_CACHE_FOLDER=" + r.Workspace.yarnCache(),
+		},
+	})
+	cleanup = res.Cleanup
+	if cleanup == nil {
+		cleanup = func() {}
+	}
+	if buildErr != nil {
+		return checkout, cleanup, buildErr
+	}
+	if !res.Built {
+		return checkout, cleanup, nil
+	}
+	r.Log("  frontend: %d file(s) in %s", res.Output.Files, strings.Join(res.Output.Dirs, ", "))
+	// A frontend that needed a bench was built in a staged copy; packaging the
+	// original checkout would ship none of what was just built.
+	if res.BuildRoot != "" {
+		return res.BuildRoot, cleanup, nil
+	}
+	return checkout, cleanup, nil
+}
+
+// logWriter adapts a printf-style logger to io.Writer so the frontend build's
+// progress lines land in the mirror's log.
+type logWriter struct {
+	log func(format string, args ...any)
+}
+
+func (w logWriter) Write(p []byte) (int, error) {
+	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+		if line != "" {
+			w.log("  %s", line)
+		}
+	}
+	return len(p), nil
+}
+
 // packageApp builds the archive into a fresh temporary directory, so the one
 // .fpm file in it is the artifact — no reconstruction of the file name from
 // the repo name, which is the prototype bug this tool replaces.
@@ -169,6 +247,13 @@ func (r *Runner) packageApp(item BuildItem, checkout string) (artifact string, n
 	}
 	if !item.BundleDeps {
 		args = append(args, "--bundle-deps=false")
+	} else {
+		if r.PythonVersion != "" {
+			args = append(args, "--python-version", r.PythonVersion)
+		}
+		for _, p := range r.Platforms {
+			args = append(args, "--platform", p)
+		}
 	}
 
 	out, err := r.fpm(args...)

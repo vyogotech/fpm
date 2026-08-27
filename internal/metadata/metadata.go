@@ -54,6 +54,25 @@ type AppMetadata struct {
 	// the bench's sites/assets/assets.json (and assets-rtl.json for rtl_ keys)
 	// after install. It is what external tooling can read without unpacking.
 	AssetBundles map[string]string `json:"asset_bundles,omitempty"`
+
+	// FrontendBuilt records that `fpm package` compiled the app's JavaScript SPA
+	// (the Vite project frappe/crm, frappe/helpdesk and friends ship) and that the
+	// package carries its output. Unlike AssetsBuilt this covers the
+	// <app>/public/frontend scheme, which frappe's esbuild never produces.
+	FrontendBuilt bool `json:"frontend_built,omitempty"`
+	// FrontendDirs are the compiled frontend output directories inside the package,
+	// relative to the package root and sorted, e.g. ["crm/public/frontend"]. Each is
+	// served at /assets/<app>/<name>/ through the sites/assets/<app> symlink. The
+	// directory name is the app's choice, not a convention — erpnext's is
+	// "erpnext/public/banking" — and an app may ship more than one.
+	FrontendDirs []string `json:"frontend_dirs,omitempty"`
+	// FrontendRoutes are the www templates the frontends are rendered from, relative
+	// to the package root and sorted, e.g. ["crm/www/crm.html"]. Frappe's website
+	// router serves each at its own path. Empty means no frontend has a route.
+	FrontendRoutes []string `json:"frontend_routes,omitempty"`
+	// FrontendSource is the directory the frontend was built from, relative to the
+	// checkout root ("." for the root package.json, "frontend" for crm).
+	FrontendSource string `json:"frontend_source,omitempty"`
 }
 
 // RequiredApp is one entry of hooks.py `required_apps`, resolved to a package.

@@ -6,12 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"fpm/internal/appstore"
 	"fpm/internal/apputils"
 	"fpm/internal/archive"
+	"fpm/internal/assets"
 	"fpm/internal/benchbuild"
 	"fpm/internal/config"
+	"fpm/internal/frontend"
 	"fpm/internal/gitutils"
 	"fpm/internal/metadata"
 	"fpm/internal/resolver"
@@ -42,6 +45,11 @@ var (
 	packageBuildVerbose     bool
 	packageRepo             string
 	packageWithDeps         bool
+	packageBuildFrontend    bool
+	packageFrontendTimeout  time.Duration
+
+	packageFrontendSiteConfig string
+	packageNoBenchScaffold    bool
 )
 
 var packageCmd = &cobra.Command{
@@ -56,6 +64,13 @@ The package records the exact git commit it was built from, resolves the app's
 required_apps (hooks.py) to pinned packages, vendors Python dependencies as wheels
 for the destination platform (--platform/--python-version), and — with --bench-path —
 runs Frappe's own asset build so the package ships compiled JS/CSS.
+
+When the checkout declares a JavaScript frontend — the Vite SPA that apps such as
+frappe/crm, frappe/helpdesk and frappe/insights build into <app>/public/frontend and
+render from <app>/www/<app>.html — that frontend is compiled too and its output is
+packaged. Those files are gitignored build products that Frappe's own esbuild never
+produces, so a package built without them installs cleanly and then serves a blank
+page. Pass --build-frontend=false to skip it.
 By default, it also installs the packaged app to the local FPM app store.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -246,6 +261,80 @@ By default, it also installs the packaged app to the local FPM app store.`,
 			packageFrom = result.BuildRoot
 		}
 
+		// --- Step 7b: build the app's JavaScript frontend ---
+		// Apps like frappe/crm, frappe/helpdesk and frappe/insights ship a Vite SPA
+		// whose output — <app>/public/frontend and the <app>/www/<app>.html route it
+		// is rendered from — is listed in the app's own .gitignore and is never
+		// produced by frappe's esbuild, which only globs *.bundle.*. Without this step
+		// the package installs cleanly and then serves a blank page.
+		//
+		// It runs in packageFrom, which with --bench-path is the staged copy inside
+		// <bench>/apps/<app>: a frappe-ui frontend resolves the bench from its own
+		// physical path (../../../sites), which only holds there.
+		meta.FrontendBuilt = false
+		meta.FrontendDirs, meta.FrontendRoutes, meta.FrontendSource = nil, nil, ""
+		if packageBuildFrontend {
+			fe, feErr := frontend.Build(frontend.BuildOptions{
+				SourcePath:     packageFrom,
+				AppName:        meta.AppName,
+				Verbose:        packageBuildVerbose,
+				Stdout:         cmd.OutOrStdout(),
+				Timeout:        packageFrontendTimeout,
+				SiteConfigPath: packageFrontendSiteConfig,
+				NoScaffold:     packageNoBenchScaffold,
+			})
+			if fe.Cleanup != nil {
+				defer fe.Cleanup()
+			}
+			if feErr != nil {
+				return feErr
+			}
+			if fe.Built {
+				meta.FrontendBuilt = true
+				meta.FrontendDirs = fe.Output.Dirs
+				meta.FrontendRoutes = fe.Output.Routes
+				if fe.Project != nil {
+					meta.FrontendSource = fe.Project.Rel
+				}
+				// A frontend that needed a bench was built in a staged copy, and that
+				// copy is where its output landed. The package must be created from
+				// there or it would carry none of it.
+				if fe.BuildRoot != "" {
+					packageFrom = fe.BuildRoot
+				}
+			}
+		} else if project, detectErr := frontend.Detect(packageFrom, meta.AppName); detectErr == nil && project != nil {
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"Skipping the frontend build in %s (--build-frontend=false): the package will not carry %s/public/frontend "+
+					"and the app will serve a blank page unless the checkout already holds a compiled frontend.\n",
+				project.Rel, meta.AppName)
+		}
+
+		// --- Step 7c: record whatever classic bundles are on disk ---
+		// Covers a checkout that was built by hand outside fpm, and a frontend build
+		// that also emitted *.bundle.* files into <app>/public/dist.
+		if len(meta.AssetBundles) == 0 {
+			appModuleDir := filepath.Join(packageFrom, meta.AppName)
+			if _, statErr := os.Stat(filepath.Join(appModuleDir, "public", "dist")); os.IsNotExist(statErr) {
+				if _, rootDistErr := os.Stat(filepath.Join(packageFrom, "public", "dist")); rootDistErr == nil {
+					appModuleDir = packageFrom
+				}
+			}
+			ltr, rtl, scanErr := assets.Bundles(appModuleDir, meta.AppName)
+			if scanErr == nil && (len(ltr) > 0 || len(rtl) > 0) {
+				bundles := make(map[string]string, len(ltr)+len(rtl))
+				for k, v := range ltr {
+					bundles[k] = v
+				}
+				for k, v := range rtl {
+					bundles[k] = v
+				}
+				meta.AssetsBuilt = true
+				meta.AssetBundles = bundles
+				fmt.Fprintf(cmd.OutOrStdout(), "Discovered %d prebuilt asset bundle(s) in %s/public/dist\n", len(bundles), meta.AppName)
+			}
+		}
+
 		// --- Step 8: archive ---
 		fmt.Printf("Packaging '%s' version '%s' from '%s'...\n", meta.PackageName, meta.PackageVersion, packageFrom)
 		err = archive.CreateFPMArchive(packageFrom, absOutputPath, meta, meta.PackageVersion, archive.Options{
@@ -355,7 +444,11 @@ func init() {
 	packageCmd.Flags().StringVar(&packageImplementation, "implementation", wheels.DefaultImplementation, "Python implementation tag of the destination bench (cp for CPython)")
 	packageCmd.Flags().StringArrayVar(&packageABIs, "abi", nil, "Restrict vendored wheels to these ABI tags (e.g. cp311, abi3); repeatable. Default: derived from --python-version by pip")
 	packageCmd.Flags().StringVar(&packageBenchPath, "bench-path", "", "Path to a Frappe bench with node/yarn available: runs 'bench build --app <app> --production' so the package ships compiled JS/CSS")
-	packageCmd.Flags().BoolVar(&packageBuildVerbose, "build-verbose", false, "Stream the asset build's output (with --bench-path)")
+	packageCmd.Flags().BoolVar(&packageBuildVerbose, "build-verbose", false, "Stream the asset and frontend build output instead of showing it only on failure")
+	packageCmd.Flags().BoolVar(&packageBuildFrontend, "build-frontend", true, "Compile the app's JavaScript frontend (the Vite SPA that apps like frappe/crm build into <app>/public/frontend) when the checkout declares one. Use --build-frontend=false to package without it")
+	packageCmd.Flags().DurationVar(&packageFrontendTimeout, "frontend-timeout", frontend.DefaultTimeout, "Time limit for the frontend dependency install and for the frontend build, each")
+	packageCmd.Flags().StringVar(&packageFrontendSiteConfig, "frontend-site-config", "", "A bench's sites/common_site_config.json to build the frontend against. Apps like frappe/crm compile socketio_port into their bundle; without this a default bench config is synthesized (see --help output during the build)")
+	packageCmd.Flags().BoolVar(&packageNoBenchScaffold, "no-bench-scaffold", false, "Fail instead of building a bench-resolving frontend in a temporary bench. Use when the package must be built only against a real bench (--bench-path or a checkout already at <bench>/apps/<app>)")
 	packageCmd.Flags().StringVar(&packageRepo, "repo", "", "Configured repository to resolve required_apps against (default: the local store, then every configured repository by priority)")
 	packageCmd.Flags().BoolVar(&packageWithDeps, "with-deps", false, "Also write <output-path>/<app>-<version>-bundle/: this package plus every package it transitively requires (each once) with an install-order manifest, for 'fpm install <dir>' on an offline bench")
 }

@@ -15,6 +15,7 @@ import (
 	"fpm/internal/appstore"
 	"fpm/internal/assets"
 	"fpm/internal/config"
+	"fpm/internal/frontend"
 	"fpm/internal/metadata"
 	"fpm/internal/repository"
 	"fpm/internal/resolver"
@@ -806,8 +807,56 @@ func deployPackagedAssets(benchPath, appName, appModulePath, baseVersionPath str
 	}
 	fmt.Printf("Linked %s -> %s\n", filepath.Join(assets.AssetsDir(benchPath), appName), filepath.Join(appModulePath, "public"))
 
+	// A packaged SPA (frappe/crm and friends) is served straight out of the symlink
+	// above at /assets/<app>/frontend/ and needs no manifest entry, because frappe's
+	// esbuild manifest only ever tracks *.bundle.* files. Report it separately, and
+	// write the www route template if the package carries the SPA without one — that
+	// is what crm's own `copy-html-entry` build step does, and a package built from a
+	// checkout that skipped it would otherwise have no route to render the SPA at.
+	spa, spaErr := frontend.Outputs(baseVersionPath, appName)
+	if spaErr != nil {
+		fmt.Fprintf(os.Stderr, "Note: could not inspect the packaged frontend for '%s': %v\n", appName, spaErr)
+	}
+	hasFrontend := spa.Any()
+	if hasFrontend {
+		written, err := frontend.EnsureWWWEntry(baseVersionPath, appName)
+		if err != nil {
+			return fmt.Errorf("failed to install the SPA route template for '%s': %w", appName, err)
+		}
+		for _, w := range written {
+			fmt.Printf("Wrote the SPA route template %s (the package shipped none)\n", w)
+		}
+		spa.Routes = append(spa.Routes, written...)
+		sort.Strings(spa.Routes)
+
+		fmt.Printf("Frontend: %d file(s) in %s\n", spa.Files, strings.Join(spa.Dirs, ", "))
+		for _, dir := range spa.Dirs {
+			// public/<name> is reachable at /assets/<app>/<name>/ through the symlink
+			// assets.Deploy just created.
+			fmt.Printf("  %s -> /assets/%s/%s/\n", dir, appName, strings.TrimPrefix(dir, appName+"/public/"))
+		}
+		for _, route := range spa.Routes {
+			fmt.Printf("  route: %s\n", route)
+		}
+		// A library-mode build has no index.html and needs no route; an SPA with one
+		// and no template is not reachable at any URL, which is worth saying.
+		if len(spa.Entries) > 0 && len(spa.Routes) == 0 {
+			fmt.Fprintf(os.Stderr, "Note: '%s' ships a compiled frontend but no www route template, "+
+				"and its hooks.py declares no website_route_rules to derive one from; "+
+				"frappe will serve the assets but no page renders them.\n", appName)
+		}
+	}
+
 	total := len(deployed.LTR) + len(deployed.RTL)
 	if total == 0 {
+		if hasFrontend {
+			// An SPA-only app legitimately has no bundles; saying otherwise, and
+			// telling the user to repackage with --bench-path, would send them after
+			// a build that cannot produce anything for this app.
+			fmt.Printf("No classic bundles (public/dist) in package, which is expected for an SPA-only app; %s left unchanged.\n",
+				assets.ManifestFileName)
+			return nil
+		}
 		fmt.Printf("No built bundles (public/dist) in package; %s left unchanged. "+
 			"Package with 'fpm package --bench-path <bench>' to ship compiled assets.\n", assets.ManifestFileName)
 		return nil
