@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -159,6 +160,93 @@ func FindPackageInRepos(cfg *config.FPMConfig, org, appName, requestedVersion st
 	for _, repo := range sortedRepos {
 		fmt.Printf("Searching for %s/%s version '%s' in repository '%s' (%s)...\n", org, appName, requestedVersion, repo.Name, repo.URL)
 
+		// OCI Repository Backend
+		if repo.Type == "oci" {
+			driver := GetOCIDriver()
+			if driver == nil {
+				fmt.Fprintf(os.Stderr, "Skipping OCI repository %s: OCI driver not registered\n", repo.Name)
+				continue
+			}
+
+			targetVersion := requestedVersion
+			var versionMeta *PackageVersionMetadata
+
+			if targetVersion == "" || targetVersion == "latest" {
+				pkgMeta, found, err := driver.FetchMetadata(context.Background(), repo, org, appName)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to fetch OCI metadata for %s/%s from %s: %v\n", org, appName, repo.Name, err)
+					continue
+				}
+				if !found || pkgMeta == nil || pkgMeta.LatestVersion == "" {
+					fmt.Printf("Package %s/%s not found in OCI repo %s\n", org, appName, repo.Name)
+					continue
+				}
+				targetVersion = pkgMeta.LatestVersion
+				v := pkgMeta.Versions[targetVersion]
+				versionMeta = &v
+				fmt.Printf("Resolved 'latest' to version %s for %s/%s in OCI repo %s\n", targetVersion, org, appName, repo.Name)
+			} else {
+				vm, found, err := driver.FetchVersionMetadata(context.Background(), repo, org, appName, targetVersion)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to fetch OCI version metadata for %s/%s:%s from %s: %v\n", org, appName, targetVersion, repo.Name, err)
+					continue
+				}
+				if !found || vm == nil {
+					fmt.Printf("Version %s for %s/%s not found in OCI repo %s\n", targetVersion, org, appName, repo.Name)
+					continue
+				}
+				versionMeta = vm
+			}
+
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get user home directory: %w", err)
+			}
+			fpmBaseDir := filepath.Join(homeDir, ".fpm")
+			fpmFileName := fmt.Sprintf("%s-%s.fpm", appName, targetVersion)
+			cacheDir := filepath.Join(fpmBaseDir, "cache", repo.Name, org, appName, targetVersion)
+			cachedFPMPath := filepath.Join(cacheDir, fpmFileName)
+
+			if err := os.MkdirAll(cacheDir, 0o750); err != nil {
+				return nil, fmt.Errorf("failed to create cache directory %s: %w", cacheDir, err)
+			}
+
+			packageDescription := fmt.Sprintf("%s/%s version %s", org, appName, targetVersion)
+
+			// Cache hit check
+			if info, err := os.Stat(cachedFPMPath); err == nil && !info.IsDir() && info.Size() > 0 {
+				if versionMeta.ChecksumSHA256 == "" || verifyFPMFileOrRemove(cachedFPMPath, versionMeta.ChecksumSHA256, packageDescription) == nil {
+					fmt.Printf("Package found in cache: %s. Checksum verified.\n", cachedFPMPath)
+					return &DownloadedPackageInfo{
+						LocalPath:      cachedFPMPath,
+						RepositoryName: repo.Name,
+						Org:            org,
+						AppName:        appName,
+						Version:        targetVersion,
+						Checksum:       versionMeta.ChecksumSHA256,
+					}, nil
+				}
+			}
+
+			fmt.Printf("Pulling %s from OCI repository %s to %s...\n", packageDescription, repo.Name, cachedFPMPath)
+			vm, err := driver.Pull(context.Background(), repo, org, appName, targetVersion, cachedFPMPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to pull from OCI repository %s: %v\n", repo.Name, err)
+				continue
+			}
+
+			fmt.Printf("Successfully pulled %s from OCI repository %s.\n", fpmFileName, repo.Name)
+			return &DownloadedPackageInfo{
+				LocalPath:      cachedFPMPath,
+				RepositoryName: repo.Name,
+				Org:            org,
+				AppName:        appName,
+				Version:        targetVersion,
+				Checksum:       vm.ChecksumSHA256,
+			}, nil
+		}
+
+		// WebDAV / HTTP Repository Backend
 		// Credentials are per repository, so the client is built inside the loop.
 		// A repository whose credentials cannot be resolved is skipped rather than
 		// aborting the search: a later repository may serve the package without auth.
