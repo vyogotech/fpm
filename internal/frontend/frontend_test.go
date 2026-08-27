@@ -1221,3 +1221,52 @@ func TestUnfrozenRetryReachesNestedInstalls(t *testing.T) {
 		t.Errorf("a nested install would not see the setting: %q", log)
 	}
 }
+
+// TestUnfrozenNpmrcCarriesTheUsersConfig: the setting has to travel in a config file,
+// because `npm run` rebuilds npm_config_* for its children and loses anything injected
+// through the environment — which is how drive's nested `cd frontend && pnpm install`
+// kept freezing. Replacing the user's npmrc wholesale would take their registry
+// credentials with it, so it is copied in first.
+func TestUnfrozenNpmrcCarriesTheUsersConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	existing := "//registry.example.com/:_authToken=secret\nregistry=https://registry.example.com\n"
+	if err := os.WriteFile(filepath.Join(home, ".npmrc"), []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	path, cleanup, err := unfrozenNpmrc()
+	if err != nil {
+		t.Fatalf("unfrozenNpmrc: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "frozen-lockfile=false") {
+		t.Errorf("the setting is missing: %q", got)
+	}
+	if !strings.Contains(got, "_authToken=secret") || !strings.Contains(got, "registry=https://registry.example.com") {
+		t.Errorf("the user's own config was dropped, which would break a private registry: %q", got)
+	}
+
+	cleanup()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("the throwaway config must be removed")
+	}
+}
+
+// With no ~/.npmrc there is simply nothing to carry.
+func TestUnfrozenNpmrcWithoutAUserConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path, cleanup, err := unfrozenNpmrc()
+	if err != nil {
+		t.Fatalf("unfrozenNpmrc: %v", err)
+	}
+	defer cleanup()
+	data, _ := os.ReadFile(path)
+	if strings.TrimSpace(string(data)) != "frozen-lockfile=false" {
+		t.Errorf("contents = %q", data)
+	}
+}
