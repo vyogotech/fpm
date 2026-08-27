@@ -3,6 +3,7 @@ package mirror
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -52,5 +53,38 @@ func TestAutoBuildFrontendAssets(t *testing.T) {
 	destCSS := filepath.Join(appModule, "public", "frontend", "css", "testapp.bundle.87654321.css")
 	if _, err := os.Stat(destCSS); os.IsNotExist(err) {
 		t.Fatalf("expected built asset at %s, but file was not found", destCSS)
+	}
+}
+
+// TestAutoBuildFrontendAssetsRequiresARealAppName guards the failure that took down a
+// whole mirror run: BuildItem.AppName is the catalog's *override* and is empty for
+// every app whose module is named after its slug — which is most of the catalog. Passing
+// it straight through made the frontend build reject every app with "app name is
+// required" before anything was built.
+func TestAutoBuildFrontendAssetsRequiresARealAppName(t *testing.T) {
+	checkout := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(checkout, "wiki"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := NewWorkspace(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{Workspace: ws, Log: func(string, ...any) {}}
+
+	// An app with no frontend is a no-op, but only if it was given a name at all.
+	if _, cleanup, err := runner.autoBuildFrontendAssets("wiki", checkout); err != nil {
+		t.Fatalf("a named app with no frontend must not error: %v", err)
+	} else {
+		cleanup()
+	}
+
+	_, cleanup, err := runner.autoBuildFrontendAssets("", checkout)
+	cleanup()
+	if err == nil {
+		t.Fatal("an empty app name must be rejected loudly rather than silently building nothing")
+	}
+	if !strings.Contains(err.Error(), "app name is required") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
