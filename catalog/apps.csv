@@ -7,7 +7,7 @@ builder,https://github.com/frappe/builder,,,,,,,,,,
 gameplan,https://github.com/frappe/gameplan,,branch,develop,0,,,,,,no release tags upstream; tracked from develop
 insights,https://github.com/frappe/insights,,,,,,,,,,
 wiki,https://github.com/frappe/wiki,,,,,,,,,,
-helpdesk,https://github.com/frappe/helpdesk,,,,,,,,,frappe@version-15,
+helpdesk,https://github.com/frappe/helpdesk,,,,,1,,,,frappe@develop,"v1 line only: its desk build reads ../../frappe/ui, and only frappe develop's ui package carries @vueuse/core. The dead 0.x line needs frappe/public/js/lib/posthog.js, which develop no longer has - the two lines want incompatible frappe refs"
 crm,https://github.com/frappe/crm,,,,,,,,,,
 lms,https://github.com/frappe/lms,lms,,,,,,,,,
 drive,https://github.com/frappe/drive,,,,,,,,,,
