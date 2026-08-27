@@ -208,8 +208,12 @@ func runMirror() error {
 	// published but helpdesk's build still reads its source, so the mirror has to know
 	// where to fetch it from.
 	catalogRepos := map[string]string{}
+	buildDepRefs := map[string]map[string]string{}
 	for _, app := range catalog.Apps {
 		catalogRepos[app.Slug] = app.Repo
+		if len(app.BuildDeps) > 0 {
+			buildDepRefs[app.Slug] = app.BuildDeps
+		}
 	}
 
 	runner := &mirror.Runner{
@@ -218,6 +222,7 @@ func runMirror() error {
 		OutputPath:    mirrorOutputPath,
 		RepoNames:     repoNames,
 		CatalogRepos:  catalogRepos,
+		BuildDepRefs:  buildDepRefs,
 		SkipPublish:   mirrorSkipPublish,
 		PythonVersion: pyVer,
 		Platforms:     platforms,

@@ -1,21 +1,21 @@
-slug,repo,app_name,track,branch,branch_major,majors,bundle_deps,enabled,tier,notes
-frappe,https://github.com/frappe/frappe,,,,,14;15;16,,false,,"the framework itself: present in every bench image, and its assets come from bench build rather than an app frontend"
-erpnext,https://github.com/frappe/erpnext,,,,,14;15;16,,,,
-hrms,https://github.com/frappe/hrms,,,,,14;15;16,,,1,
-payments,https://github.com/frappe/payments,,branch,develop,0,,,,,no release tags upstream; tracked from develop
-builder,https://github.com/frappe/builder,,,,,,,,,
-gameplan,https://github.com/frappe/gameplan,,branch,develop,0,,,,,no release tags upstream; tracked from develop
-insights,https://github.com/frappe/insights,,,,,,,,,
-wiki,https://github.com/frappe/wiki,,,,,,,,,
-helpdesk,https://github.com/frappe/helpdesk,,,,,,,,,
-crm,https://github.com/frappe/crm,,,,,,,,,
-lms,https://github.com/frappe/lms,lms,,,,,,,,
-drive,https://github.com/frappe/drive,,,,,,,,,
-print_designer,https://github.com/frappe/print_designer,,,,,,,,,
-webshop,https://github.com/frappe/webshop,,branch,develop,0,,,,1,no release tags upstream; tracked from develop
-raven,https://github.com/The-Commit-Company/raven,,,,,,,,,third party team messaging
-pos_awesome,https://github.com/ucraft-com/POS-Awesome,posawesome,branch,develop,15,,,,,third party point of sale
-marley,https://github.com/earthians/marley,healthcare,,,,,,,,third party health information system
-banking,https://github.com/alyf-de/banking,,,,,,,,,third party bank reconciliation
-cargo_management,https://github.com/AgileShift/cargo_management,,,,,,,,,third party cargo management
-btu,https://github.com/Datahenge/btu,,,,,,,,,third party background tasks unleashed
+slug,repo,app_name,track,branch,branch_major,majors,bundle_deps,enabled,tier,build_deps,notes
+frappe,https://github.com/frappe/frappe,,,,,14;15;16,,false,,,"the framework itself: present in every bench image, and its assets come from bench build rather than an app frontend"
+erpnext,https://github.com/frappe/erpnext,,,,,14;15;16,,,,,
+hrms,https://github.com/frappe/hrms,,,,,14;15;16,,,1,,
+payments,https://github.com/frappe/payments,,branch,develop,0,,,,,,no release tags upstream; tracked from develop
+builder,https://github.com/frappe/builder,,,,,,,,,,
+gameplan,https://github.com/frappe/gameplan,,branch,develop,0,,,,,,no release tags upstream; tracked from develop
+insights,https://github.com/frappe/insights,,,,,,,,,,
+wiki,https://github.com/frappe/wiki,,,,,,,,,,
+helpdesk,https://github.com/frappe/helpdesk,,,,,,,,,frappe@version-15,
+crm,https://github.com/frappe/crm,,,,,,,,,,
+lms,https://github.com/frappe/lms,lms,,,,,,,,,
+drive,https://github.com/frappe/drive,,,,,,,,,,
+print_designer,https://github.com/frappe/print_designer,,,,,,,,,,
+webshop,https://github.com/frappe/webshop,,branch,develop,0,,,,1,,no release tags upstream; tracked from develop
+raven,https://github.com/The-Commit-Company/raven,,,,,,,,,,third party team messaging
+pos_awesome,https://github.com/ucraft-com/POS-Awesome,posawesome,branch,develop,15,,,,,,third party point of sale
+marley,https://github.com/earthians/marley,healthcare,,,,,,,,,third party health information system
+banking,https://github.com/alyf-de/banking,,,,,,,,,,third party bank reconciliation
+cargo_management,https://github.com/AgileShift/cargo_management,,,,,,,,,,third party cargo management
+btu,https://github.com/Datahenge/btu,,,,,,,,,,third party background tasks unleashed

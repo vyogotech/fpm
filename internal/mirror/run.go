@@ -52,7 +52,10 @@ type Runner struct {
 	// CatalogRepos maps every catalog slug to its git URL, including entries that are
 	// disabled for publishing. A build-time dependency is fetched from here: frappe is
 	// no longer mirrored, but helpdesk's build still reads its source off disk.
-	CatalogRepos  map[string]string
+	CatalogRepos map[string]string
+	// BuildDepRefs pins a build dependency's ref per app slug, from the catalog's
+	// build_deps column: BuildDepRefs["helpdesk"]["frappe"] = "version-15".
+	BuildDepRefs  map[string]map[string]string
 	PythonVersion string   // destination interpreter version for vendored wheels (e.g. "3.11")
 	Platforms     []string // target platforms for vendored wheels (e.g. "manylinux2014_x86_64")
 	Log           func(format string, args ...any)
@@ -259,11 +262,22 @@ func (r *Runner) ensureBuildDependencies(appName, checkout string) error {
 			return fmt.Errorf("%s's build reads ../../%s off disk, but %q is not in the catalog, "+
 				"so there is nowhere to fetch it from", appName, slug, slug)
 		}
-		ref, err := latestReleaseRef(repoURL)
-		if err != nil {
-			return fmt.Errorf("resolving a ref for build dependency %s: %w", slug, err)
+		ref, pinned := r.BuildDepRefs[appName][slug]
+		if !pinned {
+			// No pin: the newest release. Right for a dependency that only supplies
+			// source to read, wrong when the app is built against a specific line —
+			// helpdesk's own CI sets FRAPPE_BRANCH=version-15 — which is what the
+			// catalog's build_deps column is for.
+			var err error
+			if ref, err = latestReleaseRef(repoURL); err != nil {
+				return fmt.Errorf("resolving a ref for build dependency %s: %w", slug, err)
+			}
 		}
-		r.Log("  build dependency: %s at %s (its source is read by %s's build)", slug, ref, appName)
+		how := "newest release"
+		if pinned {
+			how = "pinned by the catalog"
+		}
+		r.Log("  build dependency: %s at %s (%s; its source is read by %s's build)", slug, ref, how, appName)
 		if _, err := r.Workspace.EnsureBuildDependency(slug, repoURL, ref); err != nil {
 			return err
 		}
