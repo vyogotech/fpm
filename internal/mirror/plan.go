@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"fpm/internal/config"
 	"fpm/internal/repository"
 )
 
@@ -40,10 +41,15 @@ type Plan struct {
 //
 // now is the yyyymmdd stamp used in branch pseudo-versions.
 func BuildPlan(apps []App, repoBaseURL string, client *http.Client, now string) (*Plan, error) {
+	return BuildPlanForRepo(apps, config.RepositoryConfig{URL: repoBaseURL}, client, now)
+}
+
+// BuildPlanForRepo discovers desired versions against a repository config (HTTP or OCI).
+func BuildPlanForRepo(apps []App, repo config.RepositoryConfig, client *http.Client, now string) (*Plan, error) {
 	plan := &Plan{}
 
 	for _, app := range apps {
-		published, err := publishedVersions(repoBaseURL, app, client)
+		published, err := publishedVersionsForRepo(repo, app, client)
 		if err != nil {
 			return nil, err
 		}
@@ -132,12 +138,16 @@ func planBranch(app App, published map[string]struct{}, now string) (BuildItem, 
 }
 
 func publishedVersions(repoBaseURL string, app App, client *http.Client) (map[string]struct{}, error) {
-	meta, found, err := repository.FetchRemotePackageMetadata(repoBaseURL, Org, app.MetadataName(), client)
+	return publishedVersionsForRepo(config.RepositoryConfig{URL: repoBaseURL}, app, client)
+}
+
+func publishedVersionsForRepo(repo config.RepositoryConfig, app App, client *http.Client) (map[string]struct{}, error) {
+	meta, found, err := repository.FetchRemotePackageMetadataForRepo(repo, Org, app.MetadataName(), client)
 	if err != nil {
 		return nil, fmt.Errorf("checking published versions of %s: %w", app.Slug, err)
 	}
 	versions := map[string]struct{}{}
-	if found {
+	if found && meta != nil {
 		for version := range meta.Versions {
 			versions[version] = struct{}{}
 		}

@@ -436,10 +436,10 @@ func Deploy(benchPath, appName, appModuleDir string) (Deployed, error) {
 }
 
 // Undeploy removes an app's deployed assets from benchPath during rollback:
-// 1. Removes symlinks under sites/assets/ (<app>, <app>_docs, <app>/node_modules).
-// 2. Removes entries from assets.json and assets-rtl.json whose value path starts
-//    with "/assets/<appName>/dist/" or "/assets/<appName>/".
-// 3. Invalidates the redis_cache assets_json key.
+//  1. Removes symlinks under sites/assets/ (<app>, <app>_docs, <app>/node_modules).
+//  2. Removes entries from assets.json and assets-rtl.json whose value path starts
+//     with "/assets/<appName>/dist/" or "/assets/<appName>/".
+//  3. Invalidates the redis_cache assets_json key.
 func Undeploy(benchPath, appName string) error {
 	assetsDir := AssetsDir(benchPath)
 

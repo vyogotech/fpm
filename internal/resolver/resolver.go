@@ -244,7 +244,7 @@ func latestInRepo(repo config.RepositoryConfig, org, name string, opts Options) 
 		}
 		if fetchMeta == nil {
 			fetchMeta = func(r config.RepositoryConfig, o, a string) (*repository.PackageMetadata, bool, error) {
-				return repository.FetchRemotePackageMetadata(r.URL, o, a, client)
+				return repository.FetchRemotePackageMetadataForRepo(r, o, a, client)
 			}
 		}
 		if fetchIdx == nil {

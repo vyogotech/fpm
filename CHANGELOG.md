@@ -9,33 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.0.0] - 2026-08-27
 
-Maven-style multi-repository transitive dependency resolution, topological cascade installation,
-pre-install snapshot recording with transactional LIFO rollback, version conflict detection, and
-real SNE container integration tests.
+Pluggable OCI Registry backend, generic non-provider-specific authentication, OCI 1.1 referrers graph linking, Maven-style transitive dependency resolution, topological cascade installation, pre-install snapshot recording with transactional LIFO rollback, enhanced `fpm deps` inspection utility, GHCR catalog prepopulation workflow with multi-tier caching, and real SNE container integration tests.
 
 ### Added
 
-- **Maven-Style Transitive Dependency Cascade (`fpm install`)**: By default (`--deps=true`),
-  `fpm install` queries all configured repositories to automatically fetch and unpack missing
-  transitive dependencies into `~/.fpm/apps/` before bench installation. It computes the
-  topological dependency order and installs base dependencies first. The `--no-deps` flag
-  allows installing only the single package without pulling dependencies.
+- **Pluggable OCI Container Registry Backend (`type: oci`)**:
+  - `internal/ociregistry`: Implemented full OCI registry integration via `oras.land/oras-go/v2`.
+  - Added `--type`, `--plain-http`, and `--insecure` flags to `fpm repo add` (e.g. `fpm repo add ghcr ghcr.io/vyogotech/fpm --type oci`).
+  - Single-layer `.fpm` payload mapping (`application/vnd.vyogo.fpm.package.v1.fpm`) with content-addressed SHA256 layer digest verification for zero-overhead integrity verification.
+  - Manifest annotation promotion: `app_metadata.json` attributes (commit SHA, git ref, wheel platform, python version, Frappe compatibility, required apps) are promoted directly to OCI image manifest annotations, queryable without downloading the payload.
+  - OCI 1.1 `subject` descriptor and referrers API linking for `required_apps` (e.g. `hrms` referencing `erpnext`), discoverable via `oras discover`.
+  - Seamless integration across `fpm publish`, `fpm install`, `fpm exists`, `fpm mirror`, and `fpm deps`.
+- **Generic Registry Authentication**:
+  - Prioritized credential resolution using non-provider-specific environment variables: `REGISTRY_PASSWORD`, `FPM_REGISTRY_PASSWORD`, `FPM_REGISTRY_TOKEN`, `REGISTRY_USERNAME`, `FPM_REGISTRY_USERNAME`.
+  - Standard Docker / Podman credential store fallback (`~/.docker/config.json`).
+  - Interactive terminal password prompt via `term.ReadPassword` fallback.
+- **Transitive Dependency Cascade & Resolution (`fpm install`)**:
+  - By default (`--deps=true`), `fpm install` queries all configured repositories (HTTP and OCI) to automatically fetch and unpack missing transitive dependencies into `~/.fpm/apps/` before bench installation.
+  - Computes topological dependency order and installs base dependencies first.
+  - Added `--no-deps` flag to install only the target package without pulling dependencies.
+  - Added `--dry-run` flag to print the full dependency resolution and installation execution plan without mutating the bench.
+- **Dependency Inspection & Installation Plan Utility (`fpm deps`)**:
+  - `cmd/deps.go`: Enhanced `fpm deps <package>` to resolve local files, local store packages, or remote repositories.
+  - Traverses the recursive `required_apps` closure and categorizes each app into `SKIP` (already present in bench), `INSTALL` (cached in store), or `FETCH & INSTALL` (from remote repository).
+  - Added `--bench-path` to evaluate pre-existing bench installations.
+  - Added `--json` flag returning `install_plan` and `install_queue` arrays for automation tooling.
 - **Pre-Install Snapshot & Atomic Rollback Engine**:
-  - `internal/snapshot`: Takes an in-memory snapshot of the target bench before applying any
-    mutations, recording pre-existing apps, versions, raw `apps.txt` bytes, and asset manifests.
-  - `internal/rollback`: Records LIFO transactional rollback actions (`SymlinkAction`,
-    `AssetDeployAction`, `PipInstallAction`, `AppsTxtAction`). On mid-flight installation
-    failures (when `--rollback=true`, default), the rollback engine cleanly undoes intermediate
-    steps while guaranteeing that pre-existing apps are never deleted or uninstalled.
-  - `internal/assets`: Implemented `Manifest.Delete` and `assets.Undeploy` to remove asset symlinks,
-    scrub app entries from `assets.json` and `assets-rtl.json`, and invalidate Redis cache.
+  - `internal/snapshot`: Takes an in-memory snapshot of the target bench before applying any mutations, recording pre-existing apps, versions, raw `apps.txt` bytes, and asset manifests.
+  - `internal/rollback`: Records LIFO transactional rollback actions (`SymlinkAction`, `AssetDeployAction`, `PipInstallAction`, `AppsTxtAction`). On mid-flight installation failures (when `--rollback=true`, default), the rollback engine cleanly undoes intermediate steps while guaranteeing that pre-existing apps are never deleted or uninstalled.
+  - `internal/assets`: Implemented `Manifest.Delete` and `assets.Undeploy` to remove asset symlinks, scrub app entries from `assets.json` and `assets-rtl.json`, and invalidate Redis cache.
 - **Exit Codes**:
   - `ExitRolledBack` (8): Returned when an install fails and the bench is restored cleanly to its pre-install state.
   - `ExitVersionConflict` (9): Returned when a required dependency conflicts with a different version already present in the bench.
-- **Dry-Run Mode (`--dry-run`)**: Prints the full dependency resolution and installation execution plan without mutating the bench.
+- **GitHub Container Registry (GHCR) Catalog Prepopulation (`.github/workflows/mirror.yml`)**:
+  - Automated weekly cron and manual `workflow_dispatch` CI workflow to bulk-build, vendor, package, and publish official Frappe apps (`frappe`, `erpnext`, `hrms`, `payments`, `wiki`, `crm`, `helpdesk`, `lms`, `raven`, etc.) to `ghcr.io`.
+  - Multi-tier intra-run and inter-run persistent caching (`actions/cache@v4`) for wheel dependencies, git checkouts, npm/yarn asset compiler caches, and `.fpm` artifacts.
 - **SNE Offline Integration Test Suite**:
   - Added real Single Node Environment (SNE) container test harness (`test/offline/run.sh`) covering network isolation (`--network none`), live HTTP endpoint asset resolution, and real HRMS + ERPNext packaging and installation.
   - Added automated `offline-integration` test job in `.github/workflows/ci.yml`.
+
+### Fixed
+
+- Fixed CI `gofmt` whitespace and comment formatting failure on `cmd/install_test.go` and `internal/assets/assets.go`.
+
 
 ## [2.2.0] - 2026-08-27
 

@@ -8,8 +8,8 @@ import (
 	"encoding/json" // For serving JSON metadata
 	"errors"
 	"fmt"
-	"fpm/internal/config"   // For config.LoadConfig() to find AppsBasePath
-	"fpm/internal/metadata" // For metadata types
+	"fpm/internal/config"     // For config.LoadConfig() to find AppsBasePath
+	"fpm/internal/metadata"   // For metadata types
 	"fpm/internal/repository" // For PackageMetadata struct
 	"github.com/spf13/pflag"
 	"io"
