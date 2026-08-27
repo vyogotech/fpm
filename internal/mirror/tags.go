@@ -122,3 +122,25 @@ func exitDetail(err error) string {
 	}
 	return "no stderr"
 }
+
+// ResolveDefaultBranch returns the branch a repository's HEAD points at, without
+// cloning. `ls-remote --symref` reports it as "ref: refs/heads/<name>\tHEAD", which is
+// the only way to learn it remotely — guessing "main" is wrong for every frappe app
+// tracked from "develop".
+func ResolveDefaultBranch(repoURL string) (string, error) {
+	out, err := exec.Command("git", "ls-remote", "--symref", repoURL, "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("git ls-remote --symref %s HEAD: %w (%s)", repoURL, err, exitDetail(err))
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		rest, ok := strings.CutPrefix(line, "ref: ")
+		if !ok {
+			continue
+		}
+		ref, _, _ := strings.Cut(rest, "\t")
+		if name, ok := strings.CutPrefix(strings.TrimSpace(ref), "refs/heads/"); ok && name != "" {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("could not determine the default branch of %s", repoURL)
+}

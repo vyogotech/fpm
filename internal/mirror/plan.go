@@ -201,3 +201,82 @@ func majorLabel(version string) string {
 	}
 	return "v" + version
 }
+
+// SlugFromRepoURL derives a catalog-style slug from a git URL: the last path
+// segment, without a .git suffix, lowercased. "https://github.com/acme/My-App.git"
+// becomes "my-app".
+func SlugFromRepoURL(repoURL string) string {
+	trimmed := strings.TrimSuffix(strings.TrimRight(strings.TrimSpace(repoURL), "/"), ".git")
+	if i := strings.LastIndexAny(trimmed, "/:"); i >= 0 {
+		trimmed = trimmed[i+1:]
+	}
+	return strings.ToLower(trimmed)
+}
+
+// PlanAdHoc builds a one-item plan for a repository that is not in the catalog, so a
+// run can package an arbitrary checkout on demand rather than only curated apps.
+//
+// ref may be a tag, a branch, or empty for the repository's default branch. A ref that
+// names a tag is packaged at that tag's version; anything else is packaged as a branch
+// pseudo-version carrying the head commit, exactly as a catalog branch entry is, so
+// re-running an unchanged branch republishes nothing.
+//
+// slug names the app in the registry; empty derives it from the URL.
+func PlanAdHoc(repoURL, ref, slug, appName string, repos []config.RepositoryConfig, client *http.Client, now string) (*Plan, error) {
+	repoURL = strings.TrimSpace(repoURL)
+	if repoURL == "" {
+		return nil, fmt.Errorf("a git URL is required")
+	}
+	if slug == "" {
+		slug = SlugFromRepoURL(repoURL)
+	}
+	if !slugPattern.MatchString(slug) {
+		return nil, fmt.Errorf("derived slug %q is not usable; pass --slug", slug)
+	}
+
+	app := App{Slug: slug, AppName: appName, Repo: repoURL, BundleDeps: true, Enabled: true}
+	published, err := publishedInAll(repos, app, client)
+	if err != nil {
+		return nil, err
+	}
+
+	// A ref that matches a published tag is a release; everything else is a branch.
+	if ref != "" {
+		tags, tagErr := ListRemoteTags(repoURL)
+		if tagErr != nil {
+			return nil, tagErr
+		}
+		for _, tag := range tags {
+			if tag.Name != ref {
+				continue
+			}
+			version := NormalizeVersion(tag.Name)
+			if _, exists := published[version]; exists {
+				return &Plan{Skipped: []SkipItem{{Slug: slug, Detail: version + " already published"}}}, nil
+			}
+			return &Plan{Items: []BuildItem{{
+				Slug: slug, AppName: appName, Repo: repoURL, Ref: tag.Name, Version: version,
+				BundleDeps: true, Reason: "requested tag " + tag.Name,
+			}}}, nil
+		}
+	}
+
+	branch := ref
+	if branch == "" {
+		// ls-remote --symref is the only remote way to learn it; guessing "main" is
+		// wrong for every frappe app tracked from "develop".
+		branch, err = ResolveDefaultBranch(repoURL)
+		if err != nil {
+			return nil, err
+		}
+	}
+	app.Branch = branch
+	item, skip, err := planBranch(app, published, now)
+	if err != nil {
+		return nil, err
+	}
+	if skip != nil {
+		return &Plan{Skipped: []SkipItem{*skip}}, nil
+	}
+	return &Plan{Items: []BuildItem{item}}, nil
+}

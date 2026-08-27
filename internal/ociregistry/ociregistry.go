@@ -499,5 +499,16 @@ func isNotFound(err error) bool {
 		return false
 	}
 	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "not found") || strings.Contains(s, "404") || strings.Contains(s, "manifest unknown")
+	if strings.Contains(s, "not found") || strings.Contains(s, "404") || strings.Contains(s, "manifest unknown") {
+		return true
+	}
+	// A registry that will not confirm a repository exists reads the same as one that
+	// says it does not. GHCR answers a pull scope for a repository it does not have
+	// with "denied: requested access to the resource is denied" rather than 404, so
+	// treating that as an error makes the first publish of any new app fail on the
+	// check that was meant to decide whether to publish it.
+	//
+	// A genuine credential problem is not masked: it surfaces on the push, which needs
+	// write access and reports it plainly.
+	return strings.Contains(s, "denied") || strings.Contains(s, "403")
 }
