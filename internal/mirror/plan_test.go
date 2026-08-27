@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"fpm/internal/config"
 	"fpm/internal/repository"
 )
 
@@ -156,3 +157,87 @@ func TestBuildPlanBranchTrack(t *testing.T) {
 		t.Errorf("unchanged branch head must not replan: %+v", plan.Items)
 	}
 }
+
+// TestBuildPlanForReposBuildsWhatAnyRepositoryLacks is the point of mirroring to more
+// than one backend: a version already in GHCR but missing from the HTTP registry still
+// has to be built, or the two never converge. Only a version every repository holds is
+// skipped.
+func TestBuildPlanForReposBuildsWhatAnyRepositoryLacks(t *testing.T) {
+	repo := fixtureRepo(t, "v1.10.0", "v2.0.0", "v3.0.0")
+	// One registry is ahead of the other.
+	ahead := registryStub(t, "wiki", "1.10.0", "2.0.0")
+	behind := registryStub(t, "wiki", "1.10.0")
+
+	app := App{Slug: "wiki", Repo: repo, Track: TrackTags, BundleDeps: true}
+	plan, err := BuildPlanForRepos(
+		[]App{app},
+		[]config.RepositoryConfig{{Name: "ahead", URL: ahead.URL}, {Name: "behind", URL: behind.URL}},
+		ahead.Client(), "20260819")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]bool{}
+	for _, item := range plan.Items {
+		got[item.Version] = true
+	}
+	// 3.0.0 is in neither; 2.0.0 is in one of the two and so is not yet mirrored.
+	if !got["3.0.0"] {
+		t.Errorf("3.0.0 must be built: no repository has it (items = %+v)", plan.Items)
+	}
+	if !got["2.0.0"] {
+		t.Errorf("2.0.0 must be built: 'behind' is missing it (items = %+v)", plan.Items)
+	}
+	if got["1.10.0"] {
+		t.Errorf("1.10.0 is in every repository and must be skipped (items = %+v)", plan.Items)
+	}
+}
+
+// TestBuildPlanForReposSkipsOnlyWhatEveryRepositoryHas is the converse: two registries
+// already in step produce no work.
+func TestBuildPlanForReposSkipsOnlyWhatEveryRepositoryHas(t *testing.T) {
+	repo := fixtureRepo(t, "v1.10.0", "v2.0.0")
+	a := registryStub(t, "wiki", "1.10.0", "2.0.0")
+	b := registryStub(t, "wiki", "1.10.0", "2.0.0")
+
+	plan, err := BuildPlanForRepos(
+		[]App{{Slug: "wiki", Repo: repo, Track: TrackTags, BundleDeps: true}},
+		[]config.RepositoryConfig{{Name: "a", URL: a.URL}, {Name: "b", URL: b.URL}},
+		a.Client(), "20260819")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Items) != 0 {
+		t.Fatalf("nothing should be built when both registries are in step: %+v", plan.Items)
+	}
+}
+
+// TestBuildPlanForReposRejectsNoRepository: mirroring nowhere is a configuration
+// error, not an empty run that looks like success.
+func TestBuildPlanForReposRejectsNoRepository(t *testing.T) {
+	if _, err := BuildPlanForRepos(nil, nil, nil, "20260819"); err == nil {
+		t.Fatal("expected an error when no repository is given")
+	}
+}
+
+// TestBuildPlanForRepoMatchesSingleRepoBehaviour keeps the one-repository path, which
+// every existing caller uses, identical to what it was.
+func TestBuildPlanForRepoMatchesSingleRepoBehaviour(t *testing.T) {
+	repo := fixtureRepo(t, "v1.10.0", "v2.0.0")
+	server := registryStub(t, "wiki", "1.10.0")
+	app := App{Slug: "wiki", Repo: repo, Track: TrackTags, BundleDeps: true}
+
+	one, err := BuildPlanForRepo(app2plan(app), config.RepositoryConfig{URL: server.URL}, server.Client(), "20260819")
+	if err != nil {
+		t.Fatal(err)
+	}
+	many, err := BuildPlanForRepos(app2plan(app), []config.RepositoryConfig{{URL: server.URL}}, server.Client(), "20260819")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one.Items) != 1 || len(many.Items) != 1 || one.Items[0].Version != many.Items[0].Version {
+		t.Fatalf("single-repo behaviour changed: %+v vs %+v", one.Items, many.Items)
+	}
+}
+
+func app2plan(a App) []App { return []App{a} }

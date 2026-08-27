@@ -7,35 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+## [3.0.0] - 2026-08-27
 
-- **Apps with a JavaScript frontend (`frappe/crm`, `frappe/helpdesk`, `frappe/insights`,
-  `frappe/gameplan`, erpnext's `banking`) packaged without their compiled frontend.** These
-  apps ship a Vite SPA that Frappe's own esbuild never builds — it only globs `*.bundle.*`,
-  and an SPA has none — and whose output is listed in the app's `.gitignore`
-  (crm ignores `crm/public/frontend` and `crm/www/crm.html`). So neither `fpm package` nor
-  `fpm package --bench-path` produced it, and the resulting package installed cleanly and
-  then served a blank page. `fpm package` now compiles the app's frontend and ships the
-  result. See [App frontends](README.md#app-frontends).
-- Frontend dependency installs no longer honour an inherited `NODE_ENV=production`, which
-  makes yarn skip `devDependencies`. crm keeps `autoprefixer`, `postcss` and `tailwindcss`
-  there, so the install succeeded and the build then died with
-  `Cannot find module 'autoprefixer'`. `fpm package` and `--bench-path`'s `yarn install`
-  both force them on now.
-- `fpm install` no longer reports "No built bundles ... package with `--bench-path`" for an
-  SPA-only app, which sent users after a rebuild that cannot produce anything for it. An SPA
-  is served through the `sites/assets/<app>` symlink and needs no `assets.json` entry.
-- `fpm install` writes the SPA's route template when a package carries the compiled
-  frontend without one; the app otherwise has no route to render it at. The name is read
-  from the app's `hooks.py` `website_route_rules`, because it follows no convention — crm
-  routes at `crm` but insights routes at `_insights`, builder at `_builder` and gameplan at
-  `g`. When the app declares no route, or declares several so the mapping is ambiguous (as
-  erpnext does, with 24 `to_route` values that mostly name DocTypes), fpm reports it instead
-  of inventing a filename.
-- The GHCR mirror built every directory with a `build` script, so crm was built twice (its
-  root script is `cd frontend && yarn build`), and copied Vite output into
-  `<app>/public/dist` — the directory reserved for the hashed `*.bundle.*` files that go
-  into `assets.json`. It now shares one implementation with `fpm package`.
+Pluggable OCI Registry backend, generic non-provider-specific authentication, OCI 1.1 referrers graph linking, Maven-style transitive dependency resolution, topological cascade installation, pre-install snapshot recording with transactional LIFO rollback, enhanced `fpm deps` inspection utility, GHCR catalog prepopulation workflow with multi-tier caching, and real SNE container integration tests.
+
+This release also makes fpm build and package the JavaScript frontends that apps such
+as frappe/crm, frappe/helpdesk, frappe/insights and frappe/gameplan ship, and mirror one
+build into several registry backends at once.
 
 ### Added
 
@@ -48,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it is inert behind nginx or a Kubernetes ingress, so the defaults produce the same bundle
   a real bench would; `--frontend-site-config` supplies real values where it matters and
   `--no-bench-scaffold` refuses synthesized ones.
+- `fpm mirror --repo` is repeatable, so one run builds each version once and publishes it
+  to several backends — GHCR as OCI and an HTTP FPM registry together. A version is built
+  when *any* repository is missing it, so backends that started out of step converge;
+  publishing is idempotent per repository, and one that already has a version reports it
+  rather than failing the run. The mirror workflow does this, adding the HTTP registry when
+  `vars.FPM_REGISTRY_URL` is set and mirroring to GHCR alone when it is not.
 - `fpm package --build-frontend` (default true): compile the app's JavaScript frontend when
   the checkout declares one. `--build-frontend=false` packages without it.
 - `fpm package --frontend-timeout` (default `20m`): bounds the frontend install and build.
@@ -57,12 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shipping an archive that installs and then serves a blank page. When the failure is a
   frontend resolving the bench from its own path (crm's `frontend/src/socket.js` imports
   `../../../../sites/common_site_config.json`), the error says to use `--bench-path`.
-
-## [3.0.0] - 2026-08-27
-
-Pluggable OCI Registry backend, generic non-provider-specific authentication, OCI 1.1 referrers graph linking, Maven-style transitive dependency resolution, topological cascade installation, pre-install snapshot recording with transactional LIFO rollback, enhanced `fpm deps` inspection utility, GHCR catalog prepopulation workflow with multi-tier caching, and real SNE container integration tests.
-
-### Added
 
 - **Pluggable OCI Container Registry Backend (`type: oci`)**:
   - `internal/ociregistry`: Implemented full OCI registry integration via `oras.land/oras-go/v2`.
@@ -101,8 +79,34 @@ Pluggable OCI Registry backend, generic non-provider-specific authentication, OC
 
 ### Fixed
 
+- **Apps with a JavaScript frontend (`frappe/crm`, `frappe/helpdesk`, `frappe/insights`,
+  `frappe/gameplan`, erpnext's `banking`) packaged without their compiled frontend.** These
+  apps ship a Vite SPA that Frappe's own esbuild never builds — it only globs `*.bundle.*`,
+  and an SPA has none — and whose output is listed in the app's `.gitignore`
+  (crm ignores `crm/public/frontend` and `crm/www/crm.html`). So neither `fpm package` nor
+  `fpm package --bench-path` produced it, and the resulting package installed cleanly and
+  then served a blank page. `fpm package` now compiles the app's frontend and ships the
+  result. See [App frontends](README.md#app-frontends).
+- Frontend dependency installs no longer honour an inherited `NODE_ENV=production`, which
+  makes yarn skip `devDependencies`. crm keeps `autoprefixer`, `postcss` and `tailwindcss`
+  there, so the install succeeded and the build then died with
+  `Cannot find module 'autoprefixer'`. `fpm package` and `--bench-path`'s `yarn install`
+  both force them on now.
+- `fpm install` no longer reports "No built bundles ... package with `--bench-path`" for an
+  SPA-only app, which sent users after a rebuild that cannot produce anything for it. An SPA
+  is served through the `sites/assets/<app>` symlink and needs no `assets.json` entry.
+- `fpm install` writes the SPA's route template when a package carries the compiled
+  frontend without one; the app otherwise has no route to render it at. The name is read
+  from the app's `hooks.py` `website_route_rules`, because it follows no convention — crm
+  routes at `crm` but insights routes at `_insights`, builder at `_builder` and gameplan at
+  `g`. When the app declares no route, or declares several so the mapping is ambiguous (as
+  erpnext does, with 24 `to_route` values that mostly name DocTypes), fpm reports it instead
+  of inventing a filename.
+- The GHCR mirror built every directory with a `build` script, so crm was built twice (its
+  root script is `cd frontend && yarn build`), and copied Vite output into
+  `<app>/public/dist` — the directory reserved for the hashed `*.bundle.*` files that go
+  into `assets.json`. It now shares one implementation with `fpm package`.
 - Fixed CI `gofmt` whitespace and comment formatting failure on `cmd/install_test.go` and `internal/assets/assets.go`.
-
 
 ## [2.2.0] - 2026-08-27
 

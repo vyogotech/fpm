@@ -117,6 +117,24 @@ fpm package --version 1.0.0 --org myorg [--app-name my_app]
 - `--repo`: repository to resolve `required_apps` against (default: local store, then every
   configured repository)
 
+#### `fpm mirror`
+Bulk-build the catalog's apps and publish the versions the registries do not have yet.
+
+```bash
+fpm mirror --repo ghcr --repo fpm-http --catalog catalog/apps.csv --python-version 3.11
+```
+
+`--repo` is **repeatable**, so one build of each version is published to several backends
+at once — GHCR as OCI and an HTTP FPM registry together. A version is built when *any*
+repository is missing it, so backends that started out of step converge on the same set;
+publishing is idempotent per repository, and one that already has a version reports it
+rather than failing the run.
+
+`--cache-dir` (default `~/.fpm/build-cache`) is what makes a run cheap: git checkouts live
+in `<cache>/src` and are fetched rather than re-cloned, and pip, npm and yarn are pointed at
+`<cache>/{pip,npm}` for every build subprocess — within a run and, when the directory is
+cached, across runs. The scheduled workflow in `.github/workflows/mirror.yml` does both.
+
 **What happens, in order:**
 
 1. The source tree is validated as a Frappe app (`<app>/hooks.py`, `__init__.py`,
