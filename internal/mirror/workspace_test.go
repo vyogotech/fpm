@@ -2,6 +2,7 @@ package mirror
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -143,4 +144,74 @@ func TestWorkspaceKeepsAnExistingBenchConfig(t *testing.T) {
 	if string(got) != real {
 		t.Errorf("an existing bench config was overwritten: %s", got)
 	}
+}
+
+// TestBuildDependencyClearsStaleNodeModules: a consumer guards on an install marker
+// rather than a version — helpdesk's build runs `yarn install` in frappe/ui only when
+// node_modules/.yarn-integrity is absent — so node_modules left by a previous ref is
+// silently kept and the build fails on a package the new ref expects.
+func TestBuildDependencyClearsStaleNodeModules(t *testing.T) {
+	// Two genuinely different commits: fixtureRepo points every tag at one commit, and
+	// a ref that resolves to the commit already checked out is correctly left alone.
+	dep := twoCommitRepo(t)
+	ws, err := NewWorkspace(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir, err := ws.EnsureBuildDependency("frappe", dep, "v1.0.0")
+	if err != nil {
+		t.Fatalf("EnsureBuildDependency: %v", err)
+	}
+
+	// Stand in for a previous ref's install, at the root and one level down.
+	for _, p := range []string{
+		filepath.Join(dir, "node_modules", ".yarn-integrity"),
+		filepath.Join(dir, "ui", "node_modules", ".yarn-integrity"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("stale"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := ws.EnsureBuildDependency("frappe", dep, "v2.0.0"); err != nil {
+		t.Fatalf("re-checkout: %v", err)
+	}
+	for _, p := range []string{
+		filepath.Join(dir, "node_modules"),
+		filepath.Join(dir, "ui", "node_modules"),
+	} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s survived a ref change; the consumer's guard would skip reinstalling", p)
+		}
+	}
+}
+
+// twoCommitRepo builds a repository whose two tags are distinct commits.
+func twoCommitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	for i, tag := range []string{"v1.0.0", "v2.0.0"} {
+		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte(fmt.Sprint(i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		run("add", ".")
+		run("commit", "-q", "-m", tag)
+		run("tag", tag)
+	}
+	return dir
 }
