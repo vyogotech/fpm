@@ -175,7 +175,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.14'
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -270,7 +270,7 @@ jobs:
           else
             ARGS="${{ steps.repos.outputs.repo_args }} --apps ${{ matrix.slug }}"
           fi
-          ARGS="$ARGS --catalog catalog/apps.csv --python-version 3.11"
+          ARGS="$ARGS --catalog catalog/apps.csv --python-version 3.14"
           ARGS="$ARGS --cache-dir $HOME/.fpm/build-cache --output-path dist"
           ARGS="$ARGS --report dist/mirror-report-${{ matrix.slug }}.json"
 
@@ -365,7 +365,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.14'
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -460,7 +460,7 @@ jobs:
           else
             ARGS="${{ steps.repos.outputs.repo_args }} --apps ${{ matrix.slug }}"
           fi
-          ARGS="$ARGS --catalog catalog/apps.csv --python-version 3.11"
+          ARGS="$ARGS --catalog catalog/apps.csv --python-version 3.14"
           ARGS="$ARGS --cache-dir $HOME/.fpm/build-cache --output-path dist"
           ARGS="$ARGS --report dist/mirror-report-${{ matrix.slug }}.json"
 
