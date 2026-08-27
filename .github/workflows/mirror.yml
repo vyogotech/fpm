@@ -15,6 +15,10 @@ on:
         description: 'Include third-party apps in catalog'
         type: boolean
         default: true
+      build_from_source:
+        description: 'Compile the CLI from this branch instead of using the latest release (for validating an unreleased change)'
+        type: boolean
+        default: false
   schedule:
     # Daily at 02:00 UTC. Re-runs are idempotent — the plan queries the registry and
     # skips versions it already has — so most days this only fetches tags and exits.
@@ -47,7 +51,10 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # Only needed when compiling. The normal path downloads a released binary, so a
+      # scheduled run sets up no Go toolchain at all.
       - name: Set up Go
+        if: ${{ inputs.build_from_source }}
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -105,8 +112,31 @@ jobs:
             echo "Cold run: no build cache restored."
           fi
 
-      - name: Build FPM CLI
-        run: make build
+      # The CLI is a released artifact — there is no reason for every nightly run to
+      # compile it. The checksum published beside it is verified, so a corrupted or
+      # substituted download fails here rather than halfway through a publish.
+      #
+      # The trade-off is real and deliberate: a change to mirror or packaging code only
+      # reaches this job once it is released. Use build_from_source=true to validate an
+      # unreleased change.
+      - name: Obtain FPM CLI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p bin
+          if [ "${{ inputs.build_from_source }}" = "true" ]; then
+            echo "Compiling from ${{ github.ref_name }}."
+            make build
+          else
+            tmp="$(mktemp -d)"
+            # No tag argument: the latest release.
+            gh release download --repo "$GITHUB_REPOSITORY" \
+              --pattern 'fpm-linux-amd64' --pattern 'fpm-linux-amd64.sha256' --dir "$tmp"
+            ( cd "$tmp" && sha256sum -c fpm-linux-amd64.sha256 )
+            install -m 0755 "$tmp/fpm-linux-amd64" bin/fpm
+            rm -rf "$tmp"
+          fi
+          ./bin/fpm --version
 
       # Two backends, one build. GHCR is always configured — it needs no secret beyond
       # the pipeline's own GITHUB_TOKEN. The HTTP FPM registry is added only when its
