@@ -21,6 +21,8 @@ var (
 	mirrorCatalogPath     string
 	mirrorRepoNames       []string
 	mirrorListSlugs       bool
+	mirrorTier            int
+	mirrorListTiers       bool
 	mirrorApps            string
 	mirrorDryRun          bool
 	mirrorJSON            bool
@@ -92,11 +94,18 @@ func runMirror() error {
 	// allowed. It answers from the catalog alone: no repository, no credentials and
 	// no network, so it is safe to run before anything is configured.
 	if mirrorListSlugs {
-		slugs := make([]string, 0, len(apps))
-		for _, app := range apps {
+		listed := apps
+		if mirrorTier >= 0 {
+			listed = mirror.InTier(apps, mirrorTier)
+		}
+		slugs := make([]string, 0, len(listed))
+		for _, app := range listed {
 			slugs = append(slugs, app.Slug)
 		}
 		return json.NewEncoder(os.Stdout).Encode(slugs)
+	}
+	if mirrorListTiers {
+		return json.NewEncoder(os.Stdout).Encode(mirror.Tiers(apps))
 	}
 
 	conf, err := config.LoadConfig()
@@ -227,6 +236,8 @@ func init() {
 	mirrorCmd.Flags().StringVar(&mirrorPythonVersion, "python-version", "", "Target Python version for vendored wheels (e.g. 3.11, 3.12; defaults to host python version)")
 	mirrorCmd.Flags().StringArrayVar(&mirrorPlatforms, "platform", nil, "Target wheel platform tags (defaults to "+wheels.DefaultProdPlatform+")")
 	mirrorCmd.Flags().BoolVar(&mirrorListSlugs, "list-slugs", false, "Print the enabled catalog slugs as a JSON array and exit, for sharding a run across machines. Needs no repository and no network")
+	mirrorCmd.Flags().IntVar(&mirrorTier, "tier", -1, "With --list-slugs, restrict the listing to one catalog tier. Every app in a lower tier is published before a higher one starts, so an app whose required_apps name other catalog entries can resolve them")
+	mirrorCmd.Flags().BoolVar(&mirrorListTiers, "list-tiers", false, "Print the catalog's distinct tiers as a JSON array and exit, so a runner can drive one wave per tier")
 	// --repo is not marked required at the flag level because --list-slugs answers
 	// from the catalog alone; the run path validates it instead.
 }
