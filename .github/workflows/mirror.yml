@@ -20,45 +20,119 @@ on:
         type: boolean
         default: false
   schedule:
-    # Daily at 02:00 UTC. Re-runs are idempotent — the plan queries the registry and
-    # skips versions it already has — so most days this only fetches tags and exits.
-    # Daily rather than weekly so a new upstream release is mirrored within a day.
+    # Daily at 02:00 UTC. Re-runs are idempotent — the plan queries the registries and
+    # skips versions they already have — so most days a shard only fetches tags and exits.
+    #
+    # Note: GitHub only schedules workflows from the DEFAULT branch. Changes here have no
+    # effect on the cron until they are on that branch.
     - cron: '0 2 * * *'
 
 # GITHUB_TOKEN is the pipeline's own credential: `packages: write` lets it push to
-# ghcr.io/<owner>/<repo>, with no PAT to provision or rotate. `contents: read` is all
-# the catalog and source need.
+# ghcr.io/<owner>/<repo>, with no PAT to provision or rotate.
 permissions:
   contents: read
   packages: write
 
-# One mirror at a time. Two concurrent runs would race on the same cache key and could
+# One mirror at a time. Two concurrent runs would race on the same cache keys and could
 # both build the same version; queueing rather than cancelling lets a long run finish.
 concurrency:
   group: fpm-mirror
   cancel-in-progress: false
 
 jobs:
-  mirror-to-ghcr:
-    name: Mirror Catalog to GHCR
+  # One cheap job decides the shards and produces the binary they all share, so the CLI
+  # is obtained once rather than once per app.
+  plan:
+    name: Plan Shards
     runs-on: ubuntu-latest
-    # A cold full-catalog run clones ~20 repos, installs their node dependencies and
-    # vendors wheels for each. Well under the 6h ceiling, but long enough to want a
-    # bound that fails loudly rather than hanging.
-    timeout-minutes: 330
-
+    timeout-minutes: 15
+    outputs:
+      slugs: ${{ steps.list.outputs.slugs }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Only needed when compiling. The normal path downloads a released binary, so a
-      # scheduled run sets up no Go toolchain at all.
       - name: Set up Go
         if: ${{ inputs.build_from_source }}
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+
+      # The CLI is a released artifact — there is no reason for a nightly run to compile
+      # it. The checksum published beside it is verified, so a corrupted or substituted
+      # download fails here rather than halfway through a publish.
+      #
+      # The trade-off is deliberate: a change to mirror or packaging code only reaches
+      # this workflow once it is released. build_from_source=true validates an
+      # unreleased change.
+      - name: Obtain FPM CLI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p bin
+          if [ "${{ inputs.build_from_source }}" = "true" ]; then
+            echo "Compiling from ${{ github.ref_name }}."
+            make build
+          else
+            tmp="$(mktemp -d)"
+            gh release download --repo "$GITHUB_REPOSITORY" \
+              --pattern 'fpm-linux-amd64' --pattern 'fpm-linux-amd64.sha256' --dir "$tmp"
+            ( cd "$tmp" && sha256sum -c fpm-linux-amd64.sha256 )
+            install -m 0755 "$tmp/fpm-linux-amd64" bin/fpm
+            rm -rf "$tmp"
+          fi
+          ./bin/fpm --version
+
+      - name: Share the CLI with the shards
+        uses: actions/upload-artifact@v4
+        with:
+          name: fpm-cli
+          path: bin/fpm
+          retention-days: 1
+
+      # The shard list comes from the CLI rather than from parsing the CSV here, so which
+      # apps are enabled has exactly one implementation. --list-slugs needs no repository,
+      # credentials or network.
+      - name: List Catalog Shards
+        id: list
+        run: |
+          ARGS="--list-slugs --catalog catalog/apps.csv"
+          if [ -n "${{ inputs.apps }}" ]; then
+            ARGS="$ARGS --apps ${{ inputs.apps }}"
+          fi
+          if [ "${{ inputs.allow_third_party }}" = "false" ]; then
+            ARGS="$ARGS --allow-third-party=false"
+          fi
+          SLUGS="$(./bin/fpm mirror $ARGS)"
+          echo "Sharding across: $SLUGS"
+          echo "slugs=$SLUGS" >> "$GITHUB_OUTPUT"
+
+  # One runner per app. Wall time becomes the slowest single app rather than the sum of
+  # all of them, and each shard gets a whole runner's memory and disk — a Vite build of a
+  # frappe-ui app wants ~4 GB and its node_modules alone can approach a gigabyte, so
+  # several of them on one runner is what would run it out of space.
+  #
+  # Sharding by app, never finer: every version of one app shares a single checkout in
+  # the build cache, and `git checkout -f` + `git clean -fdx` on a tree another build is
+  # reading would corrupt it. Versions stay sequential within their shard.
+  mirror:
+    name: mirror ${{ matrix.slug }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      # One app failing must not cancel the others; the summary job collects every
+      # result and fails the run at the end.
+      fail-fast: false
+      # Bounded so a full catalog does not saturate the account's runner allowance.
+      max-parallel: 6
+      matrix:
+        slug: ${{ fromJson(needs.plan.outputs.slugs) }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -75,73 +149,50 @@ jobs:
           python -m pip install --upgrade pip wheel
           npm install -g yarn
 
-      # A runner has ~14 GB free. Twenty checkouts, their node_modules and the vendored
-      # wheels can exhaust that, and the failure ("no space left on device") looks like
-      # a build error rather than a capacity one. These toolchains are not used here.
+      # "no space left on device" reads like a build error rather than a capacity one,
+      # so reclaim what this job never uses.
       - name: Free Disk Space
         run: |
           echo "Before:"; df -h / | tail -1
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
           echo "After:"; df -h / | tail -1
 
+      - name: Fetch the shared CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: fpm-cli
+          path: bin
+
+      - name: Make it executable
+        run: |
+          chmod +x bin/fpm   # artifacts do not preserve the exec bit
+          ./bin/fpm --version
+
       # Restore and save are separate on purpose. The combined actions/cache action only
-      # writes its cache in a post-job step when the job SUCCEEDS, so every failed run
-      # threw away the work it had done and the next one started cold — which is exactly
-      # why this job re-pulled everything every time. `cache/save` with `if: always()`
-      # keeps the clones and package-manager caches even when one app fails to build.
+      # writes its cache when the job SUCCEEDS, so a failed shard threw away everything it
+      # had fetched and the next run started cold. `cache/save` with `if: always()` keeps
+      # the clone and package-manager caches either way.
       #
-      # The key is unique per run so each run writes a new entry; restore-keys prefix-
-      # matches the newest previous one. The catalog is deliberately NOT in the key: its
-      # contents say which apps to build, not what a git clone or an npm tarball holds,
-      # so hashing it would discard gigabytes of still-valid cache on every catalog edit.
+      # Keyed per app: a shard restores one app's cache instead of the whole catalog's,
+      # and one app's churn cannot invalidate another's. The catalog is deliberately not
+      # in the key — it says which apps to build, not what a clone or an npm tarball holds.
       - name: Restore Build Cache
         id: restore-build-cache
         uses: actions/cache/restore@v4
         with:
           path: ~/.fpm/build-cache
-          key: fpm-mirror-buildcache-v1-${{ runner.os }}-${{ github.run_id }}
+          key: fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-${{ github.run_id }}
           restore-keys: |
-            fpm-mirror-buildcache-v1-${{ runner.os }}-
+            fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-
 
       - name: Report Cache State
         run: |
-          if [ -d ~/.fpm/build-cache ]; then
-            echo "Restored from: ${{ steps.restore-build-cache.outputs.cache-matched-key || 'nothing (cold run)' }}"
-            du -sh ~/.fpm/build-cache/* 2>/dev/null || true
-          else
-            echo "Cold run: no build cache restored."
-          fi
+          echo "Restored from: ${{ steps.restore-build-cache.outputs.cache-matched-key || 'nothing (cold shard)' }}"
+          du -sh ~/.fpm/build-cache/* 2>/dev/null || true
 
-      # The CLI is a released artifact — there is no reason for every nightly run to
-      # compile it. The checksum published beside it is verified, so a corrupted or
-      # substituted download fails here rather than halfway through a publish.
-      #
-      # The trade-off is real and deliberate: a change to mirror or packaging code only
-      # reaches this job once it is released. Use build_from_source=true to validate an
-      # unreleased change.
-      - name: Obtain FPM CLI
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p bin
-          if [ "${{ inputs.build_from_source }}" = "true" ]; then
-            echo "Compiling from ${{ github.ref_name }}."
-            make build
-          else
-            tmp="$(mktemp -d)"
-            # No tag argument: the latest release.
-            gh release download --repo "$GITHUB_REPOSITORY" \
-              --pattern 'fpm-linux-amd64' --pattern 'fpm-linux-amd64.sha256' --dir "$tmp"
-            ( cd "$tmp" && sha256sum -c fpm-linux-amd64.sha256 )
-            install -m 0755 "$tmp/fpm-linux-amd64" bin/fpm
-            rm -rf "$tmp"
-          fi
-          ./bin/fpm --version
-
-      # Two backends, one build. GHCR is always configured — it needs no secret beyond
-      # the pipeline's own GITHUB_TOKEN. The HTTP FPM registry is added only when its
-      # URL is configured, so a fork without one still mirrors to GHCR rather than
-      # failing on a missing variable.
+      # Two backends, one build. GHCR is always configured — it needs no secret beyond the
+      # pipeline's own GITHUB_TOKEN. The HTTP FPM registry is added only when its URL is
+      # configured, so a fork without one still mirrors to GHCR.
       - name: Configure Repositories
         id: repos
         env:
@@ -164,56 +215,109 @@ jobs:
 
       - name: Run FPM Mirror
         env:
-          # fpm reads the password for repository <name> from FPM_REPO_<NAME>_PASSWORD
-          # (falling back to FPM_REPO_PASSWORD). The repositories are added as "ghcr" and
-          # "fpm-http" above, so these are the variables it looks for — the previous
-          # REGISTRY_PASSWORD was never read, and every run failed before building.
+          # fpm reads the password for repository <name> from FPM_REPO_<NAME>_PASSWORD.
+          # The repositories are added as "ghcr" and "fpm-http" above.
           FPM_REPO_GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           FPM_REPO_FPM_HTTP_PASSWORD: ${{ secrets.FPM_REGISTRY_PASSWORD }}
         run: |
           mkdir -p dist
-          # --cache-dir is what makes the run reuse anything: git clones live in
-          # <cache>/src and are fetched rather than re-cloned, and pip/npm/yarn are
-          # pointed at <cache>/{pip,npm} for every build subprocess, within this run and
-          # across runs via the cache above.
           # --repo is repeatable: one build of each version, published to every backend.
-          # A version missing from any one of them is built, so the two converge even if
-          # they start out of step.
-          ARGS="${{ steps.repos.outputs.repo_args }} --catalog catalog/apps.csv --python-version 3.11 --cache-dir $HOME/.fpm/build-cache --output-path dist --report dist/mirror-report.json"
+          # --cache-dir is what makes a shard cheap: the app's checkout lives in
+          # <cache>/src and is fetched rather than re-cloned, and pip, npm and yarn are
+          # pointed at <cache>/{pip,npm} for every build subprocess.
+          ARGS="${{ steps.repos.outputs.repo_args }} --apps ${{ matrix.slug }}"
+          ARGS="$ARGS --catalog catalog/apps.csv --python-version 3.11"
+          ARGS="$ARGS --cache-dir $HOME/.fpm/build-cache --output-path dist"
+          ARGS="$ARGS --report dist/mirror-report-${{ matrix.slug }}.json"
 
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
           fi
 
-          if [ -n "${{ inputs.apps }}" ]; then
-            ARGS="$ARGS --apps ${{ inputs.apps }}"
-          fi
-
-          if [ "${{ inputs.allow_third_party }}" = "false" ]; then
-            ARGS="$ARGS --allow-third-party=false"
-          fi
-
           echo "Running: ./bin/fpm mirror $ARGS"
           ./bin/fpm mirror $ARGS
 
-      # Always, so a run that failed on one app still leaves the clones and download
-      # caches warm for the next one. dist/ is deliberately not cached: it is this run's
-      # output, and restoring stale .fpm files into it would be actively wrong.
       - name: Save Build Cache
         if: always()
         uses: actions/cache/save@v4
         with:
           path: ~/.fpm/build-cache
-          key: fpm-mirror-buildcache-v1-${{ runner.os }}-${{ github.run_id }}
+          key: fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-${{ github.run_id }}
 
-      # `fpm mirror` writes its own per-app table to $GITHUB_STEP_SUMMARY, so the run
-      # is readable in the Actions UI without opening this artifact. The JSON is the
-      # machine-readable form: a top-level array of per-app results.
-      - name: Upload Mirror Report
+      # dist/ is deliberately not cached — it is this run's output, and restoring stale
+      # .fpm files into it would be actively wrong. The report is uploaded instead.
+      - name: Upload Shard Report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fpm-mirror-report
-          path: dist/mirror-report.json
+          name: fpm-mirror-report-${{ matrix.slug }}
+          path: dist/mirror-report-${{ matrix.slug }}.json
           if-no-files-found: ignore
           retention-days: 14
+
+  # fail-fast is off so every shard reports, which means the matrix's status alone would
+  # hide a failure. This job turns the shards back into a single pass/fail and one table.
+  summary:
+    name: Summarise
+    needs: mirror
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Collect Shard Reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fpm-mirror-report-*
+          path: reports
+          merge-multiple: true
+
+      - name: Summarise
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob, json, collections, sys
+
+          results = []
+          for path in sorted(glob.glob("reports/**/*.json", recursive=True)):
+              try:
+                  with open(path) as f:
+                      loaded = json.load(f)
+              except (OSError, json.JSONDecodeError) as exc:
+                  print(f"could not read {path}: {exc}", file=sys.stderr)
+                  continue
+              # WriteReport emits a top-level array of per-app results.
+              results.extend(loaded if isinstance(loaded, list) else [loaded])
+
+          print("## fpm mirror\n")
+          if not results:
+              print("No shard produced a report.")
+              sys.exit(1)
+
+          counts = collections.Counter(r.get("action", "unknown") for r in results)
+          print("| action | count |")
+          print("|---|---:|")
+          for action, n in sorted(counts.items()):
+              print(f"| {action} | {n} |")
+
+          print("\n| app | version | action | size | detail |")
+          print("|---|---|---|---|---|")
+          for r in sorted(results, key=lambda r: (r.get("slug", ""), r.get("version", ""))):
+              raw = r.get("size_bytes") or 0
+              size = f"{raw / (1 << 20):.1f}M" if raw else "-"
+              detail = (r.get("detail") or "").splitlines()
+              print(f"| {r.get('slug','?')} | {r.get('version','')} | {r.get('action','?')} "
+                    f"| {size} | {detail[0] if detail else ''} |")
+
+          failed = [r for r in results if r.get("action") == "failed"]
+          if failed:
+              print(f"\n**{len(failed)} of {len(results)} builds failed.**")
+              sys.exit(1)
+          print(f"\nAll {len(results)} builds succeeded.")
+          PY
+
+      # A shard that died before writing a report (infrastructure failure, timeout)
+      # produces no rows above, so the matrix job's own status is checked too.
+      - name: Fail if any shard errored
+        if: ${{ needs.mirror.result != 'success' }}
+        run: |
+          echo "One or more mirror shards did not succeed (result: ${{ needs.mirror.result }})." >&2
+          exit 1

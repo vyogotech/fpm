@@ -20,6 +20,7 @@ import (
 var (
 	mirrorCatalogPath     string
 	mirrorRepoNames       []string
+	mirrorListSlugs       bool
 	mirrorApps            string
 	mirrorDryRun          bool
 	mirrorJSON            bool
@@ -84,6 +85,18 @@ func runMirror() error {
 	apps, err := catalog.Enabled(filter)
 	if err != nil {
 		return err
+	}
+
+	// --list-slugs exists so CI can shard the catalog across runners without
+	// re-implementing which apps are enabled and which third-party entries are
+	// allowed. It answers from the catalog alone: no repository, no credentials and
+	// no network, so it is safe to run before anything is configured.
+	if mirrorListSlugs {
+		slugs := make([]string, 0, len(apps))
+		for _, app := range apps {
+			slugs = append(slugs, app.Slug)
+		}
+		return json.NewEncoder(os.Stdout).Encode(slugs)
 	}
 
 	conf, err := config.LoadConfig()
@@ -213,5 +226,7 @@ func init() {
 	mirrorCmd.Flags().BoolVar(&mirrorAllowThirdParty, "allow-third-party", true, "Allow third-party / external git repositories in the catalog")
 	mirrorCmd.Flags().StringVar(&mirrorPythonVersion, "python-version", "", "Target Python version for vendored wheels (e.g. 3.11, 3.12; defaults to host python version)")
 	mirrorCmd.Flags().StringArrayVar(&mirrorPlatforms, "platform", nil, "Target wheel platform tags (defaults to "+wheels.DefaultProdPlatform+")")
-	mirrorCmd.MarkFlagRequired("repo")
+	mirrorCmd.Flags().BoolVar(&mirrorListSlugs, "list-slugs", false, "Print the enabled catalog slugs as a JSON array and exit, for sharding a run across machines. Needs no repository and no network")
+	// --repo is not marked required at the flag level because --list-slugs answers
+	// from the catalog alone; the run path validates it instead.
 }
