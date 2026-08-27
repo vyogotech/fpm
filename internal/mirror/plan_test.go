@@ -241,3 +241,62 @@ func TestBuildPlanForRepoMatchesSingleRepoBehaviour(t *testing.T) {
 }
 
 func app2plan(a App) []App { return []App{a} }
+
+func TestSlugFromRepoURL(t *testing.T) {
+	for _, c := range []struct{ url, want string }{
+		{"https://github.com/frappe/crm", "crm"},
+		{"https://github.com/frappe/crm.git", "crm"},
+		{"https://github.com/frappe/crm/", "crm"},
+		{"git@github.com:acme/My-App.git", "my-app"},
+		{"  https://github.com/acme/print_designer  ", "print_designer"},
+	} {
+		if got := SlugFromRepoURL(c.url); got != c.want {
+			t.Errorf("SlugFromRepoURL(%q) = %q, want %q", c.url, got, c.want)
+		}
+	}
+}
+
+// TestPlanAdHocPackagesARequestedTag: on-demand packaging of a repository that is not
+// in the catalog at all, at a tag the registry does not have.
+func TestPlanAdHocPackagesARequestedTag(t *testing.T) {
+	repo := fixtureRepo(t, "v1.0.0", "v2.0.0")
+	server := registryStub(t, "myapp", "1.0.0")
+
+	plan, err := PlanAdHoc(repo, "v2.0.0", "myapp", "", []config.RepositoryConfig{{URL: server.URL}},
+		server.Client(), "20260827")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Items) != 1 {
+		t.Fatalf("items = %+v, want one", plan.Items)
+	}
+	item := plan.Items[0]
+	if item.Version != "2.0.0" || item.Ref != "v2.0.0" || item.Slug != "myapp" {
+		t.Errorf("item = %+v", item)
+	}
+}
+
+// A tag already in the registry is skipped, so re-requesting it republishes nothing.
+func TestPlanAdHocSkipsAPublishedTag(t *testing.T) {
+	repo := fixtureRepo(t, "v1.0.0")
+	server := registryStub(t, "myapp", "1.0.0")
+
+	plan, err := PlanAdHoc(repo, "v1.0.0", "myapp", "", []config.RepositoryConfig{{URL: server.URL}},
+		server.Client(), "20260827")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Items) != 0 || len(plan.Skipped) != 1 {
+		t.Fatalf("plan = %+v, want only a skip", plan)
+	}
+}
+
+func TestPlanAdHocRejectsAnUnusableSlug(t *testing.T) {
+	if _, err := PlanAdHoc("https://example.com/Weird--Name!", "", "", "",
+		[]config.RepositoryConfig{{URL: "http://x"}}, nil, "20260827"); err == nil {
+		t.Fatal("expected a slug validation error")
+	}
+	if _, err := PlanAdHoc("", "", "", "", nil, nil, "20260827"); err == nil {
+		t.Fatal("expected an error without a URL")
+	}
+}

@@ -23,6 +23,10 @@ var (
 	mirrorListSlugs       bool
 	mirrorTier            int
 	mirrorListTiers       bool
+	mirrorGitURL          string
+	mirrorGitRef          string
+	mirrorSlug            string
+	mirrorAppName         string
 	mirrorApps            string
 	mirrorDryRun          bool
 	mirrorJSON            bool
@@ -144,9 +148,18 @@ func runMirror() error {
 	}
 
 	now := time.Now().UTC().Format("20060102")
-	// A version is built when any repository is missing it, so a run leaves them all
-	// holding the same set even if they started out of step.
-	plan, err := mirror.BuildPlanForRepos(apps, repos, nil, now)
+	var plan *mirror.Plan
+	if mirrorGitURL != "" {
+		// On demand: package a repository that is not in the catalog at all. Everything
+		// downstream is the same — bench-shaped checkout, frontend build, build-time
+		// dependencies, wheel vendoring, publish to every --repo — so an ad-hoc app
+		// gets exactly the treatment a curated one does.
+		plan, err = mirror.PlanAdHoc(mirrorGitURL, mirrorGitRef, mirrorSlug, mirrorAppName, repos, nil, now)
+	} else {
+		// A version is built when any repository is missing it, so a run leaves them all
+		// holding the same set even if they started out of step.
+		plan, err = mirror.BuildPlanForRepos(apps, repos, nil, now)
+	}
 	if err != nil {
 		return err
 	}
@@ -246,6 +259,10 @@ func init() {
 	mirrorCmd.Flags().StringArrayVar(&mirrorPlatforms, "platform", nil, "Target wheel platform tags (defaults to "+wheels.DefaultProdPlatform+")")
 	mirrorCmd.Flags().BoolVar(&mirrorListSlugs, "list-slugs", false, "Print the enabled catalog slugs as a JSON array and exit, for sharding a run across machines. Needs no repository and no network")
 	mirrorCmd.Flags().IntVar(&mirrorTier, "tier", -1, "With --list-slugs, restrict the listing to one catalog tier. Every app in a lower tier is published before a higher one starts, so an app whose required_apps name other catalog entries can resolve them")
+	mirrorCmd.Flags().StringVar(&mirrorGitURL, "git-url", "", "Package a repository that is not in the catalog. Everything else is unchanged: bench-shaped checkout, frontend build, build-time dependencies, wheel vendoring and publishing to every --repo")
+	mirrorCmd.Flags().StringVar(&mirrorGitRef, "git-ref", "", "With --git-url, the tag or branch to package (default: the repository's default branch). A tag is packaged at its version; anything else as a branch pseudo-version carrying the head commit")
+	mirrorCmd.Flags().StringVar(&mirrorSlug, "slug", "", "With --git-url, the name to publish under (default: derived from the URL's last path segment)")
+	mirrorCmd.Flags().StringVar(&mirrorAppName, "app-name", "", "With --git-url, the Frappe app module name when it differs from the slug")
 	mirrorCmd.Flags().BoolVar(&mirrorListTiers, "list-tiers", false, "Print the catalog's distinct tiers as a JSON array and exit, so a runner can drive one wave per tier")
 	// --repo is not marked required at the flag level because --list-slugs answers
 	// from the catalog alone; the run path validates it instead.

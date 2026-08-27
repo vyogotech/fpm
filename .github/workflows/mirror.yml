@@ -15,6 +15,18 @@ on:
         description: 'Also build catalog entries outside the frappe GitHub org'
         type: boolean
         default: false
+      git_url:
+        description: 'Package one repository on demand, in or out of the catalog (e.g. https://github.com/frappe/education). Leave blank to mirror the catalog'
+        required: false
+        default: ''
+      git_ref:
+        description: 'With git_url: the tag or branch to package (default: the repository default branch)'
+        required: false
+        default: ''
+      slug:
+        description: 'With git_url: the name to publish under (default: derived from the URL)'
+        required: false
+        default: ''
       build_from_source:
         description: 'Compile the CLI from this branch instead of using the latest release (for validating an unreleased change)'
         type: boolean
@@ -99,6 +111,17 @@ jobs:
       - name: List Catalog Shards
         id: list
         run: |
+          # On demand: one repository, one shard, no catalog lookup.
+          if [ -n "${{ inputs.git_url }}" ]; then
+            SLUG="${{ inputs.slug }}"
+            [ -n "$SLUG" ] || SLUG="on-demand"
+            echo "On demand: ${{ inputs.git_url }} (as $SLUG)"
+            echo "tier0=[\"$SLUG\"]" >> "$GITHUB_OUTPUT"
+            echo "tier1=[]" >> "$GITHUB_OUTPUT"
+            echo "tier1_any=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           ARGS="--list-slugs --catalog catalog/apps.csv"
           if [ -n "${{ inputs.apps }}" ]; then
             ARGS="$ARGS --apps ${{ inputs.apps }}"
@@ -236,7 +259,13 @@ jobs:
           # --cache-dir is what makes a shard cheap: the app's checkout lives in
           # <cache>/src and is fetched rather than re-cloned, and pip, npm and yarn are
           # pointed at <cache>/{pip,npm} for every build subprocess.
-          ARGS="${{ steps.repos.outputs.repo_args }} --apps ${{ matrix.slug }}"
+          if [ -n "${{ inputs.git_url }}" ]; then
+            ARGS="${{ steps.repos.outputs.repo_args }} --git-url ${{ inputs.git_url }}"
+            [ -z "${{ inputs.git_ref }}" ] || ARGS="$ARGS --git-ref ${{ inputs.git_ref }}"
+            [ -z "${{ inputs.slug }}" ]    || ARGS="$ARGS --slug ${{ inputs.slug }}"
+          else
+            ARGS="${{ steps.repos.outputs.repo_args }} --apps ${{ matrix.slug }}"
+          fi
           ARGS="$ARGS --catalog catalog/apps.csv --python-version 3.11"
           ARGS="$ARGS --cache-dir $HOME/.fpm/build-cache --output-path dist"
           ARGS="$ARGS --report dist/mirror-report-${{ matrix.slug }}.json"
@@ -417,7 +446,13 @@ jobs:
           # --cache-dir is what makes a shard cheap: the app's checkout lives in
           # <cache>/src and is fetched rather than re-cloned, and pip, npm and yarn are
           # pointed at <cache>/{pip,npm} for every build subprocess.
-          ARGS="${{ steps.repos.outputs.repo_args }} --apps ${{ matrix.slug }}"
+          if [ -n "${{ inputs.git_url }}" ]; then
+            ARGS="${{ steps.repos.outputs.repo_args }} --git-url ${{ inputs.git_url }}"
+            [ -z "${{ inputs.git_ref }}" ] || ARGS="$ARGS --git-ref ${{ inputs.git_ref }}"
+            [ -z "${{ inputs.slug }}" ]    || ARGS="$ARGS --slug ${{ inputs.slug }}"
+          else
+            ARGS="${{ steps.repos.outputs.repo_args }} --apps ${{ matrix.slug }}"
+          fi
           ARGS="$ARGS --catalog catalog/apps.csv --python-version 3.11"
           ARGS="$ARGS --cache-dir $HOME/.fpm/build-cache --output-path dist"
           ARGS="$ARGS --report dist/mirror-report-${{ matrix.slug }}.json"

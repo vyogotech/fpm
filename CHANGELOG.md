@@ -26,6 +26,16 @@ build into several registry backends at once.
   it is inert behind nginx or a Kubernetes ingress, so the defaults produce the same bundle
   a real bench would; `--frontend-site-config` supplies real values where it matters and
   `--no-bench-scaffold` refuses synthesized ones.
+- `fpm mirror --git-url` packages a repository on demand, in or out of the catalog, with
+  `--git-ref` for a tag or branch (defaulting to the repository's real default branch)
+  and `--slug` for the published name. Everything downstream is what a catalog app gets:
+  bench-shaped checkout, frontend build, build-time dependencies, wheel vendoring and
+  publishing to every `--repo`. Exposed as the `git_url`, `git_ref` and `slug` dispatch
+  inputs on the mirror workflow.
+- A registry that answers a pull scope with `denied` rather than 404 for a repository it
+  does not have — as GHCR does — no longer fails the check that decides whether to
+  publish, which made the first publish of any new app error out. A real credential
+  problem still surfaces on the push, which needs write access.
 - **Removed the OCI `subject` link for `required_apps`**, which could not work and
   stopped affected apps publishing at all: `hrms` and `lms` failed with
   `failed to perform "FindSuccessors" on source: ... not found`. The OCI referrers graph

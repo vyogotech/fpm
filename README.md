@@ -136,6 +136,21 @@ repository is missing it, so backends that started out of step converge on the s
 publishing is idempotent per repository, and one that already has a version reports it
 rather than failing the run.
 
+**On-demand packaging.** A repository does not have to be in the catalog:
+
+```bash
+fpm mirror --repo ghcr --git-url https://github.com/frappe/education --git-ref v1.2.0
+```
+
+`--git-ref` takes a tag or a branch, defaulting to the repository's own default branch
+(read with `ls-remote --symref` — guessing `main` is wrong for every frappe app tracked
+from `develop`). A tag is packaged at its version; anything else as a branch
+pseudo-version carrying the head commit, so re-running an unchanged branch republishes
+nothing. `--slug` names it in the registry, otherwise it comes from the URL. Everything
+downstream is identical to a catalog app: bench-shaped checkout, frontend build,
+build-time dependencies, wheel vendoring and publishing to every `--repo`. The workflow
+exposes it as the `git_url`, `git_ref` and `slug` dispatch inputs.
+
 **Build-time dependencies are fetched.** fpm resolves an app's `required_apps` to pinned
 versions when packaging and cascade-installs them when installing, but neither puts
 another app's *source* where a build script can read it — and some builds need exactly
