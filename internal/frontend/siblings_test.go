@@ -23,8 +23,10 @@ func TestSiblingAppsFindsBenchAppsABuildReadsOffDisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SiblingApps: %v", err)
 	}
-	if strings.Join(got, ",") != "frappe" {
-		t.Fatalf("got %v, want [frappe]", got)
+	// The subdirectory matters: frappe/ui is what the build compiles, so that is where
+	// its dependencies have to be installed, not at frappe's root.
+	if strings.Join(got, ",") != "frappe/ui" {
+		t.Fatalf("got %v, want [frappe/ui]", got)
 	}
 }
 

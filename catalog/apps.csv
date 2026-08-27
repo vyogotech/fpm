@@ -10,7 +10,7 @@ wiki,https://github.com/frappe/wiki,,,,,,,,,,
 helpdesk,https://github.com/frappe/helpdesk,,,,,1,,,,frappe@develop,"v1 line only: its desk build reads ../../frappe/ui, and only frappe develop's ui package carries @vueuse/core. The dead 0.x line needs frappe/public/js/lib/posthog.js, which develop no longer has - the two lines want incompatible frappe refs"
 crm,https://github.com/frappe/crm,,,,,,,,,,
 lms,https://github.com/frappe/lms,lms,,,,,,,,,
-drive,https://github.com/frappe/drive,,,,,,,,,,
+drive,https://github.com/frappe/drive,,branch,develop,0,,,,,,"release tags stop at v0.3.0 and are long stale; develop is where the app is. The old tags also build with pnpm, which current drive no longer uses"
 print_designer,https://github.com/frappe/print_designer,,,,,,,,,,
 webshop,https://github.com/frappe/webshop,,branch,develop,0,,,,1,,no release tags upstream; tracked from develop
 raven,https://github.com/The-Commit-Company/raven,,,,,,,,,,third party team messaging
