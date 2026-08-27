@@ -174,7 +174,36 @@ func (w *Workspace) EnsureBuildDependency(slug, repoURL, ref string) (string, er
 			return "", fmt.Errorf("build dependency %s at %s: %w", slug, ref, err)
 		}
 	}
+
+	// The ref just changed, so whatever node_modules the previous ref installed no
+	// longer belongs to this tree. Consumers guard on an install marker rather than a
+	// version — helpdesk's build runs `yarn install` in frappe/ui only when
+	// node_modules/.yarn-integrity is absent — so a stale tree is silently kept and
+	// the build then fails on a package the new ref expects. Clearing them makes that
+	// guard do the right thing.
+	if err := clearNodeModules(dir); err != nil {
+		return "", fmt.Errorf("build dependency %s: %w", slug, err)
+	}
 	return dir, nil
+}
+
+// clearNodeModules removes installed node dependencies from a checkout, at the root and
+// one level down, which is where a frappe app keeps them (frappe/ui, apps/<x>/frontend).
+func clearNodeModules(dir string) error {
+	candidates := []string{filepath.Join(dir, "node_modules")}
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && e.Name() != "node_modules" && !strings.HasPrefix(e.Name(), ".") {
+				candidates = append(candidates, filepath.Join(dir, e.Name(), "node_modules"))
+			}
+		}
+	}
+	for _, path := range candidates {
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("cannot clear %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func gitOutput(dir string, args ...string) (string, error) {

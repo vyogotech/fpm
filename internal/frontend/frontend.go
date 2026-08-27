@@ -376,8 +376,13 @@ func Build(opts BuildOptions) (Result, error) {
 			return fail(result, npmrcErr)
 		}
 		defer cleanupNpmrc()
+		// CI=false matters most of all: pnpm freezes by default *because* it detects
+		// CI, and pnpm 11 has moved its settings out of .npmrc (it says so itself:
+		// "no longer read by pnpm ... the new home of each setting"). Unsetting the
+		// signal is what actually reaches an install nested behind `npm run`.
 		if retryErr := run("install (unfrozen)", relaxed,
-			"NPM_CONFIG_USERCONFIG="+npmrc, "npm_config_frozen_lockfile=false", "npm_config_prod=false"); retryErr != nil {
+			"CI=false", "NPM_CONFIG_USERCONFIG="+npmrc,
+			"npm_config_frozen_lockfile=false", "npm_config_prod=false"); retryErr != nil {
 			result.Log = log.String()
 			return fail(result, retryErr)
 		}
