@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+
+	"fpm/internal/config"
 	"sort"
 	"strings"
 	"time"
@@ -49,6 +51,22 @@ func (idx *RepositoryIndex) Upsert(entry IndexEntry) {
 		}
 		return idx.Packages[i].AppName < idx.Packages[j].AppName
 	})
+}
+
+// FetchRepositoryIndexForRepo retrieves a repository's package catalogue, dispatching
+// on the backend type.
+//
+// An OCI registry has no index: a registry is addressed by repository name, and there
+// is nowhere to publish a catalogue that `docker pull` semantics would find. Asking one
+// for metadata/index.json builds a URL with no scheme and fails with "unsupported
+// protocol scheme", which reads like a network fault rather than "this backend cannot
+// answer that question". Reported as simply absent instead, which every caller already
+// handles: a repository without an index is usable, just not searchable by keyword.
+func FetchRepositoryIndexForRepo(repo config.RepositoryConfig, client *http.Client) (*RepositoryIndex, bool, error) {
+	if strings.EqualFold(repo.Type, "oci") {
+		return nil, false, nil
+	}
+	return FetchRepositoryIndex(repo.URL, client)
 }
 
 // FetchRepositoryIndex retrieves a repository's package catalogue.

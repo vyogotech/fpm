@@ -53,6 +53,13 @@ type Options struct {
 	// and before repositories.
 	BenchPath string
 
+	// DefaultOrg is the organisation an unqualified requirement is looked up under
+	// when the repository publishes no index to answer "who publishes this app". An
+	// OCI registry never does. Packaging passes the org of the package being built,
+	// which is the right guess: hrms requiring "erpnext" means the erpnext published
+	// alongside it, not some other organisation's.
+	DefaultOrg string
+
 	// Seams for tests; nil uses the real repository client.
 	fetchMetadata func(repo config.RepositoryConfig, org, app string) (*repository.PackageMetadata, bool, error)
 	fetchIndex    func(repo config.RepositoryConfig) (*repository.RepositoryIndex, bool, error)
@@ -249,7 +256,7 @@ func latestInRepo(repo config.RepositoryConfig, org, name string, opts Options) 
 		}
 		if fetchIdx == nil {
 			fetchIdx = func(r config.RepositoryConfig) (*repository.RepositoryIndex, bool, error) {
-				return repository.FetchRepositoryIndex(r.URL, client)
+				return repository.FetchRepositoryIndexForRepo(r, client)
 			}
 		}
 	}
@@ -261,22 +268,33 @@ func latestInRepo(repo config.RepositoryConfig, org, name string, opts Options) 
 			return metadata.RequiredApp{}, false, err
 		}
 		if !found || idx == nil {
-			return metadata.RequiredApp{}, false, fmt.Errorf("publishes no index, so an unqualified %q cannot be looked up; qualify it as org/%s", name, name)
-		}
-		var orgs []string
-		for _, e := range idx.Packages {
-			if e.AppName == name {
-				orgs = append(orgs, e.Org)
+			// No index — an OCI registry has none at all. Fall back to the org the
+			// caller says to assume rather than refusing outright.
+			if opts.DefaultOrg == "" {
+				return metadata.RequiredApp{}, false, fmt.Errorf("publishes no index, so an unqualified %q cannot be looked up; qualify it as org/%s", name, name)
 			}
-		}
-		switch len(orgs) {
-		case 0:
-			return metadata.RequiredApp{}, false, nil
-		case 1:
-			org = orgs[0]
-		default:
-			return metadata.RequiredApp{}, false, fmt.Errorf("ambiguous: %s is published under several orgs (%s); qualify it as org/%s",
-				name, strings.Join(orgs, ", "), name)
+			org = opts.DefaultOrg
+		} else {
+			var orgs []string
+			for _, e := range idx.Packages {
+				if e.AppName == name {
+					orgs = append(orgs, e.Org)
+				}
+			}
+			switch len(orgs) {
+			case 0:
+				// The index does not list it; the default org is still worth a try,
+				// since an index can lag what the registry actually holds.
+				if opts.DefaultOrg == "" {
+					return metadata.RequiredApp{}, false, nil
+				}
+				org = opts.DefaultOrg
+			case 1:
+				org = orgs[0]
+			default:
+				return metadata.RequiredApp{}, false, fmt.Errorf("ambiguous: %s is published under several orgs (%s); qualify it as org/%s",
+					name, strings.Join(orgs, ", "), name)
+			}
 		}
 	}
 

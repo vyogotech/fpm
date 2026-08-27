@@ -147,7 +147,7 @@ jobs:
       - name: Install Build Tools
         run: |
           python -m pip install --upgrade pip wheel
-          npm install -g yarn
+          npm install -g yarn pnpm   # drive builds with pnpm, helpdesk and crm with yarn
 
       # "no space left on device" reads like a build error rather than a capacity one,
       # so reclaim what this job never uses.
