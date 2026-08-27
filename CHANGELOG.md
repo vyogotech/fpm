@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-27
+
+Maven-style multi-repository transitive dependency resolution, topological cascade installation,
+pre-install snapshot recording with transactional LIFO rollback, version conflict detection, and
+real SNE container integration tests.
+
+### Added
+
+- **Maven-Style Transitive Dependency Cascade (`fpm install`)**: By default (`--deps=true`),
+  `fpm install` queries all configured repositories to automatically fetch and unpack missing
+  transitive dependencies into `~/.fpm/apps/` before bench installation. It computes the
+  topological dependency order and installs base dependencies first. The `--no-deps` flag
+  allows installing only the single package without pulling dependencies.
+- **Pre-Install Snapshot & Atomic Rollback Engine**:
+  - `internal/snapshot`: Takes an in-memory snapshot of the target bench before applying any
+    mutations, recording pre-existing apps, versions, raw `apps.txt` bytes, and asset manifests.
+  - `internal/rollback`: Records LIFO transactional rollback actions (`SymlinkAction`,
+    `AssetDeployAction`, `PipInstallAction`, `AppsTxtAction`). On mid-flight installation
+    failures (when `--rollback=true`, default), the rollback engine cleanly undoes intermediate
+    steps while guaranteeing that pre-existing apps are never deleted or uninstalled.
+  - `internal/assets`: Implemented `Manifest.Delete` and `assets.Undeploy` to remove asset symlinks,
+    scrub app entries from `assets.json` and `assets-rtl.json`, and invalidate Redis cache.
+- **Exit Codes**:
+  - `ExitRolledBack` (8): Returned when an install fails and the bench is restored cleanly to its pre-install state.
+  - `ExitVersionConflict` (9): Returned when a required dependency conflicts with a different version already present in the bench.
+- **Dry-Run Mode (`--dry-run`)**: Prints the full dependency resolution and installation execution plan without mutating the bench.
+- **SNE Offline Integration Test Suite**:
+  - Added real Single Node Environment (SNE) container test harness (`test/offline/run.sh`) covering network isolation (`--network none`), live HTTP endpoint asset resolution, and real HRMS + ERPNext packaging and installation.
+  - Added automated `offline-integration` test job in `.github/workflows/ci.yml`.
+
 ## [2.2.0] - 2026-08-27
 
 Offline installation of custom (non-catalog) apps from arbitrary git checkouts: fpm

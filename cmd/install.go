@@ -6,24 +6,34 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 
-	"fpm/internal/appstore" // Added for app store management
+	"fpm/internal/appstore"
 	"fpm/internal/assets"
 	"fpm/internal/config"
 	"fpm/internal/metadata"
 	"fpm/internal/repository"
 	"fpm/internal/resolver"
-	"fpm/internal/wheels" // For locating vendored Python dependencies
-	"os/exec"
+	"fpm/internal/rollback"
+	"fpm/internal/semver"
+	"fpm/internal/snapshot"
+	"fpm/internal/wheels"
 
 	"github.com/spf13/cobra"
 )
 
 var (
+	installDeps                   bool
+	installNoDeps                 bool
+	installRepo                   string
+	installRollback               bool
+	installNoRollback             bool
+	installDryRun                 bool
+	installVerbose                bool
 	installSkipRequiredAppsCheck  bool
 	installIgnorePlatformMismatch bool
 )
@@ -41,14 +51,11 @@ func copyDirContents(src, dst string) error {
 		}
 		dstPath := filepath.Join(dst, relPath)
 		if info.IsDir() {
-			// For copyDirContents, we preserve the source directory's mode for subdirectories it creates.
-			// This is different from extractFPMArchive where we want to standardize.
 			if err := os.MkdirAll(dstPath, info.Mode()); err != nil {
 				return fmt.Errorf("failed to create directory %s: %w", dstPath, err)
 			}
 			return nil
 		}
-		// For files, ensure parent dir exists, then copy with original mode.
 		if err := os.MkdirAll(filepath.Dir(dstPath), os.ModePerm); err != nil {
 			return fmt.Errorf("failed to create parent directory for %s: %w", dstPath, err)
 		}
@@ -76,7 +83,11 @@ var installCmd = &cobra.Command{
 The package can be a path to a local .fpm file or a remote package identifier
 in the format <group>/<artifact> or <group>/<artifact>==<version>.
 If the version is not specified for a remote package, 'latest' is assumed and resolved first
-from the local FPM store, then from remote repositories.`,
+from the local FPM store, then from remote repositories.
+
+By default, transitive dependencies (hooks.py required_apps) are resolved across all configured
+repositories, downloaded into the local store, and installed in dependency order. Use --no-deps
+to install only the target package.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, configErr := config.InitConfig()
@@ -99,369 +110,480 @@ from the local FPM store, then from remote repositories.`,
 		if isBundleDir(args[0]) {
 			return installBundle(cmd, args[0], benchPath, siteName, cfg)
 		}
-		return installOne(cmd, args[0], benchPath, siteName, cfg)
+		return installCascade(cmd, args[0], benchPath, siteName, cfg)
 	},
 }
 
-// installOne installs a single package — a local .fpm file or an
-// <org>/<app>[==<version>] identifier — into the bench, and onto siteName when given.
-func installOne(cmd *cobra.Command, packagePathArg, benchPath, siteName string, cfg *config.FPMConfig) error {
-	{
-		var appModulePathInFPMStore string
-		var appOrg, appName, appVersion string
-
-		fmt.Printf("Attempting to install '%s'\n", packagePathArg)
-		statInfo, statErr := os.Stat(packagePathArg)
-
-		if statErr == nil && !statInfo.IsDir() {
-			fmt.Printf("Local package file found: %s\n", packagePathArg)
-			localFpmMeta, err := readMetadataFromFPMFile(packagePathArg)
-			if err != nil {
-				return fmt.Errorf("failed to read metadata from local FPM file %s: %w", packagePathArg, err)
-			}
-			// Use .Org and .AppName from metadata which are now the correct fields
-			if localFpmMeta.Org == "" || localFpmMeta.AppName == "" || localFpmMeta.PackageVersion == "" {
-				return fmt.Errorf("Org, AppName, or PackageVersion missing from metadata in %s", packagePathArg)
-			}
-
-			appOrg = localFpmMeta.Org
-			appName = localFpmMeta.AppName
-			appVersion = localFpmMeta.PackageVersion
-			fmt.Printf("Installing from local file: %s/%s version %s\n", appOrg, appName, appVersion)
-
-			// Use appstore.ManageAppInLocalStore
-			fmt.Printf("Ensuring package '%s' is installed to local FPM store...\n", packagePathArg)
-			resolvedOrg, resolvedAppName, resolvedVersion, _, resolvedAppModulePathInStore, storeErr := appstore.ManageAppInLocalStore(packagePathArg, cfg)
-			if storeErr != nil {
-				return fmt.Errorf("failed to manage package %s in local FPM store: %w", packagePathArg, storeErr)
-			}
-			// Update appOrg, appName, appVersion based on what ManageAppInLocalStore resolved from metadata
-			appOrg = resolvedOrg
-			appName = resolvedAppName
-			appVersion = resolvedVersion
-			appModulePathInFPMStore = resolvedAppModulePathInStore // This is the path to the app module, e.g. .../apporg/appname/version/appname
-			fmt.Printf("Package %s/%s version %s successfully managed in local store. App module at: %s\n", appOrg, appName, appVersion, appModulePathInFPMStore)
-
-		} else if os.IsNotExist(statErr) || (statInfo != nil && statInfo.IsDir()) {
-			fmt.Printf("Package '%s' not found locally or is a directory. Attempting to resolve as remote identifier...\n", packagePathArg)
-			var parsedOrg, parsedAppName, parsedVersion string // Renamed variables
-			parts := strings.Split(packagePathArg, "/")
-			if len(parts) == 2 {
-				parsedOrg = strings.TrimSpace(parts[0]) // Renamed variable
-				appAndVersionParts := strings.Split(parts[1], "==")
-				parsedAppName = strings.TrimSpace(appAndVersionParts[0]) // Renamed variable
-				if len(appAndVersionParts) == 2 {
-					parsedVersion = strings.TrimSpace(appAndVersionParts[1])
-				}
-			} else {
-				return fmt.Errorf("invalid remote package identifier format: '%s'. Expected <org>/<appName> or <org>/<appName>==<version>", packagePathArg)
-			}
-			if parsedOrg == "" || parsedAppName == "" { // Renamed variables
-				return fmt.Errorf("invalid remote package identifier: Org ('%s') and AppName ('%s') must be specified in '%s'", parsedOrg, parsedAppName, packagePathArg)
-			}
-
-			appOrg = parsedOrg      // Use renamed variables
-			appName = parsedAppName // Use renamed variables
-			initialRequestedVersion := parsedVersion
-
-			fmt.Printf("Attempting to install %s/%s (requested version: '%s')\n", appOrg, appName, initialRequestedVersion)
-
-			resolvedVersion := initialRequestedVersion
-			if resolvedVersion == "" || resolvedVersion == "latest" {
-				fmt.Println("Resolving latest version from local FPM store...")
-				versionsDir := filepath.Join(cfg.AppsBasePath, appOrg, appName)
-				entries, readDirErr := os.ReadDir(versionsDir)
-				foundLocally := false
-				if readDirErr == nil {
-					var availableVersions []string
-					for _, entry := range entries {
-						if entry.IsDir() {
-							availableVersions = append(availableVersions, entry.Name())
-						}
-					}
-					if len(availableVersions) > 0 {
-						sort.Strings(availableVersions)
-						resolvedVersion = availableVersions[len(availableVersions)-1]
-						fmt.Printf("Latest version found in local store for %s/%s: %s\n", appOrg, appName, resolvedVersion)
-						foundLocally = true
-					}
-				} else if !os.IsNotExist(readDirErr) {
-					fmt.Fprintf(os.Stderr, "Warning: could not read local versions for %s/%s: %v\n", appOrg, appName, readDirErr)
-				}
-				if !foundLocally {
-					fmt.Printf("No suitable version for %s/%s found in local store. Will try remote repositories with version hint '%s'.\n", appOrg, appName, initialRequestedVersion)
-				}
-			}
-			appVersion = resolvedVersion
-
-			if appVersion != "" && appVersion != "latest" {
-				targetAppVersionPathInStore := filepath.Join(cfg.AppsBasePath, appOrg, appName, appVersion)
-				potentialAppModulePath := filepath.Join(targetAppVersionPathInStore, appName)
-				if _, hooksStatErr := os.Stat(filepath.Join(potentialAppModulePath, "hooks.py")); hooksStatErr == nil {
-					fmt.Printf("Found valid installation of %s/%s version %s in local FPM store: %s\n", appOrg, appName, appVersion, potentialAppModulePath)
-					appModulePathInFPMStore = potentialAppModulePath
-				} else {
-					fmt.Printf("Version %s for %s/%s found in local store path %s, but seems incomplete. Will try remote.\n", appVersion, appOrg, appName, targetAppVersionPathInStore)
-				}
-			}
-
-			if appModulePathInFPMStore == "" {
-				fmt.Printf("Package %s/%s version '%s' not found or incomplete in local FPM store. Trying remote repositories...\n", appOrg, appName, initialRequestedVersion)
-
-				searchVersionForRemote := initialRequestedVersion
-				if initialRequestedVersion == "" {
-					searchVersionForRemote = "latest"
-				}
-
-				downloadedPkgInfo, findErr := repository.FindPackageInRepos(cfg, appOrg, appName, searchVersionForRemote)
-				if findErr != nil {
-					return fmt.Errorf("failed to find or download package '%s': %w", packagePathArg, findErr)
-				}
-				fmt.Printf("Package successfully resolved from repository '%s'. Cached file: %s\n", downloadedPkgInfo.RepositoryName, downloadedPkgInfo.LocalPath)
-
-				fpmMeta, err := readMetadataFromFPMFile(downloadedPkgInfo.LocalPath)
-				if err != nil {
-					return fmt.Errorf("failed to read metadata from downloaded/cached FPM file %s: %w", downloadedPkgInfo.LocalPath, err)
-				}
-				appOrg = fpmMeta.Org
-				appName = fpmMeta.AppName
-				appVersion = fpmMeta.PackageVersion
-
-				if appOrg == "" || appName == "" || appVersion == "" {
-					return fmt.Errorf("org, app_name, or package_version missing from metadata in downloaded package %s", downloadedPkgInfo.LocalPath)
-				}
-
-				// Use appstore.ManageAppInLocalStore for the downloaded/cached file
-				fmt.Printf("Ensuring downloaded package '%s' is installed to local FPM store...\n", downloadedPkgInfo.LocalPath)
-				resolvedOrg, resolvedAppName, resolvedVersion, _, resolvedAppModulePathInStore, storeErr := appstore.ManageAppInLocalStore(downloadedPkgInfo.LocalPath, cfg)
-				if storeErr != nil {
-					return fmt.Errorf("failed to manage downloaded package %s in local FPM store: %w", downloadedPkgInfo.LocalPath, storeErr)
-				}
-				// Update appOrg, appName, appVersion based on what ManageAppInLocalStore resolved
-				appOrg = resolvedOrg
-				appName = resolvedAppName
-				appVersion = resolvedVersion
-				appModulePathInFPMStore = resolvedAppModulePathInStore
-				fmt.Printf("Package %s/%s version %s (from remote) successfully managed in local store. App module at: %s\n", appOrg, appName, appVersion, appModulePathInFPMStore)
-			}
-		} else if statErr != nil {
-			return fmt.Errorf("error checking package path '%s': %w", packagePathArg, statErr)
-		}
-
-		if appModulePathInFPMStore == "" {
-			return fmt.Errorf("could not determine source application module path for installation")
-		}
-		if appOrg == "" || appName == "" || appVersion == "" {
-			return fmt.Errorf("internal error: app metadata (org, name, version) not resolved before bench operations. Org: '%s', AppName: '%s', Version: '%s'", appOrg, appName, appVersion)
-		}
-
-		fmt.Printf("Proceeding with bench operations for %s/%s version %s using source: %s\n", appOrg, appName, appVersion, appModulePathInFPMStore)
-		fmt.Printf("Target Bench Path: %s\n", benchPath)
-		if siteName != "" {
-			fmt.Printf("Target Site: %s\n", siteName)
-		}
-
-		absBenchPath, err := filepath.Abs(benchPath)
-		if err != nil {
-			return fmt.Errorf("failed to get absolute path for bench directory '%s': %w", benchPath, err)
-		}
-
-		// --- Pre-install checks ---
-		// The target bench has no network, so anything the install would need to fetch
-		// has to be refused now, before the bench is touched.
-		baseVersionPath := filepath.Dir(appModulePathInFPMStore)
-		storeMeta, metaErr := readMetadataFromFPMStore(baseVersionPath)
-		if metaErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not read package metadata from local store: %v\n", metaErr)
-			storeMeta = &metadata.AppMetadata{}
-		}
-		packageID := fmt.Sprintf("%s/%s==%s", appOrg, appName, appVersion)
-		if err := checkRequiredApps(cfg, storeMeta, absBenchPath, packageID, siteName != "", installSkipRequiredAppsCheck); err != nil {
-			return err
-		}
-		wheelsInStore := vendoredWheelsDir(baseVersionPath)
-		if wheelsInStore != "" {
-			if err := checkWheelTarget(storeMeta, benchPythonVersion(absBenchPath), installIgnorePlatformMismatch); err != nil {
-				return err
-			}
-		}
-
-		// <bench>/apps/<app> must be the app's *package root* — the directory holding
-		// pyproject.toml / requirements.txt with the Python module <app>/ inside it —
-		// which is what `pip install -e`, Frappe (`apps/<app>/<app>/public` for assets)
-		// and bench all expect. In the local store that is the version directory, whose
-		// extra files (app_metadata.json, wheels/, the stored .fpm) are ignored by all of
-		// them.
-		originalPath := baseVersionPath
-		linkName := filepath.Join(absBenchPath, "apps", appName)
-
-		fmt.Printf("Preparing to symlink app '%s' from '%s' to '%s'\n", appName, originalPath, linkName)
-		linkDir := filepath.Dir(linkName)
-		if err := os.MkdirAll(linkDir, os.ModePerm); err != nil {
-			return fmt.Errorf("failed to create directory for symlink '%s': %w", linkDir, err)
-		}
-		if _, err := os.Lstat(linkName); err == nil {
-			fmt.Printf("Removing existing file/symlink at '%s'\n", linkName)
-			if err := os.RemoveAll(linkName); err != nil {
-				return fmt.Errorf("failed to remove existing file/symlink at '%s': %w", linkName, err)
-			}
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to check symlink path '%s': %w", linkName, err)
-		}
-		if err := os.Symlink(originalPath, linkName); err != nil {
-			return fmt.Errorf("failed to create symlink from '%s' to '%s': %w", originalPath, linkName, err)
-		}
-		fmt.Printf("Successfully symlinked app '%s' into bench.\n", appName)
-
-		// --- Asset deployment ---
-		// Exactly what `bench build --app <app> --using-cached` does with prebuilt output:
-		// link sites/assets/<app> to the app's public/ directory and merge the app's
-		// built bundles into sites/assets/assets.json and assets-rtl.json. Nothing is
-		// compiled here; the package ships <app>/public/dist from `fpm package --bench-path`.
-		if err := deployPackagedAssets(absBenchPath, appName, appModulePathInFPMStore, baseVersionPath); err != nil {
-			return err
-		}
-
-		currentWD, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("failed to get current working directory: %w", err)
-		}
-		fmt.Printf("Changing working directory to bench path: %s\n", absBenchPath)
-		if err := os.Chdir(absBenchPath); err != nil {
-			return fmt.Errorf("failed to change working directory to bench path '%s': %w", absBenchPath, err)
-		}
-		defer func() {
-			fmt.Printf("Changing working directory back to: %s\n", currentWD)
-			if err := os.Chdir(currentWD); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to change directory back to '%s': %v\n", currentWD, err)
-			}
-		}()
-
-		pipAppPath := filepath.Join("./apps", appName)
-		// A package that bundles wheels/ resolves its Python dependencies from that
-		// directory instead of PyPI, so the install works without network access.
-		// Packages without vendored wheels keep the original online behaviour.
-		if wheelsInStore != "" {
-			fmt.Printf("Detected vendored wheels in package. Installing offline from %s\n", wheelsInStore)
-		} else {
-			fmt.Printf("No vendored wheels in package; resolving Python dependencies from the network.\n")
-		}
-		pipCmdArgs := buildPipInstallArgs(pipAppPath, wheelsInStore)
-		fmt.Printf("Running pip install for '%s': ./env/bin/pip %s\n", appName, strings.Join(pipCmdArgs, " "))
-		pipExecCmd := exec.Command("./env/bin/pip", pipCmdArgs...)
-		output, err := pipExecCmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("pip install for app '%s' failed:\n%s\nError: %w", appName, string(output), err)
-		}
-		fmt.Printf("Pip install for app '%s' successful.\nOutput:\n%s\n", appName, string(output))
-
-		appsTxtPath := filepath.Join(absBenchPath, "sites", "apps.txt")
-		appNameString := appName
-		logMessagePrefix := fmt.Sprintf("apps.txt (%s):", appsTxtPath)
-		sitesDir := filepath.Dir(appsTxtPath)
-		if err := os.MkdirAll(sitesDir, os.ModePerm); err != nil {
-			return fmt.Errorf("%s Failed to create sites directory '%s': %w", logMessagePrefix, sitesDir, err)
-		}
-		fileContentBytes, err := os.ReadFile(appsTxtPath)
-		var appsInFile []string
-		if err != nil {
-			if os.IsNotExist(err) {
-				fmt.Printf("%s File does not exist, will create it with app '%s'.\n", logMessagePrefix, appNameString)
-				appsInFile = []string{}
-			} else {
-				return fmt.Errorf("%s Failed to read: %w", logMessagePrefix, err)
-			}
-		} else {
-			fileContent := string(fileContentBytes)
-			rawApps := strings.Split(strings.TrimSpace(fileContent), "\n")
-			for _, a := range rawApps {
-				trimmedApp := strings.TrimSpace(a)
-				if trimmedApp != "" {
-					appsInFile = append(appsInFile, trimmedApp)
-				}
-			}
-		}
-		found := false
-		for _, existingApp := range appsInFile {
-			if existingApp == appNameString {
-				found = true
-				break
-			}
-		}
-		if found {
-			fmt.Printf("%s App '%s' already listed.\n", logMessagePrefix, appNameString)
-		} else {
-			fmt.Printf("%s App '%s' not found, adding it.\n", logMessagePrefix, appNameString)
-			appsInFile = append(appsInFile, appNameString)
-			newContent := strings.Join(appsInFile, "\n")
-			if len(appsInFile) > 0 {
-				newContent += "\n"
-			}
-			if err := os.WriteFile(appsTxtPath, []byte(newContent), 0644); err != nil {
-				return fmt.Errorf("%s Failed to write: %w", logMessagePrefix, err)
-			}
-			fmt.Printf("%s Successfully updated with app '%s'.\n", logMessagePrefix, appNameString)
-		}
-
-		// Adding the app to the bench makes it available; installing it onto a site is a
-		// separate step that only the site's own bench can perform.
-		if siteName != "" {
-			if err := installAppOnSite(absBenchPath, siteName, appName); err != nil {
-				return err
-			}
-		} else {
-			fmt.Printf("\nApp '%s' is installed in the bench. "+
-				"Pass --site <site> to also install it onto a site.\n", appName)
-		}
-		return nil
-	}
+// resolvedPackageItem represents an app queued for installation.
+type resolvedPackageItem struct {
+	Org                    string
+	AppName                string
+	Version                string
+	AppModulePathInStore   string
+	BaseVersionPathInStore string
+	Metadata               *metadata.AppMetadata
+	RequiredBy             string
+	SourceDesc             string
+	ProvidedByBench        bool
 }
 
-// benchPythonExecutable is the interpreter of a Frappe bench's virtualenv, relative to
-// the bench root — the same place the pip used for the app install comes from.
+func (r *resolvedPackageItem) Identifier() string {
+	if r.Org != "" {
+		return fmt.Sprintf("%s/%s==%s", r.Org, r.AppName, r.Version)
+	}
+	if r.Version != "" {
+		return fmt.Sprintf("%s==%s", r.AppName, r.Version)
+	}
+	return r.AppName
+}
+
+func (r *resolvedPackageItem) RequiredByOrTarget() string {
+	if r.RequiredBy != "" {
+		return "required by " + r.RequiredBy
+	}
+	return "target package " + r.Identifier()
+}
+
+// resolvePackageToLocalStore resolves a package argument (local .fpm file or remote
+// identifier) into the local store and returns its resolved info.
+func resolvePackageToLocalStore(packagePathArg string, cfg *config.FPMConfig, repoName string) (*resolvedPackageItem, error) {
+	statInfo, statErr := os.Stat(packagePathArg)
+	if statErr == nil && !statInfo.IsDir() {
+		// Local file
+		resolvedOrg, resolvedAppName, resolvedVersion, baseInstallPath, appModuleDir, err := appstore.ManageAppInLocalStore(packagePathArg, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to manage package %s in local FPM store: %w", packagePathArg, err)
+		}
+		meta, err := metadata.LoadAppMetadata(baseInstallPath)
+		if err != nil {
+			meta = &metadata.AppMetadata{Org: resolvedOrg, AppName: resolvedAppName, PackageVersion: resolvedVersion}
+		}
+		return &resolvedPackageItem{
+			Org:                    resolvedOrg,
+			AppName:                resolvedAppName,
+			Version:                resolvedVersion,
+			AppModulePathInStore:   appModuleDir,
+			BaseVersionPathInStore: baseInstallPath,
+			Metadata:               meta,
+			SourceDesc:             "local file: " + packagePathArg,
+		}, nil
+	}
+
+	if os.IsNotExist(statErr) || (statInfo != nil && statInfo.IsDir()) {
+		// Remote identifier
+		var parsedOrg, parsedAppName, parsedVersion string
+		parts := strings.Split(packagePathArg, "/")
+		if len(parts) == 2 {
+			parsedOrg = strings.TrimSpace(parts[0])
+			appAndVersionParts := strings.Split(parts[1], "==")
+			parsedAppName = strings.TrimSpace(appAndVersionParts[0])
+			if len(appAndVersionParts) == 2 {
+				parsedVersion = strings.TrimSpace(appAndVersionParts[1])
+			}
+		} else {
+			return nil, fmt.Errorf("invalid remote package identifier format: '%s'. Expected <org>/<appName> or <org>/<appName>==<version>", packagePathArg)
+		}
+		if parsedOrg == "" || parsedAppName == "" {
+			return nil, fmt.Errorf("invalid remote package identifier: Org ('%s') and AppName ('%s') must be specified in '%s'", parsedOrg, parsedAppName, packagePathArg)
+		}
+
+		resolvedVersion := parsedVersion
+		if resolvedVersion == "" || resolvedVersion == "latest" {
+			versionsDir := filepath.Join(cfg.AppsBasePath, parsedOrg, parsedAppName)
+			entries, readDirErr := os.ReadDir(versionsDir)
+			foundLocally := false
+			if readDirErr == nil {
+				var availableVersions []string
+				for _, entry := range entries {
+					if entry.IsDir() && resolver.InStore(cfg.AppsBasePath, parsedOrg, parsedAppName, entry.Name()) {
+						availableVersions = append(availableVersions, entry.Name())
+					}
+				}
+				if len(availableVersions) > 0 {
+					sorted := semver.Sort(availableVersions)
+					resolvedVersion = sorted[len(sorted)-1]
+					foundLocally = true
+				}
+			}
+			if !foundLocally {
+				resolvedVersion = "latest"
+			}
+		}
+
+		// Check if already in local store
+		if resolvedVersion != "" && resolvedVersion != "latest" && resolver.InStore(cfg.AppsBasePath, parsedOrg, parsedAppName, resolvedVersion) {
+			baseVersionPath := filepath.Join(cfg.AppsBasePath, parsedOrg, parsedAppName, resolvedVersion)
+			appModulePath := filepath.Join(baseVersionPath, parsedAppName)
+			meta, _ := metadata.LoadAppMetadata(baseVersionPath)
+			if meta == nil {
+				meta = &metadata.AppMetadata{Org: parsedOrg, AppName: parsedAppName, PackageVersion: resolvedVersion}
+			}
+			return &resolvedPackageItem{
+				Org:                    parsedOrg,
+				AppName:                parsedAppName,
+				Version:                resolvedVersion,
+				AppModulePathInStore:   appModulePath,
+				BaseVersionPathInStore: baseVersionPath,
+				Metadata:               meta,
+				SourceDesc:             "local store",
+			}, nil
+		}
+
+		// Fetch from remote repositories
+		fmt.Printf("Fetching package %s/%s version '%s' from repository...\n", parsedOrg, parsedAppName, resolvedVersion)
+		var downloadedPkgInfo *repository.DownloadedPackageInfo
+		var findErr error
+		if repoName != "" {
+			repo, ok := config.GetRepository(cfg, repoName)
+			if !ok {
+				return nil, fmt.Errorf("repository %q is not configured", repoName)
+			}
+			client, cerr := resolver.NewHTTPClient(repo, 0)
+			if cerr != nil {
+				return nil, cerr
+			}
+			downloadedPkgInfo, findErr = repository.FindPackageInSpecificRepo(repo.Name, repo.URL, parsedOrg, parsedAppName, resolvedVersion, client)
+		} else {
+			downloadedPkgInfo, findErr = repository.FindPackageInRepos(cfg, parsedOrg, parsedAppName, resolvedVersion)
+		}
+		if findErr != nil {
+			return nil, fmt.Errorf("failed to find or download package '%s': %w", packagePathArg, findErr)
+		}
+
+		resolvedOrg, resolvedAppName, resolvedVersion, baseInstallPath, appModuleDir, storeErr := appstore.ManageAppInLocalStore(downloadedPkgInfo.LocalPath, cfg)
+		if storeErr != nil {
+			return nil, fmt.Errorf("failed to manage downloaded package %s in local FPM store: %w", downloadedPkgInfo.LocalPath, storeErr)
+		}
+		meta, _ := metadata.LoadAppMetadata(baseInstallPath)
+		if meta == nil {
+			meta = &metadata.AppMetadata{Org: resolvedOrg, AppName: resolvedAppName, PackageVersion: resolvedVersion}
+		}
+		return &resolvedPackageItem{
+			Org:                    resolvedOrg,
+			AppName:                resolvedAppName,
+			Version:                resolvedVersion,
+			AppModulePathInStore:   appModuleDir,
+			BaseVersionPathInStore: baseInstallPath,
+			Metadata:               meta,
+			SourceDesc:             "repository '" + downloadedPkgInfo.RepositoryName + "'",
+		}, nil
+	}
+
+	return nil, fmt.Errorf("error checking package path '%s': %w", packagePathArg, statErr)
+}
+
+// installCascade executes the full installation pipeline:
+// 1. Ingest target package into local store.
+// 2. Resolve transitive dependencies across all configured repos (if --deps).
+// 3. Check dry-run mode.
+// 4. Capture pre-install snapshot.
+// 5. Check version conflicts.
+// 6. Phase 3: Bench-level install in topological order with rollback journal.
+// 7. Phase 4: Site-level install pass.
+func installCascade(cmd *cobra.Command, packagePathArg, benchPath, siteName string, cfg *config.FPMConfig) error {
+	absBenchPath, err := filepath.Abs(benchPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path for bench directory '%s': %w", benchPath, err)
+	}
+
+	effectiveDeps := installDeps
+	if cmd.Flags().Changed("no-deps") && installNoDeps {
+		effectiveDeps = false
+	} else if cmd.Flags().Changed("deps") && !installDeps {
+		effectiveDeps = false
+	}
+
+	effectiveRollback := installRollback
+	if cmd.Flags().Changed("no-rollback") && installNoRollback {
+		effectiveRollback = false
+	} else if cmd.Flags().Changed("rollback") && !installRollback {
+		effectiveRollback = false
+	}
+
+	// 1. Resolve target package into local store
+	rootItem, err := resolvePackageToLocalStore(packagePathArg, cfg, installRepo)
+	if err != nil {
+		return err
+	}
+
+	var queue []*resolvedPackageItem
+	if effectiveDeps {
+		fmt.Printf("Resolving dependencies for %s...\n", rootItem.Identifier())
+		closure, cerr := resolveTransitiveDeps(cfg, rootItem.Metadata.RequiredApps, rootItem.Identifier(), absBenchPath, installRepo, len(cfg.Repositories) > 0)
+		if cerr != nil {
+			return cerr
+		}
+		for _, e := range closure {
+			if e.ProvidedByBench {
+				fmt.Printf("Required app %s provided by the bench (%s); not reinstalled\n", e.App.Identifier(), e.StorePath)
+				queue = append(queue, &resolvedPackageItem{
+					Org:             e.App.Org,
+					AppName:         e.App.Name,
+					Version:         e.App.Version,
+					RequiredBy:      e.RequiredBy,
+					ProvidedByBench: true,
+					SourceDesc:      "provided by bench",
+				})
+				continue
+			}
+			fmt.Printf("Required app %s satisfied from local FPM store (%s)\n", e.App.Identifier(), e.StorePath)
+			basePath := filepath.Join(cfg.AppsBasePath, e.App.Org, e.App.Name, e.App.Version)
+			modulePath := filepath.Join(basePath, e.App.Name)
+			meta, _ := metadata.LoadAppMetadata(basePath)
+			if meta == nil {
+				meta = &metadata.AppMetadata{Org: e.App.Org, AppName: e.App.Name, PackageVersion: e.App.Version}
+			}
+			queue = append(queue, &resolvedPackageItem{
+				Org:                    e.App.Org,
+				AppName:                e.App.Name,
+				Version:                e.App.Version,
+				AppModulePathInStore:   modulePath,
+				BaseVersionPathInStore: basePath,
+				Metadata:               meta,
+				RequiredBy:             e.RequiredBy,
+				SourceDesc:             "local store",
+			})
+		}
+	} else if !installSkipRequiredAppsCheck {
+		packageID := rootItem.Identifier()
+		if err := checkRequiredApps(cfg, rootItem.Metadata, absBenchPath, packageID, siteName != "", false); err != nil {
+			return err
+		}
+	}
+	queue = append(queue, rootItem)
+
+	// 2. Dry-Run Mode
+	if installDryRun {
+		out := cmd.OutOrStdout()
+		fmt.Fprintf(out, "\nDry-run mode: %d package(s) would be installed in order:\n", len(queue))
+		for i, item := range queue {
+			by := ""
+			if item.RequiredBy != "" {
+				by = " (required by " + item.RequiredBy + ")"
+			}
+			if item.ProvidedByBench {
+				fmt.Fprintf(out, "  %d. %s  [provided by bench, not reinstalled]%s\n", i+1, item.Identifier(), by)
+			} else {
+				fmt.Fprintf(out, "  %d. %s  (source: %s)%s\n", i+1, item.Identifier(), item.SourceDesc, by)
+			}
+		}
+		if siteName != "" {
+			fmt.Fprintf(out, "\nTarget site: %s (apps will be installed onto site in order after bench install)\n", siteName)
+		}
+		fmt.Fprintln(out)
+		return nil
+	}
+
+	// 3. Pre-Install Snapshot
+	snap, err := snapshot.Take(absBenchPath, siteName)
+	if err != nil {
+		return fmt.Errorf("failed to capture pre-install snapshot of bench '%s': %w", absBenchPath, err)
+	}
+
+	// 4. Version Conflict Check (for dependencies)
+	for _, item := range queue {
+		if item.RequiredBy != "" && snap.WasPresentInBench(item.AppName) {
+			preVer := snap.PreExistingVersion(item.AppName)
+			if item.Version != "" && preVer != "" && preVer != item.Version {
+				return fmt.Errorf("%w: bench %s has %s version %q, but %s requires version %q",
+					ErrVersionConflict, absBenchPath, item.AppName, preVer, item.RequiredByOrTarget(), item.Version)
+			}
+		}
+	}
+
+	// 5. Phase 3: Bench-Level Installation with Rollback Journal
+	journal := rollback.NewJournal(snap)
+	fmt.Printf("\n=== Bench Installation Phase (%d package(s)) ===\n", len(queue))
+	for i, item := range queue {
+		if item.ProvidedByBench {
+			fmt.Printf("[%d/%d] %s — provided by the bench, skipping bench install\n", i+1, len(queue), item.Identifier())
+			continue
+		}
+		if item.RequiredBy != "" && snap.WasPresentInBench(item.AppName) {
+			fmt.Printf("[%d/%d] %s — already present in bench (%s), skipping bench install\n", i+1, len(queue), item.Identifier(), item.BaseVersionPathInStore)
+			continue
+		}
+
+		fmt.Printf("\n[%d/%d] Installing %s into bench...\n", i+1, len(queue), item.Identifier())
+		if err := installOneItemIntoBench(item, absBenchPath, journal, installVerbose); err != nil {
+			if effectiveRollback {
+				_ = journal.Rollback(cmd.OutOrStdout(), installVerbose)
+				return fmt.Errorf("%w: %w", ErrRolledBack, err)
+			}
+			return err
+		}
+		fmt.Printf("[%d/%d] Successfully installed %s into bench.\n", i+1, len(queue), item.Identifier())
+	}
+
+	// 6. Phase 4: Site-Level Installation Pass
+	if siteName != "" {
+		fmt.Printf("\n=== Site Installation Phase: Installing onto site '%s' ===\n", siteName)
+		for i, item := range queue {
+			if snap.WasInstalledOnSite(item.AppName) {
+				fmt.Printf("  [%d/%d] %s — already installed on site '%s', skipping\n", i+1, len(queue), item.AppName, siteName)
+				continue
+			}
+			fmt.Printf("  [%d/%d] Installing app '%s' onto site '%s'...\n", i+1, len(queue), item.AppName, siteName)
+			if err := installAppOnSite(absBenchPath, siteName, item.AppName); err != nil {
+				return fmt.Errorf("site installation failed at %s (%d of %d): %w", item.AppName, i+1, len(queue), err)
+			}
+		}
+		fmt.Printf("\nAll %d package(s) installed on site '%s'.\n", len(queue), siteName)
+	} else {
+		fmt.Printf("\nAll %d package(s) installed into bench %s.\nPass --site <site> to also install onto a site.\n", len(queue), absBenchPath)
+	}
+
+	return nil
+}
+
+// installOneItemIntoBench performs the bench-level mutations for a single package:
+// symlink, asset deployment, pip install, apps.txt.
+func installOneItemIntoBench(item *resolvedPackageItem, absBenchPath string, journal *rollback.Journal, verbose bool) error {
+	baseVersionPath := item.BaseVersionPathInStore
+	appModulePathInFPMStore := item.AppModulePathInStore
+	appName := item.AppName
+
+	// Pre-install wheel check
+	wheelsInStore := vendoredWheelsDir(baseVersionPath)
+	if wheelsInStore != "" {
+		if err := checkWheelTarget(item.Metadata, benchPythonVersion(absBenchPath), installIgnorePlatformMismatch); err != nil {
+			return err
+		}
+	}
+
+	// 1. Symlink
+	linkName := filepath.Join(absBenchPath, "apps", appName)
+	linkDir := filepath.Dir(linkName)
+	if err := os.MkdirAll(linkDir, os.ModePerm); err != nil {
+		return fmt.Errorf("failed to create directory for symlink '%s': %w", linkDir, err)
+	}
+	if _, err := os.Lstat(linkName); err == nil {
+		if err := os.RemoveAll(linkName); err != nil {
+			return fmt.Errorf("failed to remove existing file/symlink at '%s': %w", linkName, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to check symlink path '%s': %w", linkName, err)
+	}
+	if err := os.Symlink(baseVersionPath, linkName); err != nil {
+		return fmt.Errorf("failed to create symlink from '%s' to '%s': %w", baseVersionPath, linkName, err)
+	}
+	if journal != nil {
+		journal.Record(&rollback.SymlinkAction{BenchPath: absBenchPath, App: appName, Snapshot: journal.Snapshot})
+	}
+
+	// 2. Deploy Packaged Assets
+	if err := deployPackagedAssets(absBenchPath, appName, appModulePathInFPMStore, baseVersionPath); err != nil {
+		return err
+	}
+	if journal != nil {
+		journal.Record(&rollback.AssetDeployAction{BenchPath: absBenchPath, App: appName, Snapshot: journal.Snapshot})
+	}
+
+	// 3. Pip Install (using execCmd.Dir = absBenchPath, no process-global os.Chdir)
+	pipAppPath := filepath.Join(absBenchPath, "apps", appName)
+	if wheelsInStore != "" {
+		fmt.Printf("Detected vendored wheels in package. Installing offline from %s\n", wheelsInStore)
+	} else {
+		fmt.Printf("No vendored wheels in package; resolving Python dependencies from the network.\n")
+	}
+	pipCmdArgs := buildPipInstallArgs(pipAppPath, wheelsInStore)
+	fmt.Printf("Running pip install for '%s': ./env/bin/pip %s\n", appName, strings.Join(pipCmdArgs, " "))
+	pipExecCmd := exec.Command(filepath.Join(absBenchPath, "env", "bin", "pip"), pipCmdArgs...)
+	pipExecCmd.Dir = absBenchPath
+	output, err := pipExecCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("pip install for app '%s' failed:\n%s\nError: %w", appName, string(output), err)
+	}
+	if verbose {
+		fmt.Printf("Pip install output:\n%s\n", string(output))
+	}
+	if journal != nil {
+		journal.Record(&rollback.PipInstallAction{BenchPath: absBenchPath, App: appName, Snapshot: journal.Snapshot})
+	}
+
+	// 4. Update sites/apps.txt
+	appsTxtPath := filepath.Join(absBenchPath, "sites", "apps.txt")
+	if err := appendToAppsTxt(appsTxtPath, appName); err != nil {
+		return err
+	}
+	if journal != nil {
+		journal.Record(&rollback.AppsTxtAction{BenchPath: absBenchPath, App: appName, Snapshot: journal.Snapshot})
+	}
+
+	return nil
+}
+
+// appendToAppsTxt safely appends appName to apps.txt if not already listed.
+func appendToAppsTxt(appsTxtPath, appName string) error {
+	sitesDir := filepath.Dir(appsTxtPath)
+	if err := os.MkdirAll(sitesDir, os.ModePerm); err != nil {
+		return fmt.Errorf("failed to create sites directory '%s': %w", sitesDir, err)
+	}
+	fileContentBytes, err := os.ReadFile(appsTxtPath)
+	var appsInFile []string
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to read %s: %w", appsTxtPath, err)
+		}
+	} else {
+		for _, a := range strings.Split(strings.TrimSpace(string(fileContentBytes)), "\n") {
+			if trimmed := strings.TrimSpace(a); trimmed != "" {
+				appsInFile = append(appsInFile, trimmed)
+			}
+		}
+	}
+	for _, existing := range appsInFile {
+		if existing == appName {
+			return nil
+		}
+	}
+	appsInFile = append(appsInFile, appName)
+	newContent := strings.Join(appsInFile, "\n") + "\n"
+	return os.WriteFile(appsTxtPath, []byte(newContent), 0o644)
+}
+
+// installOne installs a single package without transitive dependency resolution.
+// Used directly by installBundle.
+func installOne(cmd *cobra.Command, packagePathArg, benchPath, siteName string, cfg *config.FPMConfig) error {
+	absBenchPath, err := filepath.Abs(benchPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path for bench directory '%s': %w", benchPath, err)
+	}
+	item, err := resolvePackageToLocalStore(packagePathArg, cfg, installRepo)
+	if err != nil {
+		return err
+	}
+	if err := checkRequiredApps(cfg, item.Metadata, absBenchPath, item.Identifier(), siteName != "", installSkipRequiredAppsCheck); err != nil {
+		return err
+	}
+	if err := installOneItemIntoBench(item, absBenchPath, nil, installVerbose); err != nil {
+		return err
+	}
+	if siteName != "" {
+		if err := installAppOnSite(absBenchPath, siteName, item.AppName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// benchPythonExecutable is the interpreter of a Frappe bench's virtualenv.
 const benchPythonExecutable = "./env/bin/python"
 
-// installAppOnSite runs `bench --site <site> install-app <app>`, which is what actually
-// makes an app active on a site: creating its DocTypes and running its patches.
-//
-// It is deliberately delegated to Frappe rather than reimplemented. Site installation
-// touches the database and runs the app's own migrations, and Frappe is the only thing
-// that knows how to do that correctly for a given version.
-//
-// The `bench` CLI is not required to be installed, in the virtualenv or anywhere: for
-// any frappe command, bench merely chdirs into <bench>/sites and execs
-// `env/bin/python -m frappe.utils.bench_helper frappe <args>` (bench/cli.py,
-// frappe_cmd). That is invoked directly, so an install works in benches where bench
-// lives outside the virtualenv (a user or system install, container images).
+// installAppOnSite runs `frappe --site <site> install-app <app>` without process-global os.Chdir.
 func installAppOnSite(benchPath, siteName, appName string) error {
-	currentWD, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to determine current directory: %w", err)
-	}
-	if err := os.Chdir(benchPath); err != nil {
-		return fmt.Errorf("failed to change directory to bench path '%s': %w", benchPath, err)
-	}
-	defer func() {
-		if err := os.Chdir(currentWD); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to change directory back to '%s': %v\n", currentWD, err)
-		}
-	}()
-
-	if _, statErr := os.Stat(benchPythonExecutable); statErr != nil {
+	pythonExe := filepath.Join(benchPath, "env", "bin", "python")
+	if _, statErr := os.Stat(pythonExe); statErr != nil {
 		return fmt.Errorf("cannot install app '%s' onto site '%s': %s not found in bench '%s'. "+
 			"The app is installed in the bench; run 'bench --site %s install-app %s' yourself",
-			appName, siteName, benchPythonExecutable, benchPath, siteName, appName)
+			appName, siteName, pythonExe, benchPath, siteName, appName)
 	}
 
 	args := []string{"-m", "frappe.utils.bench_helper", "frappe", "--site", siteName, "install-app", appName}
 	fmt.Printf("\nInstalling app '%s' onto site '%s': (cd sites && %s %s)\n",
-		appName, siteName, benchPythonExecutable, strings.Join(args, " "))
+		appName, siteName, pythonExe, strings.Join(args, " "))
 
-	python, err := filepath.Abs(benchPythonExecutable)
-	if err != nil {
-		return err
-	}
-	execCmd := exec.Command(python, args...)
+	execCmd := exec.Command(pythonExe, args...)
 	execCmd.Dir = filepath.Join(benchPath, "sites")
 	output, err := execCmd.CombinedOutput()
 	if err != nil {
@@ -472,12 +594,9 @@ func installAppOnSite(benchPath, siteName, appName string) error {
 	fmt.Printf("Successfully installed app '%s' onto site '%s'.\nOutput:\n%s\n",
 		appName, siteName, string(output))
 
-	// Frappe's installer clears the site cache itself, but make it explicit rather
-	// than rely on that: the site's cached boot info, hooks and website pages must not
-	// outlive the app set they were computed for. Not fatal — the app is installed.
 	clearArgs := []string{"-m", "frappe.utils.bench_helper", "frappe", "--site", siteName, "clear-cache"}
-	fmt.Printf("Clearing site cache: (cd sites && %s %s)\n", benchPythonExecutable, strings.Join(clearArgs, " "))
-	clearCmd := exec.Command(python, clearArgs...)
+	fmt.Printf("Clearing site cache: (cd sites && %s %s)\n", pythonExe, strings.Join(clearArgs, " "))
+	clearCmd := exec.Command(pythonExe, clearArgs...)
 	clearCmd.Dir = filepath.Join(benchPath, "sites")
 	if out, err := clearCmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: clear-cache for site '%s' failed: %v\n%s\nRun 'bench --site %s clear-cache' yourself.\n",
@@ -527,9 +646,6 @@ func readMetadataFromFPMFile(fpmPath string) (*metadata.AppMetadata, error) {
 	return &appMeta, nil
 }
 
-// Helper function to read metadata from an installed FPM app directory's app_metadata.json
-// vendoredWheelsDir returns the package's vendored wheels directory, or "" when the
-// package bundles none and its dependencies must be resolved from the network.
 func vendoredWheelsDir(baseVersionPath string) string {
 	dir := filepath.Join(baseVersionPath, wheels.DirName)
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
@@ -538,9 +654,6 @@ func vendoredWheelsDir(baseVersionPath string) string {
 	return ""
 }
 
-// buildPipInstallArgs returns the pip arguments for installing the app into the bench.
-// An empty wheelsDir keeps the original network-resolving behaviour; otherwise pip is
-// pinned to the vendored wheels so the install never reaches PyPI.
 func buildPipInstallArgs(pipAppPath, wheelsDir string) []string {
 	if wheelsDir == "" {
 		return []string{"install", "-q", "-e", pipAppPath}
@@ -548,11 +661,6 @@ func buildPipInstallArgs(pipAppPath, wheelsDir string) []string {
 	return []string{"install", "-q", "--no-index", "--find-links", wheelsDir, "-e", pipAppPath}
 }
 
-// checkWheelTarget refuses to start an offline install whose vendored wheels cannot
-// match this bench. Once pip runs with --no-index there is no network fallback, so a
-// platform or interpreter mismatch is caught here, where the fix is actionable, not
-// as a pip resolution error halfway through. The check is skipped for wheels built
-// for the packaging host, whose exact tag is unknown; pip decides those.
 func checkWheelTarget(meta *metadata.AppMetadata, benchPython string, ignore bool) error {
 	if meta == nil || meta.WheelPlatform == "" || meta.WheelPlatform == wheels.HostPlatformTag {
 		return nil
@@ -583,11 +691,7 @@ func checkWheelTarget(meta *metadata.AppMetadata, benchPython string, ignore boo
 		ErrPlatformMismatch, strings.Join(problems, "; "), fix)
 }
 
-// wheelPlatformMatchesHost reports whether any of the vendored platform tags names
-// the given OS and architecture. Tags name both, e.g. manylinux2014_x86_64.
 func wheelPlatformMatchesHost(tag, goos, goarch string) bool {
-	// Linux tags spell the architecture the uname way (x86_64, aarch64); macOS tags
-	// use Apple's (x86_64, arm64). Accept either spelling.
 	arches := []string{goArchToWheelArch(goarch), goarch}
 	for _, platform := range wheels.ParseTag(tag) {
 		p := strings.ToLower(platform)
@@ -610,8 +714,6 @@ func wheelPlatformMatchesHost(tag, goos, goarch string) bool {
 	return false
 }
 
-// benchPythonVersion reports the MAJOR.MINOR version of the bench's virtualenv
-// interpreter, or "" when it cannot be determined (the check is then skipped).
 func benchPythonVersion(benchPath string) string {
 	python := filepath.Join(benchPath, "env", "bin", "python")
 	out, err := exec.Command(python, "-c", "import sys; print('%d.%d' % sys.version_info[:2])").Output()
@@ -621,13 +723,6 @@ func benchPythonVersion(benchPath string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// checkRequiredApps enforces the offline contract for hooks.py required_apps: every
-// pinned requirement, transitively, must already be in the local FPM store — or
-// already be present in the bench itself (installed by other means: bench get-app, or
-// baked into an image such as the ERPNext single-node one) at the version the
-// package was built against. Nothing is fetched. When the app is also being installed
-// onto a site, each store-provided requirement must already be in the bench too,
-// since `bench install-app` installs required apps from the bench's own apps directory.
 func checkRequiredApps(cfg *config.FPMConfig, meta *metadata.AppMetadata, benchPath, packageID string, forSite, skip bool) error {
 	if meta == nil || len(meta.RequiredApps) == 0 {
 		return nil
@@ -669,8 +764,6 @@ func checkRequiredApps(cfg *config.FPMConfig, meta *metadata.AppMetadata, benchP
 	return nil
 }
 
-// benchAppNames lists the apps a bench has: those in sites/apps.txt plus any
-// directory under apps/ that holds a Frappe app module.
 func benchAppNames(benchPath string) map[string]bool {
 	names := map[string]bool{}
 	if data, err := os.ReadFile(filepath.Join(benchPath, "sites", "apps.txt")); err == nil {
@@ -690,11 +783,7 @@ func benchAppNames(benchPath string) map[string]bool {
 	return names
 }
 
-// deployPackagedAssets makes the package's assets servable, the way bench does it.
 func deployPackagedAssets(benchPath, appName, appModulePath, baseVersionPath string) error {
-	// Packages built before fpm ran the asset build itself ship a compiled_assets/
-	// directory mirroring what is served at /assets/<app>/. Those files belong in the
-	// app's public/ directory, which is what sites/assets/<app> links to.
 	legacy := filepath.Join(baseVersionPath, "compiled_assets")
 	if info, err := os.Stat(legacy); err == nil && info.IsDir() {
 		publicDir := filepath.Join(appModulePath, "public")
@@ -740,9 +829,6 @@ func deployPackagedAssets(benchPath, appName, appModulePath, baseVersionPath str
 		fmt.Printf("  %s -> %s\n", k, v)
 	}
 
-	// Frappe caches the manifest in redis_cache; bench build deletes that key after
-	// writing the file, and so does this. A bench whose redis is not running (or
-	// not configured yet) just serves the new file when it next starts.
 	if err := assets.InvalidateCache(benchPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Note: could not clear the assets_json cache in redis (%v); "+
 			"a running site picks up the new bundles after 'bench --site <site> clear-cache' or a restart.\n", err)
@@ -752,7 +838,6 @@ func deployPackagedAssets(benchPath, appName, appModulePath, baseVersionPath str
 	return nil
 }
 
-// goArchToWheelArch maps a Go architecture name onto the spelling used in wheel tags.
 func goArchToWheelArch(goArch string) string {
 	switch goArch {
 	case "amd64":
@@ -772,14 +857,19 @@ func readMetadataFromFPMStore(installedAppVersionPath string) (*metadata.AppMeta
 	return metadata.LoadAppMetadata(installedAppVersionPath)
 }
 
-// extractFPMArchive function removed as its functionality is now in appstore.ManageAppInLocalStore
-
 func init() {
 	installCmd.Flags().String("bench-path", "", "Path to the Frappe bench directory")
 	if err := installCmd.MarkFlagRequired("bench-path"); err != nil {
 		fmt.Fprintf(os.Stderr, "Error marking 'bench-path' flag required for install cmd: %v\n", err)
 	}
 	installCmd.Flags().String("site", "", "Site to install the app onto after adding it to the bench (runs 'bench --site <site> install-app')")
+	installCmd.Flags().BoolVar(&installDeps, "deps", true, "Resolve and install transitive dependencies (use --no-deps to install only the target package)")
+	installCmd.Flags().BoolVar(&installNoDeps, "no-deps", false, "Install only the target package without resolving or installing dependencies")
+	installCmd.Flags().StringVar(&installRepo, "repo", "", "Only fetch dependencies from this configured repository")
+	installCmd.Flags().BoolVar(&installRollback, "rollback", true, "Automatically rollback bench changes if installation fails mid-flight")
+	installCmd.Flags().BoolVar(&installNoRollback, "no-rollback", false, "Leave partial installation in place on failure")
+	installCmd.Flags().BoolVar(&installDryRun, "dry-run", false, "Print the installation plan without modifying the bench")
+	installCmd.Flags().BoolVarP(&installVerbose, "verbose", "v", false, "Show detailed output during installation and rollback")
 	installCmd.Flags().BoolVar(&installSkipRequiredAppsCheck, "skip-required-apps-check", false, "Do not fail when a required app (hooks.py required_apps) is missing from the local FPM store or bench; for benches whose required apps were installed outside fpm")
 	installCmd.Flags().BoolVar(&installIgnorePlatformMismatch, "ignore-platform-mismatch", false, "Do not fail when the package's vendored wheels were built for another platform or Python version; pip then decides")
 	rootCmd.AddCommand(installCmd)
