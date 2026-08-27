@@ -49,6 +49,30 @@ func BuildPlanForRepo(apps []App, repo config.RepositoryConfig, client *http.Cli
 	return BuildPlanForRepos(apps, []config.RepositoryConfig{repo}, client, now)
 }
 
+// PlanOption adjusts how a plan is built.
+type PlanOption func(*planConfig)
+
+type planConfig struct{ republish bool }
+
+// Republish builds every discovered version even when the repositories already have it.
+//
+// Skipping what is published is what makes a nightly run cheap and idempotent, and a
+// published version is an artifact others may have pinned — overwriting it hands them
+// different bytes under the same name. So this is deliberately not the default. It is
+// for the case the skip cannot see: the packaging itself changed, and a version already
+// in the registry would now be built differently. A package built before fpm compiled
+// app frontends, say, installs and serves a blank page, and no amount of re-running
+// would replace it.
+func Republish() PlanOption { return func(c *planConfig) { c.republish = true } }
+
+func planConfigFrom(opts []PlanOption) planConfig {
+	var c planConfig
+	for _, opt := range opts {
+		opt(&c)
+	}
+	return c
+}
+
 // BuildPlanForRepos discovers desired versions against every repository the run
 // publishes to, of any mix of backends (HTTP and OCI).
 //
@@ -57,7 +81,8 @@ func BuildPlanForRepo(apps []App, repo config.RepositoryConfig, client *http.Cli
 // of them holding the same set — a version in GHCR but not in the HTTP registry still
 // has to be built and pushed. Publishing is idempotent per repository, so the ones
 // that already have it simply report it as such.
-func BuildPlanForRepos(apps []App, repos []config.RepositoryConfig, client *http.Client, now string) (*Plan, error) {
+func BuildPlanForRepos(apps []App, repos []config.RepositoryConfig, client *http.Client, now string, opts ...PlanOption) (*Plan, error) {
+	cfg := planConfigFrom(opts)
 	plan := &Plan{}
 	if len(repos) == 0 {
 		return nil, fmt.Errorf("no repository to mirror to")
@@ -67,6 +92,9 @@ func BuildPlanForRepos(apps []App, repos []config.RepositoryConfig, client *http
 		published, err := publishedInAll(repos, app, client)
 		if err != nil {
 			return nil, err
+		}
+		if cfg.republish {
+			published = map[string]struct{}{}
 		}
 
 		if app.Track == TrackBranch {
@@ -222,7 +250,8 @@ func SlugFromRepoURL(repoURL string) string {
 // re-running an unchanged branch republishes nothing.
 //
 // slug names the app in the registry; empty derives it from the URL.
-func PlanAdHoc(repoURL, ref, slug, appName string, repos []config.RepositoryConfig, client *http.Client, now string) (*Plan, error) {
+func PlanAdHoc(repoURL, ref, slug, appName string, repos []config.RepositoryConfig, client *http.Client, now string, opts ...PlanOption) (*Plan, error) {
+	cfg := planConfigFrom(opts)
 	repoURL = strings.TrimSpace(repoURL)
 	if repoURL == "" {
 		return nil, fmt.Errorf("a git URL is required")
@@ -238,6 +267,9 @@ func PlanAdHoc(repoURL, ref, slug, appName string, repos []config.RepositoryConf
 	published, err := publishedInAll(repos, app, client)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.republish {
+		published = map[string]struct{}{}
 	}
 
 	// A ref that matches a published tag is a release; everything else is a branch.
