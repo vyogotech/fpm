@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"fpm/internal/config"
@@ -243,4 +244,56 @@ func TestCheckClosureBenchProvided(t *testing.T) {
 	closure, _, err = CheckClosure(store, bench, []metadata.RequiredApp{{Name: "erpnext", Org: "frappe", Version: "17.0.0-dev"}}, "x")
 	require.NoError(t, err)
 	assert.False(t, closure[0].ProvidedByBench)
+}
+
+// TestUnqualifiedRequirementFallsBackToDefaultOrg: an OCI registry publishes no index,
+// so there is nothing to answer "which org publishes erpnext" for an unqualified
+// required_apps entry. Before the fallback, every such requirement failed against GHCR
+// with "unsupported protocol scheme" — the index URL was built without one.
+func TestUnqualifiedRequirementFallsBackToDefaultOrg(t *testing.T) {
+	repo := config.RepositoryConfig{Name: "ghcr", URL: "ghcr.io/acme/fpm", Type: "oci"}
+	opts := Options{
+		Remote:     true,
+		DefaultOrg: "frappe",
+		Cfg:        &config.FPMConfig{Repositories: map[string]config.RepositoryConfig{"ghcr": repo}},
+		// An OCI registry: no index at all.
+		fetchIndex: func(config.RepositoryConfig) (*repository.RepositoryIndex, bool, error) {
+			return nil, false, nil
+		},
+		fetchMetadata: func(_ config.RepositoryConfig, org, app string) (*repository.PackageMetadata, bool, error) {
+			if org != "frappe" || app != "erpnext" {
+				return nil, false, nil
+			}
+			return &repository.PackageMetadata{
+				Org: org, AppName: app, LatestVersion: "16.33.0",
+				Versions: map[string]repository.PackageVersionMetadata{"16.33.0": {}},
+			}, true, nil
+		},
+	}
+
+	got, ok, err := latestInRepo(repo, "", "erpnext", opts)
+	if err != nil {
+		t.Fatalf("latestInRepo: %v", err)
+	}
+	if !ok || got.Org != "frappe" || got.Version != "16.33.0" {
+		t.Fatalf("got %+v (ok=%v), want frappe/erpnext==16.33.0", got, ok)
+	}
+}
+
+// TestUnqualifiedRequirementStillFailsClearlyWithoutADefault keeps the old, explicit
+// error for a caller that has no org to assume.
+func TestUnqualifiedRequirementStillFailsClearlyWithoutADefault(t *testing.T) {
+	repo := config.RepositoryConfig{Name: "ghcr", URL: "ghcr.io/acme/fpm", Type: "oci"}
+	_, _, err := latestInRepo(repo, "", "erpnext", Options{
+		Remote: true,
+		fetchIndex: func(config.RepositoryConfig) (*repository.RepositoryIndex, bool, error) {
+			return nil, false, nil
+		},
+		fetchMetadata: func(config.RepositoryConfig, string, string) (*repository.PackageMetadata, bool, error) {
+			return nil, false, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "publishes no index") {
+		t.Fatalf("want the explicit no-index error, got %v", err)
+	}
 }

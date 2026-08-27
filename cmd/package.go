@@ -197,6 +197,10 @@ By default, it also installs the packaged app to the local FPM app store.`,
 			// repositories.
 			pins, resolveErr := resolver.ResolveRequiredApps(requiredEntries, resolver.Options{
 				Cfg: cfg, Remote: true, Repo: packageRepo, BenchPath: packageBenchPath,
+				// An OCI registry publishes no index, so an unqualified entry like
+				// "erpnext" has nothing to resolve the org from. This package's own org
+				// is the right assumption.
+				DefaultOrg: meta.Org,
 			})
 			if resolveErr != nil {
 				return resolveErr

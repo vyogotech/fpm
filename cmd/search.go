@@ -213,7 +213,7 @@ If no query is provided, it lists all packages found.`,
 
 				// Prefer the repository's package index: it is the only way to match a
 				// keyword, since per-package metadata needs both names to address.
-				idx, indexFound, idxErr := repository.FetchRepositoryIndex(repo.URL, httpClient)
+				idx, indexFound, idxErr := repository.FetchRepositoryIndexForRepo(repo, httpClient)
 				if idxErr != nil {
 					fmt.Fprintf(os.Stderr, "Error fetching package index from %s: %v\n", repo.Name, idxErr)
 				}
