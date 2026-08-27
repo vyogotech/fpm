@@ -1096,3 +1096,39 @@ func TestBuildCleanupIsAlwaysSafeToCall(t *testing.T) {
 		})
 	}
 }
+
+// TestDetectSkipsFrappesOwnBundler: frappe's root build script is `node esbuild` —
+// the framework's bundler, which compiles every app in a bench and reads
+// sites/apps.txt to know which. It is `bench build`, not an app frontend. Treating it
+// as one failed frappe's mirror shard with "ENOENT: sites/apps.txt".
+func TestDetectSkipsFrappesOwnBundler(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "package.json"), `{"name":"frappe","scripts":{"build":"node esbuild"}}`)
+	write(t, filepath.Join(root, "esbuild", "esbuild.js"), "// frappe's bundler\n")
+	write(t, filepath.Join(root, "frappe", "hooks.py"), "app_name = \"frappe\"\n")
+
+	project, err := Detect(root, "frappe")
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if project != nil {
+		t.Fatalf("frappe's own bundler must not be treated as an app frontend, got %+v", project)
+	}
+}
+
+// TestDetectStillBuildsAnAppThatUsesEsbuildItself: the skip needs both signals, so an
+// app bundling its own frontend with esbuild is not mistaken for the framework.
+func TestDetectStillBuildsAnAppThatUsesEsbuildItself(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "frontend", "package.json"),
+		`{"scripts":{"build":"esbuild src/main.js --bundle --outfile=../app/public/frontend/app.js"}}`)
+	write(t, filepath.Join(root, "app", "hooks.py"), "app_name = \"app\"\n")
+
+	project, err := Detect(root, "app")
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if project == nil || project.Rel != "frontend" {
+		t.Fatalf("an app's own esbuild frontend must still build, got %+v", project)
+	}
+}

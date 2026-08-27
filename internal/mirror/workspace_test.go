@@ -1,6 +1,7 @@
 package mirror
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,5 +88,59 @@ func TestWorkspaceBuildEnvPointsAtCaches(t *testing.T) {
 		if !found {
 			t.Errorf("BuildEnv missing %s", entry)
 		}
+	}
+}
+
+// TestWorkspaceIsBenchShaped: app frontends reach the bench by relative path, and
+// frappe-ui's vite plugin derives an app's name from the apps/<app> path segment. A
+// flat src/<slug> layout satisfies neither, and each app then fails differently —
+// builder and gameplan on "indexHtmlPath is required", helpdesk on `cd ../../frappe/ui`.
+func TestWorkspaceIsBenchShaped(t *testing.T) {
+	root := t.TempDir()
+	ws, err := NewWorkspace(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	apps := ws.srcRoot()
+	if filepath.Base(apps) != "apps" || filepath.Base(filepath.Dir(apps)) != "bench" {
+		t.Errorf("checkouts live in %s, want <cache>/bench/apps", apps)
+	}
+
+	// The relative path an app frontend actually walks: <apps>/<slug>/frontend/src
+	// four levels up, then sites/common_site_config.json.
+	config := filepath.Join(apps, "crm", "frontend", "src", "..", "..", "..", "..", "sites", "common_site_config.json")
+	data, err := os.ReadFile(filepath.Clean(config))
+	if err != nil {
+		t.Fatalf("an app frontend could not reach the bench config: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("the bench config is not valid JSON: %v", err)
+	}
+	if cfg["socketio_port"] == nil {
+		t.Error("the bench config must carry socketio_port; app frontends import it by name")
+	}
+}
+
+// TestWorkspaceKeepsAnExistingBenchConfig: pointing --cache-dir at a real bench must
+// not overwrite its settings with defaults.
+func TestWorkspaceKeepsAnExistingBenchConfig(t *testing.T) {
+	root := t.TempDir()
+	sites := filepath.Join(root, "bench", "sites")
+	if err := os.MkdirAll(sites, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	real := `{"socketio_port": 9123}`
+	if err := os.WriteFile(filepath.Join(sites, "common_site_config.json"), []byte(real), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewWorkspace(root, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(sites, "common_site_config.json"))
+	if string(got) != real {
+		t.Errorf("an existing bench config was overwritten: %s", got)
 	}
 }

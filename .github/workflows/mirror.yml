@@ -142,7 +142,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install Build Tools
         run: |
@@ -236,6 +236,45 @@ jobs:
 
           echo "Running: ./bin/fpm mirror $ARGS"
           ./bin/fpm mirror $ARGS
+
+      # Publishing returning 0 is not the same as the registry serving the artifact.
+      # This reads every version the shard claims to have published back out of the
+      # registry's own metadata, so "published" means retrievable rather than merely
+      # uploaded. Skipped on a dry run, which publishes nothing.
+      - name: Verify Published Versions Are Retrievable
+        if: ${{ inputs.dry_run != true }}
+        env:
+          FPM_REPO_GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          FPM_REPO_FPM_HTTP_PASSWORD: ${{ secrets.FPM_REGISTRY_PASSWORD }}
+        run: |
+          REPORT="dist/mirror-report-${{ matrix.slug }}.json"
+          [ -f "$REPORT" ] || { echo "no report to verify"; exit 0; }
+
+          # Every version this shard says is in the registry, published now or already
+          # there, must answer to a metadata query.
+          REPORT="$REPORT" python3 - > /tmp/to-verify <<'EXTRACT'
+          import json, os
+          live = {"published", "published-nodeps", "skipped-exists"}
+          for r in json.load(open(os.environ["REPORT"])):
+              if r.get("action") in live:
+                  print(r.get("app_name") or r["slug"], r["version"])
+          EXTRACT
+
+          if [ ! -s /tmp/to-verify ]; then
+            echo "Nothing was published by this shard; nothing to verify."
+            exit 0
+          fi
+
+          rc=0
+          while read -r app version; do
+            if ./bin/fpm exists "frappe/$app==$version" --remote >/dev/null 2>&1; then
+              echo "  ✓ frappe/$app==$version is in the registry"
+            else
+              echo "  ✗ frappe/$app==$version was reported published but is NOT retrievable" >&2
+              rc=1
+            fi
+          done < /tmp/to-verify
+          exit $rc
 
       - name: Save Build Cache
         if: always()
