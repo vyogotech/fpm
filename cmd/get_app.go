@@ -80,7 +80,7 @@ If version is not specified, 'latest' is assumed.`,
 		}
 
 		fmt.Printf("Fetching %s/%s (version: '%s') from repository %s (%s)...\n", org, appName, version, repoName, repoConfig.URL)
-		downloadedPkg, err := repository.FindPackageInSpecificRepo(repoName, repoConfig.URL, org, appName, version, httpClient)
+		downloadedPkg, err := repository.FindPackageInRepoConfig(repoConfig, org, appName, version, httpClient)
 		if err != nil {
 			return fmt.Errorf("failed to find or download package from repository %s: %w", repoName, err)
 		}

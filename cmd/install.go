@@ -243,7 +243,7 @@ func resolvePackageToLocalStore(packagePathArg string, cfg *config.FPMConfig, re
 			if cerr != nil {
 				return nil, cerr
 			}
-			downloadedPkgInfo, findErr = repository.FindPackageInSpecificRepo(repo.Name, repo.URL, parsedOrg, parsedAppName, resolvedVersion, client)
+			downloadedPkgInfo, findErr = repository.FindPackageInRepoConfig(repo, parsedOrg, parsedAppName, resolvedVersion, client)
 		} else {
 			downloadedPkgInfo, findErr = repository.FindPackageInRepos(cfg, parsedOrg, parsedAppName, resolvedVersion)
 		}

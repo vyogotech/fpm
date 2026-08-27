@@ -26,6 +26,12 @@ build into several registry backends at once.
   it is inert behind nginx or a Kubernetes ingress, so the defaults produce the same bundle
   a real bench would; `--frontend-site-config` supplies real values where it matters and
   `--no-bench-scaffold` refuses synthesized ones.
+- `fpm get-app <repo>/<org>/<app>` works against an OCI registry. Aimed at a specific
+  repository it went down the HTTP-only path regardless of that repository's backend and
+  failed with `unsupported protocol scheme ""` — a registry is not addressed by URL, so
+  the metadata path it built had no scheme. Searching across every configured repository
+  already dispatched correctly; only the single-repository path did not, which `fpm
+  bundle --repo` and `fpm install --repo` shared.
 - `fpm mirror --git-url` packages a repository on demand, in or out of the catalog, with
   `--git-ref` for a tag or branch (defaulting to the repository's real default branch)
   and `--slug` for the published name. Everything downstream is what a catalog app gets:

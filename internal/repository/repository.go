@@ -162,88 +162,13 @@ func FindPackageInRepos(cfg *config.FPMConfig, org, appName, requestedVersion st
 
 		// OCI Repository Backend
 		if repo.Type == "oci" {
-			driver := GetOCIDriver()
-			if driver == nil {
-				fmt.Fprintf(os.Stderr, "Skipping OCI repository %s: OCI driver not registered\n", repo.Name)
+			info, err := downloadFromOCIRepo(repo, org, appName, requestedVersion)
+			if err != nil {
+				// A repository that cannot serve it is skipped; a later one may.
+				fmt.Fprintf(os.Stderr, "Skipping OCI repository %s: %v\n", repo.Name, err)
 				continue
 			}
-
-			targetVersion := requestedVersion
-			var versionMeta *PackageVersionMetadata
-
-			if targetVersion == "" || targetVersion == "latest" {
-				pkgMeta, found, err := driver.FetchMetadata(context.Background(), repo, org, appName)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to fetch OCI metadata for %s/%s from %s: %v\n", org, appName, repo.Name, err)
-					continue
-				}
-				if !found || pkgMeta == nil || pkgMeta.LatestVersion == "" {
-					fmt.Printf("Package %s/%s not found in OCI repo %s\n", org, appName, repo.Name)
-					continue
-				}
-				targetVersion = pkgMeta.LatestVersion
-				v := pkgMeta.Versions[targetVersion]
-				versionMeta = &v
-				fmt.Printf("Resolved 'latest' to version %s for %s/%s in OCI repo %s\n", targetVersion, org, appName, repo.Name)
-			} else {
-				vm, found, err := driver.FetchVersionMetadata(context.Background(), repo, org, appName, targetVersion)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to fetch OCI version metadata for %s/%s:%s from %s: %v\n", org, appName, targetVersion, repo.Name, err)
-					continue
-				}
-				if !found || vm == nil {
-					fmt.Printf("Version %s for %s/%s not found in OCI repo %s\n", targetVersion, org, appName, repo.Name)
-					continue
-				}
-				versionMeta = vm
-			}
-
-			homeDir, err := os.UserHomeDir()
-			if err != nil {
-				return nil, fmt.Errorf("failed to get user home directory: %w", err)
-			}
-			fpmBaseDir := filepath.Join(homeDir, ".fpm")
-			fpmFileName := fmt.Sprintf("%s-%s.fpm", appName, targetVersion)
-			cacheDir := filepath.Join(fpmBaseDir, "cache", repo.Name, org, appName, targetVersion)
-			cachedFPMPath := filepath.Join(cacheDir, fpmFileName)
-
-			if err := os.MkdirAll(cacheDir, 0o750); err != nil {
-				return nil, fmt.Errorf("failed to create cache directory %s: %w", cacheDir, err)
-			}
-
-			packageDescription := fmt.Sprintf("%s/%s version %s", org, appName, targetVersion)
-
-			// Cache hit check
-			if info, err := os.Stat(cachedFPMPath); err == nil && !info.IsDir() && info.Size() > 0 {
-				if versionMeta.ChecksumSHA256 == "" || verifyFPMFileOrRemove(cachedFPMPath, versionMeta.ChecksumSHA256, packageDescription) == nil {
-					fmt.Printf("Package found in cache: %s. Checksum verified.\n", cachedFPMPath)
-					return &DownloadedPackageInfo{
-						LocalPath:      cachedFPMPath,
-						RepositoryName: repo.Name,
-						Org:            org,
-						AppName:        appName,
-						Version:        targetVersion,
-						Checksum:       versionMeta.ChecksumSHA256,
-					}, nil
-				}
-			}
-
-			fmt.Printf("Pulling %s from OCI repository %s to %s...\n", packageDescription, repo.Name, cachedFPMPath)
-			vm, err := driver.Pull(context.Background(), repo, org, appName, targetVersion, cachedFPMPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to pull from OCI repository %s: %v\n", repo.Name, err)
-				continue
-			}
-
-			fmt.Printf("Successfully pulled %s from OCI repository %s.\n", fpmFileName, repo.Name)
-			return &DownloadedPackageInfo{
-				LocalPath:      cachedFPMPath,
-				RepositoryName: repo.Name,
-				Org:            org,
-				AppName:        appName,
-				Version:        targetVersion,
-				Checksum:       vm.ChecksumSHA256,
-			}, nil
+			return info, nil
 		}
 
 		// WebDAV / HTTP Repository Backend
@@ -438,4 +363,114 @@ func FindPackageInRepos(cfg *config.FPMConfig, org, appName, requestedVersion st
 	}
 
 	return nil, fmt.Errorf("package %s/%s version '%s' not found in any configured repositories", org, appName, requestedVersion)
+}
+
+// downloadFromOCIRepo fetches one package from an OCI registry into the local cache.
+//
+// Split out so both the search across every configured repository and a request aimed
+// at one named repository go through it. `fpm get-app <repo>/<org>/<app>` used the
+// HTTP-only path regardless of the repository's backend, and failed against a registry
+// with `unsupported protocol scheme ""` — the metadata URL had none, because a registry
+// is not addressed by URL.
+func downloadFromOCIRepo(repo config.RepositoryConfig, org, appName, requestedVersion string) (*DownloadedPackageInfo, error) {
+	driver := GetOCIDriver()
+	if driver == nil {
+		return nil, fmt.Errorf("repository %s is an OCI registry but no OCI driver is registered", repo.Name)
+	}
+
+	targetVersion := requestedVersion
+	var versionMeta *PackageVersionMetadata
+
+	if targetVersion == "" || targetVersion == "latest" {
+		pkgMeta, found, err := driver.FetchMetadata(context.Background(), repo, org, appName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch OCI metadata for %s/%s from %s: %w", org, appName, repo.Name, err)
+		}
+		// Not an error from the registry: the package simply is not there. It still has
+		// to be reported as one, or a caller aimed at a single repository would get a
+		// nil result and a nil error and take it for success.
+		if !found || pkgMeta == nil || pkgMeta.LatestVersion == "" {
+			return nil, fmt.Errorf("package %s/%s not found in OCI repository %s", org, appName, repo.Name)
+		}
+		targetVersion = pkgMeta.LatestVersion
+		v := pkgMeta.Versions[targetVersion]
+		versionMeta = &v
+		fmt.Printf("Resolved 'latest' to version %s for %s/%s in OCI repo %s\n", targetVersion, org, appName, repo.Name)
+	} else {
+		vm, found, err := driver.FetchVersionMetadata(context.Background(), repo, org, appName, targetVersion)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch OCI metadata for %s/%s==%s from %s: %w", org, appName, targetVersion, repo.Name, err)
+		}
+		if !found || vm == nil {
+			return nil, fmt.Errorf("version %s of %s/%s not found in OCI repository %s", targetVersion, org, appName, repo.Name)
+		}
+		versionMeta = vm
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user home directory: %w", err)
+	}
+	fpmBaseDir := filepath.Join(homeDir, ".fpm")
+	fpmFileName := fmt.Sprintf("%s-%s.fpm", appName, targetVersion)
+	cacheDir := filepath.Join(fpmBaseDir, "cache", repo.Name, org, appName, targetVersion)
+	cachedFPMPath := filepath.Join(cacheDir, fpmFileName)
+
+	if err := os.MkdirAll(cacheDir, 0o750); err != nil {
+		return nil, fmt.Errorf("failed to create cache directory %s: %w", cacheDir, err)
+	}
+
+	packageDescription := fmt.Sprintf("%s/%s version %s", org, appName, targetVersion)
+
+	// Cache hit check
+	if info, err := os.Stat(cachedFPMPath); err == nil && !info.IsDir() && info.Size() > 0 {
+		if versionMeta.ChecksumSHA256 == "" || verifyFPMFileOrRemove(cachedFPMPath, versionMeta.ChecksumSHA256, packageDescription) == nil {
+			fmt.Printf("Package found in cache: %s. Checksum verified.\n", cachedFPMPath)
+			return &DownloadedPackageInfo{
+				LocalPath:      cachedFPMPath,
+				RepositoryName: repo.Name,
+				Org:            org,
+				AppName:        appName,
+				Version:        targetVersion,
+				Checksum:       versionMeta.ChecksumSHA256,
+			}, nil
+		}
+	}
+
+	fmt.Printf("Pulling %s from OCI repository %s to %s...\n", packageDescription, repo.Name, cachedFPMPath)
+	vm, err := driver.Pull(context.Background(), repo, org, appName, targetVersion, cachedFPMPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to pull %s from OCI repository %s: %w", packageDescription, repo.Name, err)
+	}
+
+	fmt.Printf("Successfully pulled %s from OCI repository %s.\n", fpmFileName, repo.Name)
+	return &DownloadedPackageInfo{
+		LocalPath:      cachedFPMPath,
+		RepositoryName: repo.Name,
+		Org:            org,
+		AppName:        appName,
+		Version:        targetVersion,
+		Checksum:       vm.ChecksumSHA256,
+	}, nil
+}
+
+// FindPackageInRepoConfig downloads a package from one named repository, whatever its
+// backend. It is what a caller aimed at a specific repository should use:
+// FindPackageInSpecificRepo takes a bare URL and can only speak HTTP, so
+// `fpm get-app <repo>/<org>/<app>` against an OCI registry failed with
+//
+//	unsupported protocol scheme ""
+//
+// because a registry is not addressed by URL and the metadata path it built had no
+// scheme. Searching across every configured repository already dispatched correctly;
+// only the single-repository path did not.
+func FindPackageInRepoConfig(
+	repo config.RepositoryConfig,
+	org, appName, requestedVersion string,
+	client *http.Client,
+) (*DownloadedPackageInfo, error) {
+	if strings.EqualFold(repo.Type, "oci") {
+		return downloadFromOCIRepo(repo, org, appName, requestedVersion)
+	}
+	return FindPackageInSpecificRepo(repo.Name, repo.URL, org, appName, requestedVersion, client)
 }

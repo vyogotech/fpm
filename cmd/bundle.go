@@ -229,7 +229,7 @@ func fetchIntoStore(cfg *config.FPMConfig, app metadata.RequiredApp, repoName st
 		if cerr != nil {
 			return cerr
 		}
-		downloaded, err = repository.FindPackageInSpecificRepo(repo.Name, repo.URL, app.Org, app.Name, version, client)
+		downloaded, err = repository.FindPackageInRepoConfig(repo, app.Org, app.Name, version, client)
 	} else {
 		downloaded, err = repository.FindPackageInRepos(cfg, app.Org, app.Name, version)
 	}

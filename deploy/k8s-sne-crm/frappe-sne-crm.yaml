@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: frappe-sne-crm
+  labels:
+    app: frappe-sne-crm
+spec:
+  volumes:
+    - name: host-pkg
+      hostPath:
+        path: /var/tmp/crm-1.82.0.fpm
+        type: File
+    - name: crm-app-volume
+      emptyDir: {}
+    - name: crm-assets-volume
+      emptyDir: {}
+
+  initContainers:
+    - name: extract-crm
+      image: docker.io/library/alpine:3.20
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -e
+          echo "Extracting CRM FPM package..."
+          mkdir -p /target-app /target-assets
+          unzip -q /host-pkg/crm-1.82.0.fpm -d /tmp/crm_unpacked
+          
+          # Move app files into target-app
+          cp -r /tmp/crm_unpacked/* /target-app/
+          
+          # Ensure assets are exposed
+          if [ -d "/tmp/crm_unpacked/crm/public" ]; then
+            cp -r /tmp/crm_unpacked/crm/public/* /target-assets/
+          fi
+          echo "CRM app files successfully prepared for SNE mount."
+      volumeMounts:
+        - name: host-pkg
+          mountPath: /host-pkg/crm-1.82.0.fpm
+        - name: crm-app-volume
+          mountPath: /target-app
+        - name: crm-assets-volume
+          mountPath: /target-assets
+
+  containers:
+    - name: frappe-sne
+      image: docker.io/vyogo/erpnext:sne-version-16
+      imagePullPolicy: IfNotPresent
+      ports:
+        - containerPort: 8000
+          name: http
+      volumeMounts:
+        - name: crm-app-volume
+          mountPath: /home/frappe/frappe-bench/apps/crm
+        - name: crm-assets-volume
+          mountPath: /home/frappe/frappe-bench/sites/assets/crm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frappe-sne-service
+spec:
+  type: NodePort
+  selector:
+    app: frappe-sne-crm
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30080
