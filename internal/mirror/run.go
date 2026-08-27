@@ -84,13 +84,22 @@ func (r *Runner) runOne(item BuildItem) Result {
 		return fail("checkout", err)
 	}
 
+	// BuildItem.AppName is the catalog's *override*, empty for every app whose module
+	// is named after its slug — which is most of them. The slug is the fallback the
+	// rest of this function already uses, and the frontend build needs a real name to
+	// locate <app>/public.
+	appName := item.AppName
+	if appName == "" {
+		appName = item.Slug
+	}
+
 	buildRoot := checkout
 	if item.buildScript != "" {
 		if err := r.runBuildScript(item.buildScript, checkout); err != nil {
 			return fail("asset build", err)
 		}
 	} else {
-		root, cleanup, err := r.autoBuildFrontendAssets(item.AppName, checkout)
+		root, cleanup, err := r.autoBuildFrontendAssets(appName, checkout)
 		// Runs after packageApp below, which is the point: the staged tree has to
 		// outlive the build and be gone before the next app is checked out.
 		defer cleanup()
@@ -114,13 +123,9 @@ func (r *Runner) runOne(item BuildItem) Result {
 		return fail("verify", fmt.Errorf("archive says version %q, expected %q", manifest.PackageVersion, item.Version))
 	}
 	result.AppName = manifest.AppName
-	expected := item.AppName
-	if expected == "" {
-		expected = item.Slug
-	}
-	if manifest.AppName != expected {
+	if manifest.AppName != appName {
 		r.Log("  note: %s's app name is %q, not %q — add app_name=%s to the catalog so "+
-			"skip-if-published checks the right metadata", item.Slug, manifest.AppName, expected, manifest.AppName)
+			"skip-if-published checks the right metadata", item.Slug, manifest.AppName, appName, manifest.AppName)
 	}
 
 	if manifest.AssetsBuilt {
