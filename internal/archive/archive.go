@@ -263,6 +263,11 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 		}
 	}
 
+	// --- Stage app icon into package root ---
+	if err := stageAppIcon(absAppSourcePath, stagingDir, meta); err != nil {
+		return fmt.Errorf("failed to stage app icon: %w", err)
+	}
+
 	// --- Calculate checksum over the fully staged payload ---
 	// This must run after every file that ends up in the archive has been staged
 	// (app source, requirements.txt, package.json, install_hooks.py, compiled_assets),
@@ -462,4 +467,88 @@ func copyDir(srcDir, dstDir string, ignorer *ignore.GitIgnore, ignoreRootPath st
 		}
 		return copyFile(path, targetPath) // copyFile will handle file permissions
 	})
+}
+
+// stageAppIcon finds and copies the app's icon into the root of the staging directory
+// as icon.<ext> (e.g. icon.svg, icon.png), and records the filename in meta.IconFile.
+func stageAppIcon(absAppSourcePath, stagingDir string, meta *metadata.AppMetadata) error {
+	if meta == nil {
+		return nil
+	}
+
+	var candidatePaths []string
+
+	// 1. If meta.Icon or meta.IconFile is specified, check if it resolves to a physical file
+	for _, iconRef := range []string{meta.IconFile, meta.Icon} {
+		if iconRef == "" {
+			continue
+		}
+		// Strip web asset prefix like /assets/<appName>/
+		assetPrefix := "/assets/" + meta.AppName + "/"
+		cleanRef := iconRef
+		if strings.HasPrefix(cleanRef, assetPrefix) {
+			cleanRef = strings.TrimPrefix(cleanRef, assetPrefix)
+			candidatePaths = append(candidatePaths,
+				filepath.Join(absAppSourcePath, meta.AppName, "public", cleanRef),
+				filepath.Join(absAppSourcePath, "public", cleanRef),
+				filepath.Join(absAppSourcePath, meta.AppName, cleanRef),
+			)
+		} else if strings.HasPrefix(cleanRef, "/") {
+			cleanRef = strings.TrimPrefix(cleanRef, "/")
+			candidatePaths = append(candidatePaths,
+				filepath.Join(absAppSourcePath, meta.AppName, "public", cleanRef),
+				filepath.Join(absAppSourcePath, "public", cleanRef),
+				filepath.Join(absAppSourcePath, cleanRef),
+			)
+		} else {
+			candidatePaths = append(candidatePaths,
+				filepath.Join(absAppSourcePath, cleanRef),
+				filepath.Join(absAppSourcePath, meta.AppName, cleanRef),
+				filepath.Join(absAppSourcePath, meta.AppName, "public", cleanRef),
+				filepath.Join(absAppSourcePath, meta.AppName, "public", "images", cleanRef),
+			)
+		}
+	}
+
+	// 2. Standard filesystem icon/logo candidate paths
+	appName := meta.AppName
+	standardPaths := []string{
+		filepath.Join(absAppSourcePath, appName, "public", "images", appName+".svg"),
+		filepath.Join(absAppSourcePath, appName, "public", "images", appName+".png"),
+		filepath.Join(absAppSourcePath, appName, "public", "images", appName+"-logo.svg"),
+		filepath.Join(absAppSourcePath, appName, "public", "images", appName+"-logo.png"),
+		filepath.Join(absAppSourcePath, appName, "public", "images", "logo.svg"),
+		filepath.Join(absAppSourcePath, appName, "public", "images", "logo.png"),
+		filepath.Join(absAppSourcePath, appName, "public", "images", "icon.svg"),
+		filepath.Join(absAppSourcePath, appName, "public", "images", "icon.png"),
+		filepath.Join(absAppSourcePath, appName, "public", "icon.svg"),
+		filepath.Join(absAppSourcePath, appName, "public", "icon.png"),
+		filepath.Join(absAppSourcePath, appName, "public", "logo.svg"),
+		filepath.Join(absAppSourcePath, appName, "public", "logo.png"),
+		filepath.Join(absAppSourcePath, "icon.svg"),
+		filepath.Join(absAppSourcePath, "icon.png"),
+		filepath.Join(absAppSourcePath, "logo.svg"),
+		filepath.Join(absAppSourcePath, "logo.png"),
+	}
+	candidatePaths = append(candidatePaths, standardPaths...)
+
+	for _, p := range candidatePaths {
+		info, err := os.Stat(p)
+		if err == nil && !info.IsDir() {
+			ext := strings.ToLower(filepath.Ext(p))
+			if ext == ".svg" || ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".ico" {
+				iconFilename := "icon" + ext
+				destPath := filepath.Join(stagingDir, iconFilename)
+				if err := copyFile(p, destPath); err != nil {
+					return fmt.Errorf("failed to copy icon file to staging root: %w", err)
+				}
+				meta.IconFile = iconFilename
+				if meta.Icon == "" {
+					meta.Icon = iconFilename
+				}
+				return nil
+			}
+		}
+	}
+	return nil
 }

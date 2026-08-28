@@ -35,12 +35,16 @@ const (
 // Promoted Annotation Keys for OCI Manifests.
 const (
 	AnnotationTitle               = ocispec.AnnotationTitle
+	AnnotationDescription         = ocispec.AnnotationDescription
+	AnnotationAuthors             = ocispec.AnnotationAuthors
+	AnnotationLicenses            = ocispec.AnnotationLicenses
 	AnnotationVersion             = ocispec.AnnotationVersion
 	AnnotationCreated             = ocispec.AnnotationCreated
 	AnnotationRevision            = ocispec.AnnotationRevision
 	AnnotationRefName             = ocispec.AnnotationRefName
 	AnnotationOrg                 = "vnd.vyogo.fpm.org"
 	AnnotationAppName             = "vnd.vyogo.fpm.app_name"
+	AnnotationAppTitle            = "vnd.vyogo.fpm.title"
 	AnnotationPackageType         = "vnd.vyogo.fpm.package_type"
 	AnnotationWheelPlatform       = "vnd.vyogo.fpm.wheel_platform"
 	AnnotationWheelPythonVersion  = "vnd.vyogo.fpm.wheel_python_version"
@@ -49,6 +53,12 @@ const (
 	AnnotationDependencies        = "vnd.vyogo.fpm.dependencies"
 	AnnotationChecksumSHA256      = "vnd.vyogo.fpm.checksum_sha256"
 	AnnotationMetadataJSON        = "vnd.vyogo.fpm.metadata.v1+json"
+	AnnotationIcon                = "vnd.vyogo.fpm.icon"
+	AnnotationIconFile            = "vnd.vyogo.fpm.icon_file"
+	AnnotationLicense             = "vnd.vyogo.fpm.license"
+	AnnotationPublisher           = "vnd.vyogo.fpm.publisher"
+	AnnotationAuthor              = "vnd.vyogo.fpm.author"
+	AnnotationEmail               = "vnd.vyogo.fpm.email"
 )
 
 // Push uploads an FPM package file and its metadata to the specified OCI repository.
@@ -424,6 +434,33 @@ func buildAnnotations(appMeta *metadata.AppMetadata, filename, checksumHex strin
 		AnnotationChecksumSHA256: checksumHex,
 	}
 
+	if appMeta.Title != "" {
+		ann[AnnotationAppTitle] = appMeta.Title
+	}
+	if appMeta.Description != "" {
+		ann[AnnotationDescription] = appMeta.Description
+	}
+	if appMeta.Author != "" {
+		ann[AnnotationAuthor] = appMeta.Author
+		ann[AnnotationAuthors] = appMeta.Author
+	}
+	if appMeta.Publisher != "" {
+		ann[AnnotationPublisher] = appMeta.Publisher
+	}
+	if appMeta.Email != "" {
+		ann[AnnotationEmail] = appMeta.Email
+	}
+	if appMeta.License != "" {
+		ann[AnnotationLicense] = appMeta.License
+		ann[AnnotationLicenses] = appMeta.License
+	}
+	if appMeta.Icon != "" {
+		ann[AnnotationIcon] = appMeta.Icon
+	}
+	if appMeta.IconFile != "" {
+		ann[AnnotationIconFile] = appMeta.IconFile
+	}
+
 	if appMeta.CommitSHA != "" {
 		ann[AnnotationRevision] = appMeta.CommitSHA
 	}
@@ -462,6 +499,15 @@ func buildAnnotations(appMeta *metadata.AppMetadata, filename, checksumHex strin
 }
 
 func annotationsToPackageVersionMetadata(ann map[string]string) *repository.PackageVersionMetadata {
+	author := ann[AnnotationAuthor]
+	if author == "" {
+		author = ann[AnnotationAuthors]
+	}
+	license := ann[AnnotationLicense]
+	if license == "" {
+		license = ann[AnnotationLicenses]
+	}
+
 	vm := &repository.PackageVersionMetadata{
 		ChecksumSHA256:     ann[AnnotationChecksumSHA256],
 		ReleaseDate:        ann[AnnotationCreated],
@@ -470,6 +516,14 @@ func annotationsToPackageVersionMetadata(ann map[string]string) *repository.Pack
 		PackageType:        ann[AnnotationPackageType],
 		WheelPlatform:      ann[AnnotationWheelPlatform],
 		WheelPythonVersion: ann[AnnotationWheelPythonVersion],
+		Title:              ann[AnnotationAppTitle],
+		Notes:              ann[AnnotationDescription],
+		Author:             author,
+		Publisher:          ann[AnnotationPublisher],
+		Email:              ann[AnnotationEmail],
+		License:            license,
+		Icon:               ann[AnnotationIcon],
+		IconFile:           ann[AnnotationIconFile],
 	}
 
 	if val := ann[AnnotationFrappeCompatibility]; val != "" {

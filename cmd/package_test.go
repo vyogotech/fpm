@@ -953,3 +953,45 @@ func TestContentChecksum(t *testing.T) {
 	// Restore file name for hygiene, though sourceDir is temp and will be cleaned up
 	require.NoError(t, os.Rename(absRenamedFilePath, absInitialFilePath))
 }
+
+func TestPackageExtractsMetadataFromHooksAndPyProject(t *testing.T) {
+	tmpDir := t.TempDir()
+	appName := "test_meta_app"
+	appDir := filepath.Join(tmpDir, appName)
+	require.NoError(t, os.MkdirAll(appDir, 0755))
+
+	require.NoError(t, os.WriteFile(filepath.Join(appDir, "__init__.py"), []byte(""), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(appDir, "modules.txt"), []byte("TestModule\n"), 0644))
+
+	hooksContent := `
+app_name = "test_meta_app"
+app_title = "Test Metadata App"
+app_publisher = "Vyogo Technologies"
+app_description = "A full test application for FPM metadata"
+app_icon = "octicon octicon-package"
+app_email = "dev@vyogo.com"
+app_license = "Apache-2.0"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(appDir, "hooks.py"), []byte(hooksContent), 0644))
+
+	pyprojectContent := `
+[project]
+name = "test_meta_app"
+version = "1.0.0"
+description = "PyProject Description"
+authors = [{ name = "Vyogo Technologies", email = "dev@vyogo.com" }]
+license = "Apache-2.0"
+dependencies = []
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "pyproject.toml"), []byte(pyprojectContent), 0644))
+
+	meta, _ := runPackageAndGetMeta(t, tmpDir, appName, "1.0.0", "prod")
+	require.NotNil(t, meta)
+	assert.Equal(t, "Test Metadata App", meta.Title)
+	assert.Equal(t, "A full test application for FPM metadata", meta.Description)
+	assert.Equal(t, "Vyogo Technologies", meta.Publisher)
+	assert.Equal(t, "Vyogo Technologies", meta.Author)
+	assert.Equal(t, "dev@vyogo.com", meta.Email)
+	assert.Equal(t, "Apache-2.0", meta.License)
+	assert.Equal(t, "octicon octicon-package", meta.Icon)
+}

@@ -70,6 +70,13 @@ func TestAnnotationPromotionRoundtrip(t *testing.T) {
 		Org:                 "frappe",
 		AppName:             "hrms",
 		PackageVersion:      "15.2.0",
+		Title:               "Frappe HRMS",
+		Description:         "Human Resource Management System",
+		Author:              "Frappe Technologies",
+		Publisher:           "Frappe Technologies",
+		Email:               "hr@frappe.io",
+		License:             "AGPL-3.0",
+		Icon:                "octicon octicon-person",
 		PackageType:         "standalone",
 		CommitSHA:           "abcdef1234567890",
 		GitRef:              "refs/tags/v15.2.0",
@@ -91,6 +98,13 @@ func TestAnnotationPromotionRoundtrip(t *testing.T) {
 	assert.Equal(t, "15.2.0", ann[AnnotationVersion])
 	assert.Equal(t, "frappe", ann[AnnotationOrg])
 	assert.Equal(t, "hrms", ann[AnnotationAppName])
+	assert.Equal(t, "Frappe HRMS", ann[AnnotationAppTitle])
+	assert.Equal(t, "Human Resource Management System", ann[AnnotationDescription])
+	assert.Equal(t, "Frappe Technologies", ann[AnnotationAuthor])
+	assert.Equal(t, "Frappe Technologies", ann[AnnotationPublisher])
+	assert.Equal(t, "hr@frappe.io", ann[AnnotationEmail])
+	assert.Equal(t, "AGPL-3.0", ann[AnnotationLicense])
+	assert.Equal(t, "octicon octicon-person", ann[AnnotationIcon])
 	assert.Equal(t, "standalone", ann[AnnotationPackageType])
 	assert.Equal(t, "abcdef1234567890", ann[AnnotationRevision])
 	assert.Equal(t, "refs/tags/v15.2.0", ann[AnnotationRefName])
@@ -104,6 +118,13 @@ func TestAnnotationPromotionRoundtrip(t *testing.T) {
 	assert.Equal(t, dummyChecksum, vm.ChecksumSHA256)
 	assert.Equal(t, "abcdef1234567890", vm.CommitSHA)
 	assert.Equal(t, "refs/tags/v15.2.0", vm.GitRef)
+	assert.Equal(t, "Frappe HRMS", vm.Title)
+	assert.Equal(t, "Human Resource Management System", vm.Notes)
+	assert.Equal(t, "Frappe Technologies", vm.Author)
+	assert.Equal(t, "Frappe Technologies", vm.Publisher)
+	assert.Equal(t, "hr@frappe.io", vm.Email)
+	assert.Equal(t, "AGPL-3.0", vm.License)
+	assert.Equal(t, "octicon octicon-person", vm.Icon)
 	assert.Equal(t, "manylinux_2_17_x86_64", vm.WheelPlatform)
 	assert.Equal(t, "cp311", vm.WheelPythonVersion)
 	assert.Equal(t, []string{"15"}, vm.FrappeCompatibility)

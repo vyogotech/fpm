@@ -193,8 +193,17 @@ func (s *Store) Publish(in PublishInput) error {
 
 	meta.Org = in.Org
 	meta.AppName = in.AppName
+	if manifest.Title != "" {
+		meta.Title = manifest.Title
+	}
 	if manifest.Description != "" {
 		meta.Description = manifest.Description
+	}
+	if manifest.Icon != "" {
+		meta.Icon = manifest.Icon
+	}
+	if manifest.IconFile != "" {
+		meta.IconFile = manifest.IconFile
 	}
 	meta.Versions[in.Version] = repository.PackageVersionMetadata{
 		FPMPath: artifactRel,
@@ -207,7 +216,13 @@ func (s *Store) Publish(in PublishInput) error {
 		Notes:               manifest.Description,
 		FrappeCompatibility: manifest.FrappeCompatibility,
 		SourceControlURL:    manifest.SourceControlURL,
+		Title:               manifest.Title,
 		Author:              manifest.Author,
+		Publisher:           manifest.Publisher,
+		Email:               manifest.Email,
+		License:             manifest.License,
+		Icon:                manifest.Icon,
+		IconFile:            manifest.IconFile,
 		PackageType:         manifest.PackageType,
 		WheelPlatform:       manifest.WheelPlatform,
 		WheelPythonVersion:  manifest.WheelPythonVersion,
@@ -244,8 +259,17 @@ func (s *Store) SavePackageMetadata(org, appName string, incoming *repository.Pa
 	if incoming == nil {
 		return nil
 	}
+	if incoming.Title != "" {
+		stored.Title = incoming.Title
+	}
 	if incoming.Description != "" {
 		stored.Description = incoming.Description
+	}
+	if incoming.Icon != "" {
+		stored.Icon = incoming.Icon
+	}
+	if incoming.IconFile != "" {
+		stored.IconFile = incoming.IconFile
 	}
 	for version, entry := range incoming.Versions {
 		existing, known := stored.Versions[version]
@@ -257,6 +281,27 @@ func (s *Store) SavePackageMetadata(org, appName string, incoming *repository.Pa
 		// Only genuinely advisory fields are taken from the client.
 		if entry.Notes != "" {
 			existing.Notes = entry.Notes
+		}
+		if entry.Title != "" {
+			existing.Title = entry.Title
+		}
+		if entry.Author != "" {
+			existing.Author = entry.Author
+		}
+		if entry.Publisher != "" {
+			existing.Publisher = entry.Publisher
+		}
+		if entry.Email != "" {
+			existing.Email = entry.Email
+		}
+		if entry.License != "" {
+			existing.License = entry.License
+		}
+		if entry.Icon != "" {
+			existing.Icon = entry.Icon
+		}
+		if entry.IconFile != "" {
+			existing.IconFile = entry.IconFile
 		}
 		stored.Versions[version] = existing
 	}
@@ -312,7 +357,10 @@ func (s *Store) rebuildIndexLocked() error {
 		index.Packages = append(index.Packages, repository.IndexEntry{
 			Org:           meta.Org,
 			AppName:       meta.AppName,
+			Title:         meta.Title,
 			Description:   meta.Description,
+			Icon:          meta.Icon,
+			IconFile:      meta.IconFile,
 			LatestVersion: meta.LatestVersion,
 			UpdatedAt:     updated,
 		})
