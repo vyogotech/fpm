@@ -302,6 +302,41 @@ func TestPublishCommand(t *testing.T) {
 			assert.Contains(t, err.Error(), "already exists in repository")
 		}
 	})
+
+	t.Run("PublishWithForce_OverwritesExistingVersion", func(t *testing.T) {
+		// Setup: Ensure version 1.0.0 of testOrg/pubapp already exists in remoteMeta
+		existingMeta := repository.PackageMetadata{
+			Org: testOrg, AppName: testAppName, LatestVersion: testAppVersion,
+			Versions: map[string]repository.PackageVersionMetadata{
+				testAppVersion: {FPMPath: "old_path", ChecksumSHA256: "old_checksum"},
+			},
+		}
+		metaBytes, _ := json.Marshal(existingMeta)
+		receivedMetadata.Store(fmt.Sprintf("/metadata/%s/%s/package-metadata.json", testOrg, testAppName), metaBytes)
+
+		tempPackageDir, _ := os.MkdirTemp("", "fpm-publish-force-*")
+		defer os.RemoveAll(tempPackageDir)
+		dummyFPMPath := createDummyFPMForPublishing(t, tempPackageDir, testOrg, testAppName, testAppVersion, "")
+
+		// Reset publish flags
+		publishRepoName = ""
+		publishFromFile = ""
+		publishForce = false
+		if publishCmd.Flags().Lookup("repo") != nil {
+			publishCmd.Flags().Lookup("repo").Value.Set("")
+		}
+		if publishCmd.Flags().Lookup("from-file") != nil {
+			publishCmd.Flags().Lookup("from-file").Value.Set("")
+		}
+		if publishCmd.Flags().Lookup("force") != nil {
+			publishCmd.Flags().Lookup("force").Value.Set("false")
+		}
+		args := []string{"publish", "--from-file", dummyFPMPath, "--repo", "mockpublishrepo", "--force"}
+		output, err := SharedExecuteCommand(rootCmd, args...)
+		t.Logf("PublishWithForce output: %s", output)
+		require.NoError(t, err)
+		assert.Contains(t, output, "Successfully published package")
+	})
 }
 
 // Note: createMinimalFrappeApp is defined in install_test.go

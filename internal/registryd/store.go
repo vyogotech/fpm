@@ -161,6 +161,7 @@ type PublishInput struct {
 	Artifact []byte
 	Checksum string // sha256 of Artifact, computed by the server
 	Manifest *metadata.AppMetadata
+	Force    bool
 }
 
 // Publish records a verified artifact and regenerates the derived documents.
@@ -176,7 +177,7 @@ func (s *Store) Publish(in PublishInput) error {
 	if err != nil {
 		return err
 	}
-	if _, exists := meta.Versions[in.Version]; exists {
+	if _, exists := meta.Versions[in.Version]; exists && !in.Force {
 		return ErrVersionExists
 	}
 

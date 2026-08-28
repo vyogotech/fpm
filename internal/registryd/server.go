@@ -231,6 +231,7 @@ func (s *Server) publishArtifact(w http.ResponseWriter, r *http.Request, relPath
 		}
 	}
 
+	force := r.URL.Query().Get("force") == "true" || r.Header.Get("X-FPM-Force") == "true"
 	sum := sha256.Sum256(body)
 	err = s.store.Publish(PublishInput{
 		Org:      org,
@@ -241,6 +242,7 @@ func (s *Server) publishArtifact(w http.ResponseWriter, r *http.Request, relPath
 		// uploader supplied.
 		Checksum: hex.EncodeToString(sum[:]),
 		Manifest: manifest,
+		Force:    force,
 	})
 
 	switch {

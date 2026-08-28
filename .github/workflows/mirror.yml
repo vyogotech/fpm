@@ -31,6 +31,10 @@ on:
         description: 'Rebuild and push versions the registry already has (use when packaging itself changed)'
         type: boolean
         default: false
+      python_version:
+        description: 'Target Python version for vendored wheels (e.g. 3.14, 3.11)'
+        required: false
+        default: '3.14'
       build_from_source:
         description: 'Compile the CLI from this branch instead of using the latest release (for validating an unreleased change)'
         type: boolean
@@ -270,7 +274,8 @@ jobs:
           else
             ARGS="${{ steps.repos.outputs.repo_args }} --apps ${{ matrix.slug }}"
           fi
-          ARGS="$ARGS --catalog catalog/apps.csv --python-version 3.11"
+          PYTHON_VER="${{ inputs.python_version || '3.14' }}"
+          ARGS="$ARGS --catalog catalog/apps.csv --python-version $PYTHON_VER"
           ARGS="$ARGS --cache-dir $HOME/.fpm/build-cache --output-path dist"
           ARGS="$ARGS --report dist/mirror-report-${{ matrix.slug }}.json"
 
@@ -460,7 +465,8 @@ jobs:
           else
             ARGS="${{ steps.repos.outputs.repo_args }} --apps ${{ matrix.slug }}"
           fi
-          ARGS="$ARGS --catalog catalog/apps.csv --python-version 3.11"
+          PYTHON_VER="${{ inputs.python_version || '3.14' }}"
+          ARGS="$ARGS --catalog catalog/apps.csv --python-version $PYTHON_VER"
           ARGS="$ARGS --cache-dir $HOME/.fpm/build-cache --output-path dist"
           ARGS="$ARGS --report dist/mirror-report-${{ matrix.slug }}.json"
 

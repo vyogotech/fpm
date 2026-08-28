@@ -26,6 +26,7 @@ import (
 var (
 	publishRepoName string
 	publishFromFile string
+	publishForce    bool
 )
 
 // publishCmd represents the publish command
@@ -154,7 +155,7 @@ to publish from the local FPM app store.`,
 			if err != nil {
 				return fmt.Errorf("failed to check if version %s exists in OCI repository %s: %w", appVersion, targetRepo.Name, err)
 			}
-			if exists {
+			if exists && !publishForce {
 				return fmt.Errorf("version %s for package %s/%s already exists in OCI repository %s", appVersion, appOrg, appName, targetRepo.Name)
 			}
 
@@ -219,8 +220,7 @@ to publish from the local FPM app store.`,
 			return fmt.Errorf("internal error: metadata reported as existing but was nil for %s/%s from %s", appOrg, appName, targetRepo.URL)
 		}
 
-		if _, exists := remoteMeta.Versions[appVersion]; exists {
-			// TODO: Add a --force flag to allow overwriting? For now, error out.
+		if _, exists := remoteMeta.Versions[appVersion]; exists && !publishForce {
 			return fmt.Errorf("version %s for package %s/%s already exists in repository %s", appVersion, appOrg, appName, targetRepo.Name)
 		}
 
@@ -238,8 +238,13 @@ to publish from the local FPM app store.`,
 			return fmt.Errorf("failed to calculate checksum for %s: %w", fpmFilePathToPublish, err)
 		}
 
+		var extraHeaders map[string]string
+		if publishForce {
+			extraHeaders = map[string]string{"X-FPM-Force": "true"}
+		}
+
 		fmt.Printf("Uploading FPM package to %s...\n", fpmDestURL)
-		err = repository.UploadHTTPFile(fpmDestURL, fpmFilePathToPublish, http.MethodPut, "application/octet-stream", httpClient, "", nil)
+		err = repository.UploadHTTPFile(fpmDestURL, fpmFilePathToPublish, http.MethodPut, "application/octet-stream", httpClient, "", extraHeaders)
 		if err != nil {
 			// A bare 401 gives no hint that credentials are the missing piece, and this
 			// is the first write a publish makes, so it is where auth problems surface.
@@ -354,6 +359,7 @@ func resolveLatestVersionFromLocalStore(appsBasePath, groupID, artifactID string
 func init() {
 	publishCmd.Flags().StringVar(&publishRepoName, "repo", "", "Name of the repository to publish to (must be configured in FPM)")
 	publishCmd.Flags().StringVar(&publishFromFile, "from-file", "", "Path to the .fpm package file to publish directly")
+	publishCmd.Flags().BoolVar(&publishForce, "force", false, "Overwrite existing package version in repository")
 
 	rootCmd.AddCommand(publishCmd)
 }
