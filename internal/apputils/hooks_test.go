@@ -112,3 +112,59 @@ app_name = "second_app"
 		assert.Contains(t, err.Error(), "app_name not found or pattern not matched")
 	})
 }
+
+func TestGetAppMetadataFromHooks(t *testing.T) {
+	createHooksFile := func(t *testing.T, dir, content string) string {
+		t.Helper()
+		hooksPath := filepath.Join(dir, "hooks.py")
+		require.NoError(t, os.WriteFile(hooksPath, []byte(content), 0644))
+		return hooksPath
+	}
+
+	t.Run("extracts all standard metadata fields", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		content := `
+app_name = "crm"
+app_title = "Frappe CRM"
+app_publisher = "Frappe Technologies Pvt. Ltd."
+app_description = "Modern CRM built on Frappe"
+app_icon = "octicon octicon-star"
+app_color = "grey"
+app_email = "developers@frappe.io"
+app_license = "GNU General Public License (v3)"
+`
+		hooksPath := createHooksFile(t, tmpDir, content)
+		meta, err := GetAppMetadataFromHooks(hooksPath)
+		require.NoError(t, err)
+		assert.Equal(t, "crm", meta.AppName)
+		assert.Equal(t, "Frappe CRM", meta.AppTitle)
+		assert.Equal(t, "Frappe Technologies Pvt. Ltd.", meta.AppPublisher)
+		assert.Equal(t, "Modern CRM built on Frappe", meta.AppDescription)
+		assert.Equal(t, "octicon octicon-star", meta.AppIcon)
+		assert.Equal(t, "grey", meta.AppColor)
+		assert.Equal(t, "developers@frappe.io", meta.AppEmail)
+		assert.Equal(t, "GNU General Public License (v3)", meta.AppLicense)
+	})
+
+	t.Run("handles single quotes and triple quotes", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		content := `
+app_name = 'helpdesk'
+app_title = 'Helpdesk'
+app_description = """Helpdesk & Customer Support
+Multi-line description"""
+app_publisher = '''Frappe'''
+app_license = 'MIT'
+app_icon = "fa fa-ticket"
+`
+		hooksPath := createHooksFile(t, tmpDir, content)
+		meta, err := GetAppMetadataFromHooks(hooksPath)
+		require.NoError(t, err)
+		assert.Equal(t, "helpdesk", meta.AppName)
+		assert.Equal(t, "Helpdesk", meta.AppTitle)
+		assert.Equal(t, "Frappe", meta.AppPublisher)
+		assert.Equal(t, "MIT", meta.AppLicense)
+		assert.Equal(t, "fa fa-ticket", meta.AppIcon)
+		assert.Contains(t, meta.AppDescription, "Helpdesk & Customer Support")
+	})
+}

@@ -23,13 +23,31 @@ const PyProjectFileName = "pyproject.toml"
 // install time: the app's runtime dependencies, and the backend needed to build it.
 //
 // Optional extras are deliberately not read, since pip does not install them by default.
+type pyProjectAuthor struct {
+	Name  string `toml:"name"`
+	Email string `toml:"email"`
+}
+
 type pyProject struct {
 	Project struct {
-		Dependencies []string `toml:"dependencies"`
+		Name         string            `toml:"name"`
+		Description  string            `toml:"description"`
+		Dependencies []string          `toml:"dependencies"`
+		Authors      []pyProjectAuthor `toml:"authors"`
+		License      any               `toml:"license"`
 	} `toml:"project"`
 	BuildSystem struct {
 		Requires []string `toml:"requires"`
 	} `toml:"build-system"`
+}
+
+// PyProjectMetadata represents metadata fields extracted from pyproject.toml.
+type PyProjectMetadata struct {
+	Name        string
+	Description string
+	License     string
+	AuthorName  string
+	AuthorEmail string
 }
 
 // Requirements is the set of dependency specifiers an app declares, along with the
@@ -241,6 +259,49 @@ func parsePyProjectBytes(data []byte) ([]string, error) {
 		}
 	}
 	return specs, nil
+}
+
+// ExtractPyProjectMetadata reads pyproject.toml and returns its metadata fields.
+func ExtractPyProjectMetadata(path string) (*PyProjectMetadata, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to read %s: %w", path, err)
+	}
+	return ExtractPyProjectMetadataBytes(data)
+}
+
+// ExtractPyProjectMetadataBytes parses pyproject.toml content into PyProjectMetadata.
+func ExtractPyProjectMetadataBytes(data []byte) (*PyProjectMetadata, error) {
+	var parsed pyProject
+	if _, err := toml.Decode(string(data), &parsed); err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", PyProjectFileName, err)
+	}
+
+	meta := &PyProjectMetadata{
+		Name:        strings.TrimSpace(parsed.Project.Name),
+		Description: strings.TrimSpace(parsed.Project.Description),
+	}
+
+	if len(parsed.Project.Authors) > 0 {
+		meta.AuthorName = strings.TrimSpace(parsed.Project.Authors[0].Name)
+		meta.AuthorEmail = strings.TrimSpace(parsed.Project.Authors[0].Email)
+	}
+
+	switch lic := parsed.Project.License.(type) {
+	case string:
+		meta.License = strings.TrimSpace(lic)
+	case map[string]any:
+		if text, ok := lic["text"].(string); ok && text != "" {
+			meta.License = strings.TrimSpace(text)
+		} else if file, ok := lic["file"].(string); ok && file != "" {
+			meta.License = strings.TrimSpace(file)
+		}
+	}
+
+	return meta, nil
 }
 
 // writeMergedRequirements writes the collected specifiers to a pip requirements file so

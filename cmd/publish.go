@@ -201,6 +201,9 @@ to publish from the local FPM app store.`,
 			remoteMeta = &repository.PackageMetadata{
 				Org:         appOrg,
 				AppName:     appName,
+				Title:       currentAppMeta.Title,
+				Icon:        currentAppMeta.Icon,
+				IconFile:    currentAppMeta.IconFile,
 				Versions:    make(map[string]repository.PackageVersionMetadata),
 				Description: currentAppMeta.Description, // Populate description from current package
 			}
@@ -212,8 +215,17 @@ to publish from the local FPM app store.`,
 			// Ensure Org and AppName in fetched metadata match, or update if necessary (using local as source of truth for path)
 			remoteMeta.Org = appOrg
 			remoteMeta.AppName = appName
+			if remoteMeta.Title == "" && currentAppMeta.Title != "" {
+				remoteMeta.Title = currentAppMeta.Title
+			}
 			if remoteMeta.Description == "" && currentAppMeta.Description != "" { // If remote has no desc, use current's
 				remoteMeta.Description = currentAppMeta.Description
+			}
+			if remoteMeta.Icon == "" && currentAppMeta.Icon != "" {
+				remoteMeta.Icon = currentAppMeta.Icon
+			}
+			if remoteMeta.IconFile == "" && currentAppMeta.IconFile != "" {
+				remoteMeta.IconFile = currentAppMeta.IconFile
 			}
 		} else {
 			// This case should ideally not happen if metadataExisted is true and err is nil.
@@ -269,7 +281,13 @@ to publish from the local FPM app store.`,
 			// ignores what it does not recognise.
 			FrappeCompatibility: currentAppMeta.FrappeCompatibility,
 			SourceControlURL:    currentAppMeta.SourceControlURL,
+			Title:               currentAppMeta.Title,
 			Author:              currentAppMeta.Author,
+			Publisher:           currentAppMeta.Publisher,
+			Email:               currentAppMeta.Email,
+			License:             currentAppMeta.License,
+			Icon:                currentAppMeta.Icon,
+			IconFile:            currentAppMeta.IconFile,
 			PackageType:         currentAppMeta.PackageType,
 			WheelPlatform:       currentAppMeta.WheelPlatform,
 			WheelPythonVersion:  currentAppMeta.WheelPythonVersion,

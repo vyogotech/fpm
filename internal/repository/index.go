@@ -25,7 +25,10 @@ const IndexPath = "metadata/index.json"
 type IndexEntry struct {
 	Org           string `json:"org"`
 	AppName       string `json:"appName"`
+	Title         string `json:"title,omitempty"`
 	Description   string `json:"description,omitempty"`
+	Icon          string `json:"icon,omitempty"`
+	IconFile      string `json:"icon_file,omitempty"`
 	LatestVersion string `json:"latest_version,omitempty"`
 	UpdatedAt     string `json:"updated_at,omitempty"`
 }

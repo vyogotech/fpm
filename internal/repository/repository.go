@@ -38,7 +38,13 @@ type PackageVersionMetadata struct {
 	// ["14.x.x", "15.x.x"].
 	FrappeCompatibility []string `json:"frappe_compatibility,omitempty"`
 	SourceControlURL    string   `json:"source_control_url,omitempty"`
+	Title               string   `json:"title,omitempty"`
 	Author              string   `json:"author,omitempty"`
+	Publisher           string   `json:"publisher,omitempty"`
+	Email               string   `json:"email,omitempty"`
+	License             string   `json:"license,omitempty"`
+	Icon                string   `json:"icon,omitempty"`
+	IconFile            string   `json:"icon_file,omitempty"`
 	PackageType         string   `json:"package_type,omitempty"`
 	// WheelPlatform is the pip platform tag the bundled wheels were vendored
 	// for. A consumer installing on a different platform needs to know before
@@ -128,7 +134,10 @@ type Dependency struct {
 type PackageMetadata struct {
 	Org           string                            `json:"org"`
 	AppName       string                            `json:"appName"`
+	Title         string                            `json:"title,omitempty"`
 	Description   string                            `json:"description,omitempty"`
+	Icon          string                            `json:"icon,omitempty"`
+	IconFile      string                            `json:"icon_file,omitempty"`
 	LatestVersion string                            `json:"latest_version,omitempty"`
 	Versions      map[string]PackageVersionMetadata `json:"versions"`
 }

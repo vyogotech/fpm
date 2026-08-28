@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-08-28
+
+App icon packaging, license, and creator/owner metadata auto-extraction across FPM packages, repository catalogues, and OCI registries.
+
+### Added
+
+- **App Icon Staging in Package Root**: During `fpm package`, the app's resolved icon image (SVG/PNG) is physically copied to the root of the `.fpm` archive as `icon.svg` or `icon.png`, and recorded as `icon_file` in metadata. Consumers, marketplaces, and registries can extract or serve the icon directly without navigating Frappe internal app directory trees.
+- **Automatic App Metadata Extraction**: Automatically parses `app_title`, `app_description`, `app_publisher`, `app_email`, `app_license`, `app_icon`, and `app_logo_url` from `hooks.py` with fallback to PEP 621 `pyproject.toml` (`[project]` `authors`, `license`, `description`).
+- **Filesystem Icon Discovery**: If an app's `hooks.py` does not explicitly set an icon, `fpm package` scans the app's `public/images/` and `public/` directories for standard icon/logo assets (`<app>.svg`, `<app>.png`, `icon.svg`, `logo.svg`, etc.) and automatically resolves the web asset path.
+- **Repository Index & OCI Annotations**: Added `icon`, `icon_file`, `title`, `publisher`, `email`, `license`, and `author` to `package-metadata.json`, `index.json`, and OCI manifest annotations (`vnd.vyogo.fpm.icon`, `vnd.vyogo.fpm.icon_file`, `vnd.vyogo.fpm.title`, `vnd.vyogo.fpm.publisher`, `vnd.vyogo.fpm.email`, `vnd.vyogo.fpm.license`, `org.opencontainers.image.licenses`, `org.opencontainers.image.authors`).
+
 ## [3.0.0] - 2026-08-27
 
 Pluggable OCI Registry backend, generic non-provider-specific authentication, OCI 1.1 referrers graph linking, Maven-style transitive dependency resolution, topological cascade installation, pre-install snapshot recording with transactional LIFO rollback, enhanced `fpm deps` inspection utility, GHCR catalog prepopulation workflow with multi-tier caching, and real SNE container integration tests.

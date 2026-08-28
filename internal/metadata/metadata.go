@@ -11,8 +11,14 @@ import (
 type AppMetadata struct {
 	PackageName         string            `json:"package_name,omitempty"` // This might be the same as AppName or the repo name
 	PackageVersion      string            `json:"package_version,omitempty"`
+	Title               string            `json:"title,omitempty"`
 	Description         string            `json:"description,omitempty"`
 	Author              string            `json:"author,omitempty"`
+	Publisher           string            `json:"publisher,omitempty"`
+	Email               string            `json:"email,omitempty"`
+	License             string            `json:"license,omitempty"`
+	Icon                string            `json:"icon,omitempty"`
+	IconFile            string            `json:"icon_file,omitempty"`
 	Org                 string            `json:"org,omitempty"`                  // GitHub organization or similar
 	AppName             string            `json:"app_name,omitempty"`             // The actual Frappe app name (e.g., erpnext)
 	Dependencies        map[string]string `json:"dependencies,omitempty"`         // e.g., "erpnext": "13.2.1"

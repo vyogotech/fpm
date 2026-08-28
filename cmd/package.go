@@ -131,6 +131,53 @@ By default, it also installs the packaged app to the local FPM app store.`,
 		}
 		meta.PackageVersion = versionFlagValue
 
+		// Extract metadata from hooks.py
+		hooksMeta, errHooks := apputils.GetAppMetadataFromHooks(hooksFilePath)
+		if errHooks == nil && hooksMeta != nil {
+			if meta.Title == "" && hooksMeta.AppTitle != "" {
+				meta.Title = hooksMeta.AppTitle
+			}
+			if meta.Description == "" && hooksMeta.AppDescription != "" {
+				meta.Description = hooksMeta.AppDescription
+			}
+			if meta.Publisher == "" && hooksMeta.AppPublisher != "" {
+				meta.Publisher = hooksMeta.AppPublisher
+			}
+			if meta.Author == "" && hooksMeta.AppPublisher != "" {
+				meta.Author = hooksMeta.AppPublisher
+			}
+			if meta.Email == "" && hooksMeta.AppEmail != "" {
+				meta.Email = hooksMeta.AppEmail
+			}
+			if meta.License == "" && hooksMeta.AppLicense != "" {
+				meta.License = hooksMeta.AppLicense
+			}
+		}
+
+		if meta.Icon == "" {
+			meta.Icon = detectAppIcon(absSourcePath, appModule, hooksMeta)
+		}
+
+		// Fallback to pyproject.toml if present
+		pyprojectPath := filepath.Join(absSourcePath, wheels.PyProjectFileName)
+		if pyMeta, errPy := wheels.ExtractPyProjectMetadata(pyprojectPath); errPy == nil && pyMeta != nil {
+			if meta.Description == "" && pyMeta.Description != "" {
+				meta.Description = pyMeta.Description
+			}
+			if meta.Author == "" && pyMeta.AuthorName != "" {
+				meta.Author = pyMeta.AuthorName
+			}
+			if meta.Publisher == "" && pyMeta.AuthorName != "" {
+				meta.Publisher = pyMeta.AuthorName
+			}
+			if meta.Email == "" && pyMeta.AuthorEmail != "" {
+				meta.Email = pyMeta.AuthorEmail
+			}
+			if meta.License == "" && pyMeta.License != "" {
+				meta.License = pyMeta.License
+			}
+		}
+
 		// --- Step 3: git introspection (org, remote URL, exact commit) ---
 		orgFromGit, _, errGit := gitutils.GetGitRemoteOriginInfo(absSourcePath)
 		if errGit != nil {
@@ -431,6 +478,41 @@ func isNotFoundErr(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "not found") || strings.Contains(msg, "no such file or directory")
+}
+
+// detectAppIcon checks hooks metadata and filesystem conventions for an app icon.
+func detectAppIcon(sourceDir, appModule string, hooksMeta *apputils.HooksMetadata) string {
+	if hooksMeta != nil {
+		if hooksMeta.AppIcon != "" {
+			return hooksMeta.AppIcon
+		}
+		if hooksMeta.AppLogoUrl != "" {
+			return hooksMeta.AppLogoUrl
+		}
+	}
+
+	candidates := []struct {
+		relPath   string
+		assetPath string
+	}{
+		{filepath.Join(appModule, "public", "images", appModule+".svg"), fmt.Sprintf("/assets/%s/images/%s.svg", appModule, appModule)},
+		{filepath.Join(appModule, "public", "images", appModule+".png"), fmt.Sprintf("/assets/%s/images/%s.png", appModule, appModule)},
+		{filepath.Join(appModule, "public", "images", "icon.svg"), fmt.Sprintf("/assets/%s/images/icon.svg", appModule)},
+		{filepath.Join(appModule, "public", "images", "icon.png"), fmt.Sprintf("/assets/%s/images/icon.png", appModule)},
+		{filepath.Join(appModule, "public", "images", "logo.svg"), fmt.Sprintf("/assets/%s/images/logo.svg", appModule)},
+		{filepath.Join(appModule, "public", "images", "logo.png"), fmt.Sprintf("/assets/%s/images/logo.png", appModule)},
+		{filepath.Join(appModule, "public", "icon.svg"), fmt.Sprintf("/assets/%s/icon.svg", appModule)},
+		{filepath.Join(appModule, "public", "icon.png"), fmt.Sprintf("/assets/%s/icon.png", appModule)},
+		{filepath.Join(appModule, "public", "logo.svg"), fmt.Sprintf("/assets/%s/logo.svg", appModule)},
+		{filepath.Join(appModule, "public", "logo.png"), fmt.Sprintf("/assets/%s/logo.png", appModule)},
+	}
+
+	for _, c := range candidates {
+		if _, err := os.Stat(filepath.Join(sourceDir, c.relPath)); err == nil {
+			return c.assetPath
+		}
+	}
+	return ""
 }
 
 func init() {
