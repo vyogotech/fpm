@@ -230,6 +230,7 @@ func runMirror() error {
 		CatalogRepos:  catalogRepos,
 		BuildDepRefs:  buildDepRefs,
 		SkipPublish:   mirrorSkipPublish,
+		Republish:     mirrorRepublish,
 		PythonVersion: pyVer,
 		Platforms:     platforms,
 	}

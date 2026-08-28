@@ -51,6 +51,7 @@ type Runner struct {
 	// (GHCR as OCI and an HTTP FPM registry, say) from a single build.
 	RepoNames   []string
 	SkipPublish bool
+	Republish   bool
 	// CatalogRepos maps every catalog slug to its git URL, including entries that are
 	// disabled for publishing. A build-time dependency is fetched from here: frappe is
 	// no longer mirrored, but helpdesk's build still reads its source off disk.
@@ -168,11 +169,15 @@ func (r *Runner) runOne(item BuildItem) Result {
 	// The run's contract is that all of them hold it afterwards.
 	pushed, existed := make([]string, 0, len(r.RepoNames)), make([]string, 0, len(r.RepoNames))
 	for _, repoName := range r.RepoNames {
-		out, err := r.fpm("publish", "--from-file", final, "--repo", repoName)
+		publishArgs := []string{"publish", "--from-file", final, "--repo", repoName}
+		if r.Republish {
+			publishArgs = append(publishArgs, "--force")
+		}
+		out, err := r.fpm(publishArgs...)
 		if err != nil {
 			// The registry (and the CLI's own pre-check) refuse duplicates; in a
-			// bulk run that is idempotent success, not an error.
-			if strings.Contains(out, "already exists") {
+			// bulk run that is idempotent success, not an error (unless republishing).
+			if !r.Republish && strings.Contains(out, "already exists") {
 				existed = append(existed, repoName)
 				continue
 			}
