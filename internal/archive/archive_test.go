@@ -174,3 +174,58 @@ func TestCreateFPMArchive(t *testing.T) {
 		}
 	}
 }
+
+// TestExcludesRepositoryFurniture: CI workflows and the screenshots a README embeds are
+// not app content — a bench neither serves nor imports them. drive shipped 7.2 MB of
+// them, which is what pushed its artifact past a registry's 100 MB upload limit.
+func TestExcludesRepositoryFurniture(t *testing.T) {
+	src := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("myapp/hooks.py", "app_name = \"myapp\"\n")
+	write("myapp/__init__.py", "__version__ = '1.0.0'\n")
+	write("myapp/modules.txt", "Myapp\n")
+	write(".github/workflows/ci.yml", "name: ci\n")
+	write(".github/file_preview.png", "a 6 MB screenshot, in spirit")
+	write(".gitattributes", "* text=auto\n")
+	write(".pre-commit-config.yaml", "repos: []\n")
+	// What must survive: the app, its licence and its readme.
+	write("LICENSE", "MIT")
+	write("README.md", "# myapp")
+
+	out := t.TempDir()
+	meta := &metadata.AppMetadata{PackageName: "myapp", AppName: "myapp", Org: "acme", PackageVersion: "1.0.0"}
+	if err := CreateFPMArchive(src, out, meta, "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := zip.OpenReader(filepath.Join(out, "myapp-1.0.0.fpm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	got := map[string]bool{}
+	for _, f := range r.File {
+		got[f.Name] = true
+	}
+	for _, excluded := range []string{
+		".github/workflows/ci.yml", ".github/file_preview.png", ".gitattributes", ".pre-commit-config.yaml",
+	} {
+		if got[excluded] {
+			t.Errorf("%s must not be packaged", excluded)
+		}
+	}
+	for _, kept := range []string{"myapp/hooks.py", "LICENSE", "README.md"} {
+		if !got[kept] {
+			t.Errorf("%s must still be packaged", kept)
+		}
+	}
+}

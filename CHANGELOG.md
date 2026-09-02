@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.1] - 2026-09-03
+
+### Fixed
+
+- Packages no longer ship repository furniture: `.github/` (CI workflows, issue
+  templates, the screenshots a README embeds), `.gitlab/`, `.circleci/`,
+  `.gitattributes`, `.editorconfig` and `.pre-commit-config.yaml`. A bench neither
+  serves nor imports any of it. drive was carrying **12.1 MB** of it — 13% of its
+  artifact, mostly PNG screenshots — which is what pushed the package past the
+  registry's 100 MB upload limit and had it failing to publish with a 413. The app's
+  own LICENSE and README are kept.
+
 ## [4.1.0] - 2026-09-03
 
 ### Added
