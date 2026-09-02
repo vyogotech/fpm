@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The catalogue mirror runs from the **release** branch: every job checks the catalog
+  and scripts out of `release` rather than `main`, since publishing to the registries
+  is a release activity and `main` may carry catalog changes that are not released yet.
+  The schedule stays registered on the default branch because GitHub registers cron
+  triggers only there, so the trigger lives on `main` while what it acts on lives on
+  `release`. A dispatch can point elsewhere with the new `catalog_ref` input.
+
 ## [4.1.1] - 2026-09-03
 
 ### Fixed

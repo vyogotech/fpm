@@ -44,15 +44,21 @@ on:
         type: boolean
         default: false
       build_from_source:
-        description: 'Compile the CLI from this branch instead of using the latest release (for validating an unreleased change)'
+        description: 'Compile the CLI from the catalog ref instead of using the latest release (for validating an unreleased change)'
         type: boolean
         default: false
+      catalog_ref:
+        description: 'Branch or tag whose catalog and scripts the run uses. Defaults to release: publishing to the registries is a release activity, and main may carry catalog changes that are not released yet'
+        required: false
+        default: 'release'
   schedule:
     # Daily at 02:00 UTC. Re-runs are idempotent — the plan queries the registries and
     # skips versions they already have — so most days a shard only fetches tags and exits.
     #
-    # Note: GitHub only schedules workflows from the DEFAULT branch. Changes here have no
-    # effect on the cron until they are on that branch.
+    # Note: GitHub only schedules workflows from the DEFAULT branch. Changes to this file
+    # have no effect on the cron until they are on that branch — which is why the
+    # schedule is registered from main even though the run itself checks out release.
+    # A catalog change reaches the nightly when it lands on release, not on main.
     - cron: '0 2 * * *'
 
 # GITHUB_TOKEN is the pipeline's own credential: `packages: write` lets it push to
@@ -81,6 +87,12 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          # What the run publishes comes from the release branch, not from whatever
+          # main happens to hold. The workflow *definition* still comes from the
+          # default branch — GitHub registers a schedule only from there — so the
+          # trigger lives on main while the catalog it acts on lives on release.
+          ref: ${{ inputs.catalog_ref || 'release' }}
 
       - name: Set up Go
         if: ${{ inputs.build_from_source }}
@@ -102,7 +114,7 @@ jobs:
         run: |
           mkdir -p bin
           if [ "${{ inputs.build_from_source }}" = "true" ]; then
-            echo "Compiling from ${{ github.ref_name }}."
+            echo "Compiling from ${{ inputs.catalog_ref || 'release' }}."
             make build
           else
             tmp="$(mktemp -d)"
@@ -183,6 +195,12 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          # What the run publishes comes from the release branch, not from whatever
+          # main happens to hold. The workflow *definition* still comes from the
+          # default branch — GitHub registers a schedule only from there — so the
+          # trigger lives on main while the catalog it acts on lives on release.
+          ref: ${{ inputs.catalog_ref || 'release' }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -412,6 +430,12 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          # What the run publishes comes from the release branch, not from whatever
+          # main happens to hold. The workflow *definition* still comes from the
+          # default branch — GitHub registers a schedule only from there — so the
+          # trigger lives on main while the catalog it acts on lives on release.
+          ref: ${{ inputs.catalog_ref || 'release' }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
