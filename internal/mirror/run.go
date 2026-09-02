@@ -535,6 +535,11 @@ func (r *Runner) packageApp(item BuildItem, checkout, assetBench string) (artifa
 	if r.AllowUnbuiltAssets {
 		args = append(args, "--allow-unbuilt-assets")
 	}
+	// An upstream pin the target cannot satisfy, replaced from the catalog. The
+	// package records it, so a consumer can see it differs from upstream source.
+	for _, override := range item.PipOverrides {
+		args = append(args, "--override-dependency", override)
+	}
 	if !item.BundleDeps {
 		args = append(args, "--bundle-deps=false")
 	} else {

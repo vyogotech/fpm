@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-09-03
+
+### Added
+
+- `fpm package --override-dependency 'pycrdt>=0.14.4'` replaces a Python requirement
+  the app declares. It rewrites the **staged copy's** manifest — the source tree is
+  never touched — before wheels are vendored, so the package and the wheels beside it
+  agree. Overriding only what pip downloads would produce a package whose own
+  `pyproject.toml` rejects its vendored wheel, because `fpm install` runs
+  `pip install -e` against the manifest the package ships. Each replacement is recorded
+  in `app_metadata.json` as `dependency_overrides` (name, from, to, file), so an
+  artifact that differs from its upstream source says so. An override matching nothing
+  the app declares is an error, not a silent no-op.
+- The catalog's `pip_overrides` column passes those through per app, for an upstream
+  pin the mirror cannot change and cannot satisfy.
+
+### Fixed
+
+- drive is back in the catalogue. It pins `pycrdt==0.12.26`, which publishes no cp314
+  wheel and no abi3 wheel, so nothing could be vendored for the 3.14 target and its
+  Rust sdist cannot be cross-built — the package the mirror fell back to publishing
+  then failed at install where there is no Rust toolchain. `pip_overrides` raises it
+  to `>=0.14.4`, which does ship cp314 manylinux wheels. Verified on a bench in the
+  SNE image: packaged from unpatched upstream, installed with no network, 12 DocTypes
+  synced, `pycrdt 0.14.4` importable.
+
 ## [4.0.3] - 2026-09-02
 
 ### Fixed

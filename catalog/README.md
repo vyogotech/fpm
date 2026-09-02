@@ -28,6 +28,7 @@ Empty cells take the default.
 | `enabled` | `true` | set `false` to keep an app listed but unbuilt; say why in `notes` |
 | `tier` | `0` | build wave; every app in a lower tier is published before a higher one starts, so an app can pin the `required_apps` this run just published (hrms needs erpnext) |
 | `build_deps` | — | `<slug>@<ref>` pairs, `;`-separated, for another app's source this app's build reads off disk, e.g. `frappe@version-15`. Also selects the frappe whose esbuild compiles this app's desk assets, overriding `--frappe-ref` |
+| `pip_overrides` | — | `;`-separated Python requirements replacing what the app declares, e.g. `pycrdt>=0.14.4`. For an upstream pin that cannot be satisfied for the target — a version with no wheel for the run's interpreter — where the mirror cannot change upstream. The packaged manifest is rewritten, not just the vendored wheels, and the package records it as `dependency_overrides`. Say why in `notes`, and drop it once upstream moves |
 | `notes` | — | free text; quote the cell if it contains commas |
 
 ## Asset builds
@@ -64,6 +65,12 @@ that app.
 
 ## Licensing
 
-The mirrored apps are GPL/AGPL-licensed. Each `.fpm` artifact is the complete,
-unmodified upstream source for the tagged release, LICENSE files included, so
-republishing them here is ordinary source redistribution.
+The mirrored apps are GPL/AGPL-licensed. Each `.fpm` artifact is the complete
+upstream source for the tagged release, LICENSE files included, so republishing them
+here is ordinary source redistribution.
+
+The one modification the mirror ever makes is `pip_overrides`, which rewrites a Python
+requirement the app declares. It is recorded in the package's own
+`app_metadata.json` as `dependency_overrides` (what was replaced, with what, and in
+which file), so an artifact that differs from its upstream source says so rather than
+appearing identical to it.

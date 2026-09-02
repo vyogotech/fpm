@@ -42,6 +42,12 @@ type App struct {
 	// Tier orders a run: every app in a lower tier is published before a higher one
 	// starts. 0 for an app that requires nothing else in the catalog.
 	Tier int
+	// PipOverrides replace Python requirements this app declares, as full specifiers
+	// ("pycrdt>=0.14.4"). For an upstream pin that cannot be satisfied for the target
+	// — a version with no wheel for the run's interpreter, say — where the mirror
+	// cannot change the upstream source. Recorded in the package it produces.
+	PipOverrides []string
+
 	// BuildDeps pins the ref of another app this app's build reads off disk, by slug.
 	// helpdesk's own CI builds against FRAPPE_BRANCH=version-15, and its desk build
 	// reads ../../frappe/ui, so the newest frappe is the wrong source to hand it.
@@ -80,7 +86,7 @@ var catalogColumns = []string{
 // catalogOptionalColumns may be absent from a catalog. Everything in catalogColumns is
 // still required and an unknown column is still rejected, so a typo fails loudly; this
 // is only so adding a column does not invalidate every existing catalog.
-var catalogOptionalColumns = []string{"build_deps"}
+var catalogOptionalColumns = []string{"build_deps", "pip_overrides"}
 
 // CatalogOptions configures catalog validation behavior.
 type CatalogOptions struct {
@@ -237,6 +243,17 @@ func LoadCatalogWithOptions(path string, opts CatalogOptions) (*Catalog, error) 
 						return nil, rowErr("build_deps entry %q must be <slug>@<ref>", part)
 					}
 					app.BuildDeps[strings.TrimSpace(depSlug)] = strings.TrimSpace(ref)
+				}
+			}
+		}
+
+		// pip_overrides: "pycrdt>=0.14.4;av>=12"
+		if idx, ok := col["pip_overrides"]; ok {
+			if raw := strings.TrimSpace(record[idx]); raw != "" {
+				for _, part := range strings.Split(raw, ";") {
+					if part = strings.TrimSpace(part); part != "" {
+						app.PipOverrides = append(app.PipOverrides, part)
+					}
 				}
 			}
 		}
