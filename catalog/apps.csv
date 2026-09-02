@@ -1,7 +1,7 @@
 slug,repo,app_name,track,branch,branch_major,majors,bundle_deps,enabled,tier,build_deps,notes
 frappe,https://github.com/frappe/frappe,,,,,14;15;16,,false,,,"the framework itself: present in every bench image, and its assets come from bench build rather than an app frontend"
 erpnext,https://github.com/frappe/erpnext,,,,,16,,,,,
-hrms,https://github.com/frappe/hrms,,,,,14;15;16,,,1,,
+hrms,https://github.com/frappe/hrms,,,,,16,,,1,,"v16 only, like erpnext: the mirror vendors wheels for one --python-version per run (3.14), which is not what a v14/v15 bench runs, and hrms v15 needs an erpnext v15 that is published for python 3.11"
 payments,https://github.com/frappe/payments,,branch,develop,0,,,,,,no release tags upstream; tracked from develop
 builder,https://github.com/frappe/builder,,,,,,,,,,
 gameplan,https://github.com/frappe/gameplan,,branch,develop,0,,,,,,no release tags upstream; tracked from develop
