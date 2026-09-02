@@ -5,6 +5,12 @@ publishes. Only repositories under the official `frappe` GitHub organisation
 are accepted — the loader rejects anything else, so this registry never gives a
 third-party app a listing. Adding an app is a reviewed change to this file.
 
+The nightly mirror checks this file out from the **release** branch, not from `main` —
+publishing to the registries is a release activity. A catalog change therefore reaches
+the nightly when it lands on `release`. (The schedule itself is registered from the
+default branch, because GitHub only registers cron triggers there; a dispatch can point
+at another branch with the `catalog_ref` input.)
+
 Run it with:
 
 ```bash
