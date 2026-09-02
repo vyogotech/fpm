@@ -45,13 +45,34 @@ type Options struct {
 	// no candidate. Packaging runs with network access, so it defaults on there;
 	// installs never set it.
 	Remote bool
-	// Repo limits remote lookup to one configured repository name.
-	Repo string
+	// Repos limits resolution to the named configured repositories, tried in the
+	// order given. It is exclusive: neither the packaging host's store nor the bench
+	// answers a requirement when it is set, because a pin taken from ambient machine
+	// state while the caller asked for a repository is exactly what makes builds
+	// unreproducible. More than one names every backend a build publishes to, so a
+	// pin is found wherever it landed.
+	Repos []string
 	// BenchPath, when set, lets an app already present in that bench (installed
 	// outside fpm — bench get-app, or baked into an image) satisfy a requirement,
 	// pinned to the version its module declares. Consulted after the local store
-	// and before repositories.
+	// and before repositories, and not at all when Repo names one.
 	BenchPath string
+	// SkipLocalStore keeps the packaging host's own store out of resolution. The
+	// store holds whatever was packaged on this machine, whenever that happened,
+	// so a package that pins from it depends on when and where it was built.
+	// `fpm package` sets this for production packages unless the packager opts
+	// back in.
+	SkipLocalStore bool
+	// Overrides pin requirements outright, before any source is consulted. They
+	// come from `fpm package --requires org/app==version` (or a range), and are
+	// matched by app name, and by org when both name and override carry one.
+	Overrides []metadata.RequiredApp
+	// ReleaseLine records each resolved pin as its major release line
+	// (">=16.0.0-0,<17.0.0") rather than as one exact version, so a patch-level
+	// upgrade of a dependency does not invalidate every package built against it.
+	// The exact version resolved is still recorded, as what the package was built
+	// against.
+	ReleaseLine bool
 
 	// DefaultOrg is the organisation an unqualified requirement is looked up under
 	// when the repository publishes no index to answer "who publishes this app". An
@@ -82,10 +103,19 @@ func ResolveRequiredApps(entries []string, opts Options) ([]metadata.RequiredApp
 		seen[name] = true
 		org := apputils.ParseRequiredAppOrg(entry)
 
+		if pin, ok := opts.override(org, name); ok {
+			pin.Requirement = entry
+			pins = append(pins, pin)
+			continue
+		}
+
 		pin, err := resolveOne(name, org, opts)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("  %s (from required_apps entry %q): %v", name, entry, err))
 			continue
+		}
+		if opts.ReleaseLine {
+			pin.VersionSpec = semver.MajorLine(pin.Version)
 		}
 		pin.Requirement = entry
 		pins = append(pins, pin)
@@ -97,15 +127,63 @@ func ResolveRequiredApps(entries []string, opts Options) ([]metadata.RequiredApp
 	return pins, nil
 }
 
+// override returns the pin the caller stated for this requirement, if any.
+func (o Options) override(org, name string) (metadata.RequiredApp, bool) {
+	for _, ov := range o.Overrides {
+		if ov.Name != name {
+			continue
+		}
+		if ov.Org != "" && org != "" && ov.Org != org {
+			continue
+		}
+		pin := ov
+		if pin.Org == "" {
+			pin.Org = org
+		}
+		pin.ResolvedFrom = OverrideSource
+		return pin, true
+	}
+	return metadata.RequiredApp{}, false
+}
+
+// OverrideSource is the ResolvedFrom of a pin the packager stated outright.
+const OverrideSource = "flag:--requires"
+
+// UnmatchedOverrides names the overrides that matched no required_apps entry,
+// which is nearly always a typo in the flag rather than a deliberate no-op.
+func UnmatchedOverrides(entries []string, overrides []metadata.RequiredApp) []string {
+	declared := map[string]bool{}
+	for _, entry := range entries {
+		if name := apputils.ParseRequiredAppName(entry); name != "" {
+			declared[name] = true
+		}
+	}
+	var unused []string
+	for _, ov := range overrides {
+		if !declared[ov.Name] {
+			unused = append(unused, ov.Identifier())
+		}
+	}
+	return unused
+}
+
 func resolveOne(name, org string, opts Options) (metadata.RequiredApp, error) {
-	// Local store first: what is packaged locally is what an install can use.
-	if found, ok, err := latestInStore(opts.Cfg.AppsBasePath, org, name); err != nil {
-		return metadata.RequiredApp{}, err
-	} else if ok {
-		return found, nil
+	// A named repository is exclusive: it is the caller saying where pins come
+	// from, and consulting the machine's own store first would quietly override
+	// that with whatever this machine happens to hold.
+	exclusiveRepo := len(opts.Repos) > 0
+
+	// The local store is what an offline install can use, but it is also ambient
+	// machine state, so production packaging opts out of it.
+	if !exclusiveRepo && !opts.SkipLocalStore {
+		if found, ok, err := latestInStore(opts.Cfg.AppsBasePath, org, name); err != nil {
+			return metadata.RequiredApp{}, err
+		} else if ok {
+			return found, nil
+		}
 	}
 
-	if opts.BenchPath != "" {
+	if opts.BenchPath != "" && !exclusiveRepo {
 		if version, present := BenchAppVersion(opts.BenchPath, name); present {
 			benchOrg := org
 			if benchOrg == "" {
@@ -120,22 +198,23 @@ func resolveOne(name, org string, opts Options) (metadata.RequiredApp, error) {
 	}
 
 	if !opts.Remote {
-		if opts.BenchPath != "" {
-			return metadata.RequiredApp{}, fmt.Errorf("not found in local FPM store %s or bench %s", opts.Cfg.AppsBasePath, opts.BenchPath)
-		}
-		return metadata.RequiredApp{}, fmt.Errorf("not found in local FPM store %s", opts.Cfg.AppsBasePath)
+		return metadata.RequiredApp{}, fmt.Errorf("not found in %s", strings.Join(opts.sourcesConsulted(), " or "))
 	}
 
 	repos := config.ListRepositories(opts.Cfg)
-	if opts.Repo != "" {
-		r, ok := config.GetRepository(opts.Cfg, opts.Repo)
-		if !ok {
-			return metadata.RequiredApp{}, fmt.Errorf("repository %q is not configured", opts.Repo)
+	if exclusiveRepo {
+		repos = repos[:0]
+		for _, name := range opts.Repos {
+			r, ok := config.GetRepository(opts.Cfg, name)
+			if !ok {
+				return metadata.RequiredApp{}, fmt.Errorf("repository %q is not configured", name)
+			}
+			repos = append(repos, r)
 		}
-		repos = []config.RepositoryConfig{r}
 	}
 	if len(repos) == 0 {
-		return metadata.RequiredApp{}, fmt.Errorf("not found in local FPM store and no repositories are configured (use 'fpm repo add')")
+		return metadata.RequiredApp{}, fmt.Errorf("no repositories are configured to resolve it from (use 'fpm repo add', "+
+			"pin it with --requires %s==<version>, or point at a bench with --bench-path)", name)
 	}
 
 	var tried []string
@@ -150,7 +229,31 @@ func resolveOne(name, org string, opts Options) (metadata.RequiredApp, error) {
 		}
 		tried = append(tried, fmt.Sprintf("%s: not published", repo.Name))
 	}
-	return metadata.RequiredApp{}, fmt.Errorf("not found in local FPM store or any repository (%s)", strings.Join(tried, "; "))
+	return metadata.RequiredApp{}, fmt.Errorf("not found in %s (%s)",
+		strings.Join(opts.sourcesConsulted(), " or "), strings.Join(tried, "; "))
+}
+
+// sourcesConsulted names, for an error message, the places resolution actually
+// looked — which the flags change, so a bare "not in the local store" would be
+// misleading.
+func (o Options) sourcesConsulted() []string {
+	if len(o.Repos) > 0 {
+		return []string{"repository " + strings.Join(o.Repos, " or ")}
+	}
+	var sources []string
+	if !o.SkipLocalStore {
+		sources = append(sources, "local FPM store "+o.Cfg.AppsBasePath)
+	}
+	if o.BenchPath != "" {
+		sources = append(sources, "bench "+o.BenchPath)
+	}
+	if o.Remote {
+		sources = append(sources, "any configured repository")
+	}
+	if len(sources) == 0 {
+		return []string{"any enabled source (all sources were disabled)"}
+	}
+	return sources
 }
 
 // BenchAppVersion reports whether a bench has an app (apps/<name>/<name>/hooks.py)
@@ -313,7 +416,8 @@ func latestInRepo(repo config.RepositoryConfig, org, name string, opts Options) 
 		return metadata.RequiredApp{}, false, nil
 	}
 	return metadata.RequiredApp{
-		Name: name, Org: org, Version: version, ResolvedFrom: "repo:" + repo.Name,
+		Name: name, Org: org, Version: version,
+		ResolvedFrom: "repo:" + repo.Name, ResolvedFromURL: repo.URL,
 	}, true, nil
 }
 
@@ -391,11 +495,21 @@ func CheckClosure(appsBasePath, benchPath string, apps []metadata.RequiredApp, r
 			}
 			visited[key] = true
 
+			// A requirement carrying a constraint is satisfied by any version in
+			// the store that meets it, preferring the one the package was built
+			// against; an exact pin (or an old package with no constraint at all)
+			// keeps its historic meaning.
+			available := StoreVersions(appsBasePath, org, app.Name)
 			version := app.Version
-			if version == "" {
+			switch {
+			case app.VersionSpec != "":
+				if version == "" || !InStore(appsBasePath, org, app.Name, version) {
+					version = app.Constraint().Select(available)
+				}
+			case version == "":
 				// An unpinned requirement (packaged by an older fpm) accepts the
 				// latest version present.
-				version = semver.Latest(StoreVersions(appsBasePath, org, app.Name))
+				version = semver.Latest(available)
 			}
 			present := org != "" && version != "" && InStore(appsBasePath, org, app.Name, version)
 			resolved := metadata.RequiredApp{Name: app.Name, Org: org, Version: version, Requirement: app.Requirement}
@@ -403,30 +517,44 @@ func CheckClosure(appsBasePath, benchPath string, apps []metadata.RequiredApp, r
 
 			if !present && benchPath != "" {
 				if benchVersion, inBench := BenchAppVersion(benchPath, app.Name); inBench {
-					if app.Version == "" || benchVersion == app.Version {
+					if app.Accepts(benchVersion) {
 						resolved.Version = benchVersion
 						closure = append(closure, ClosureEntry{App: resolved, RequiredBy: by, Present: true,
 							StorePath: filepath.Join(benchPath, "apps", app.Name), ProvidedByBench: true})
 						continue
 					}
-					missing = append(missing, Missing{App: resolved, RequiredBy: by,
-						Reason: fmt.Sprintf("bench has %s version %q but the package was built against version %q, and no package of that version is in the local FPM store",
-							app.Name, benchVersion, app.Version)})
+					unsatisfied := app.Version
+					if app.VersionSpec != "" {
+						unsatisfied = app.VersionSpec
+					}
+					missing = append(missing, Missing{App: unresolvedPin(app, org), RequiredBy: by,
+						Reason: fmt.Sprintf("bench has %s version %q but the package requires %q, and no package satisfying that is in the local FPM store",
+							app.Name, benchVersion, unsatisfied)})
 					continue
 				}
 			}
 
 			if !present {
-				reason := fmt.Sprintf("not in local FPM store (expected %s)", storePath)
-				if org == "" {
+				want := app.VersionSpec
+				if want == "" {
+					want = version
+				}
+				var reason string
+				switch {
+				case org == "":
 					reason = "not in local FPM store under any org"
-				} else if avail := StoreVersions(appsBasePath, org, app.Name); len(avail) > 0 {
-					reason = fmt.Sprintf("version %s not in local FPM store (have %s)", version, strings.Join(avail, ", "))
+				case len(available) > 0:
+					reason = fmt.Sprintf("no version satisfying %s in local FPM store (have %s)", want, strings.Join(available, ", "))
+				case want != "":
+					reason = fmt.Sprintf("no version satisfying %s in local FPM store (%s holds none)",
+						want, filepath.Join(appsBasePath, org, app.Name))
+				default:
+					reason = fmt.Sprintf("not in local FPM store (expected %s)", storePath)
 				}
 				if benchPath != "" {
 					reason += ", nor in bench " + benchPath
 				}
-				missing = append(missing, Missing{App: resolved, RequiredBy: by, Reason: reason})
+				missing = append(missing, Missing{App: unresolvedPin(app, org), RequiredBy: by, Reason: reason})
 				continue
 			}
 
@@ -448,6 +576,16 @@ func CheckClosure(appsBasePath, benchPath string, apps []metadata.RequiredApp, r
 		return nil, nil, err
 	}
 	return closure, missing, nil
+}
+
+// unresolvedPin describes a requirement that could not be satisfied: it keeps the
+// constraint (so the message says what was needed) and the version the package was
+// built against (so a fetch has something concrete to ask a repository for).
+func unresolvedPin(app metadata.RequiredApp, org string) metadata.RequiredApp {
+	return metadata.RequiredApp{
+		Name: app.Name, Org: org, Version: app.Version,
+		VersionSpec: app.VersionSpec, Requirement: app.Requirement,
+	}
 }
 
 // MissingError renders a hard error for an install that cannot proceed.

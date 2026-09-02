@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"fpm/internal/appstore"
 	"fpm/internal/config"
@@ -187,6 +189,7 @@ func copyIntoBundle(src, outDir, org, app, version, requiredBy string) (BundleEn
 func resolveTransitiveDeps(cfg *config.FPMConfig, requiredApps []metadata.RequiredApp, rootID, benchPath, repoName string, remote bool) ([]resolver.ClosureEntry, error) {
 	var closure []resolver.ClosureEntry
 	var err error
+	previous := ""
 	for attempt := 0; ; attempt++ {
 		var missing []resolver.Missing
 		closure, missing, err = resolver.CheckClosure(cfg.AppsBasePath, benchPath, requiredApps, rootID)
@@ -199,6 +202,14 @@ func resolveTransitiveDeps(cfg *config.FPMConfig, requiredApps []metadata.Requir
 		if !remote || attempt >= 32 {
 			return nil, resolver.MissingError(rootID, missing)
 		}
+		// A fetch that leaves the same requirements unsatisfied — a repository whose
+		// only published version falls outside the constraint, say — would otherwise
+		// download the same package over and over until the attempt limit.
+		signature := missingSignature(missing)
+		if signature == previous {
+			return nil, resolver.MissingError(rootID, missing)
+		}
+		previous = signature
 		for _, m := range missing {
 			if err := fetchIntoStore(cfg, m.App, repoName); err != nil {
 				return nil, fmt.Errorf("%w: %s (required by %s): %v", resolver.ErrMissing, m.App.Identifier(), m.RequiredBy, err)
@@ -206,6 +217,17 @@ func resolveTransitiveDeps(cfg *config.FPMConfig, requiredApps []metadata.Requir
 		}
 	}
 	return closure, nil
+}
+
+// missingSignature identifies a set of unsatisfied requirements, so a fetch round
+// that changed nothing can be told from one that made progress.
+func missingSignature(missing []resolver.Missing) string {
+	parts := make([]string, 0, len(missing))
+	for _, m := range missing {
+		parts = append(parts, m.App.Identifier()+"|"+m.Reason)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\n")
 }
 
 // fetchIntoStore downloads a required package from the configured repositories (or

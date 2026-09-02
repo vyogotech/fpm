@@ -114,8 +114,18 @@ fpm package --version 1.0.0 --org myorg [--app-name my_app]
   [Frontends that read the bench](#frontends-that-read-the-bench))
 - `--no-bench-scaffold`: fail rather than build a bench-resolving frontend against a
   synthesized config
-- `--repo`: repository to resolve `required_apps` against (default: local store, then every
-  configured repository)
+- `--allow-unbuilt-assets`: package a prod app whose esbuild entry points nothing compiled
+  (it installs, but its desk UI does not render until the bench builds it)
+- `--repo`: repository to resolve `required_apps` against, **exclusively** — neither this
+  host's FPM store nor the bench answers a requirement when it is set. Repeatable, tried
+  in order, so a build publishing to several backends can pin from any of them
+- `--requires`: pin a required app outright instead of resolving it, e.g.
+  `--requires frappe/erpnext==16.30.0` or `--requires 'frappe/erpnext>=16.0.0,<17.0.0'`
+  (repeatable)
+- `--requires-from-local-store`: let a prod package pin `required_apps` from this host's
+  FPM store. The store is ambient state, so the package is then not reproducible
+- `--requires-exact`: record each resolved requirement as the one exact version it
+  resolved to, instead of that version's release line
 
 #### `fpm mirror`
 Bulk-build the catalog's apps and publish the versions the registries do not have yet.
@@ -190,9 +200,8 @@ cached, across runs. The scheduled workflow in `.github/workflows/mirror.yml` do
    tree that is not a Frappe app, which fails with exit code 3.
 2. The exact git commit is resolved and recorded as `commit_sha` (plus `git_ref`,
    `git_dirty`) in `app_metadata.json`.
-3. `required_apps` from `hooks.py` are resolved to pinned `org/app==version` packages
-   (local store first, then repositories) and recorded; an entry that cannot be resolved fails
-   packaging with exit code 5. Required apps are **not** bundled — see
+3. `required_apps` from `hooks.py` are resolved and recorded; an entry that cannot be
+   resolved fails packaging with exit code 5. Required apps are **not** bundled — see
    [Required apps](#required-apps).
 4. With `--bench-path`, assets are built; any build error fails packaging (exit code 4).
 5. The app's JavaScript frontend is compiled when the checkout declares one, and its output
@@ -201,6 +210,45 @@ cached, across runs. The scheduled workflow in `.github/workflows/mirror.yml` do
 
 **Exit codes:** `3` not a Frappe app · `4` asset build failed · `5` unresolved
 `required_apps` · `1` anything else.
+
+##### Where `required_apps` pins come from
+
+A pin decides which version of a shared app — `erpnext`, `payments` — this package
+demands, and a bench holds one copy of each app. Resolving that from the packaging
+host's own FPM store makes the answer depend on when and where the build ran: the same
+source, built on two machines, produces packages that cannot be co-installed. So a
+**prod** package resolves from a source you name:
+
+| Source | How |
+|---|---|
+| Stated outright | `--requires frappe/erpnext==16.30.0`, or a range |
+| A configured repository | `--repo <name>` (repeatable), or any configured repository by priority |
+| The bench being built against | `--bench-path <bench>` |
+| This host's store (not reproducible) | `--requires-from-local-store` |
+
+A `dev` package keeps using the local store — local iteration is what it is for.
+
+Each pin is recorded as the **release line** of the version it resolved to
+(`16.16.0` → `>=16.0.0-0,<17.0.0`), alongside the exact version it was built against
+and where that came from:
+
+```json
+"required_apps": [
+  {
+    "name": "erpnext", "org": "frappe",
+    "version": "16.16.0",
+    "version_spec": ">=16.0.0-0,<17.0.0",
+    "requirement": "frappe/erpnext",
+    "resolved_from": "repo:vyogo",
+    "resolved_from_url": "https://fpm.vyogo.tech"
+  }
+]
+```
+
+So a bench that has moved on to `erpnext 16.30.0` still satisfies this package, and two
+apps that both need `payments` no longer demand two different patch versions of it.
+`--requires-exact` restores one-version pinning; a package published before this
+recorded no `version_spec` and is still read as an exact pin.
 
 #### `fpm install`
 Install a Frappe application package with automatic transitive dependency resolution.
@@ -216,8 +264,20 @@ fpm install <org>/<app>==<version> --bench-path /path/to/bench [--site mysite.lo
 - `--dry-run`: compute and print the full installation plan and actions without mutating the bench
 - `--rollback`: automatically rollback bench state on mid-flight failure using transactional LIFO journals (default: true)
 - `--site`: also install the app onto a site, by running what `bench --site <site> install-app <app>` runs (`env/bin/python -m frappe.utils.bench_helper frappe …`)
+- `--no-site-repair`: do not re-run `install-app --force` when a site install leaves the app registered but its DocTypes unsynced; report it instead (exit code 11)
 - `--skip-required-apps-check`: do not fail when a required app is missing from the local store/bench
 - `--ignore-platform-mismatch`: do not fail when the vendored wheels target another platform or Python version
+
+**Installing onto a site (`--site`):**
+fpm changes `sites/apps.txt` from outside Frappe, while Frappe reads its app-to-modules
+map from a cache and only rebuilds it on a miss. A cache warmed before the install makes
+Frappe's `sync_for` iterate an empty module list — it syncs **no** DocTypes, silently —
+and the app's `after_install` hook then fails on its own missing DocTypes, leaving the
+site registered but empty. So fpm clears the site cache **before** `install-app`, then
+verifies the app's DocTypes actually reached the database and repairs that state by
+re-running `install-app --force` in a fresh process. If the repair does not work, the
+install fails with exit code `11` and names `bench --site <site> migrate` as the fix,
+rather than reporting a generic failure.
 
 **Pre-install checks & Transitive Resolution:**
 - By default, FPM traverses `required_apps` (and any nested requirements), fetches missing packages from configured repositories (HTTP or OCI) into the local store, and installs them in deepest-first topological order.
@@ -393,8 +453,15 @@ format, branch-tracked apps, and per-app asset-build scripts.
 
 **Flags:** `--apps` (slug filter), `--dry-run` (+ `--json`), `--skip-publish`,
 `--output-path` (default `dist`), `--report <file.json>`, `--cache-dir`,
-`--no-clean`. Exit codes: 0 clean, 1 when any app failed, 2 on
-configuration/catalog errors.
+`--no-clean`, `--frappe-ref` (the frappe branch whose esbuild compiles desk assets,
+default `version-16`), `--allow-unbuilt-assets`. Exit codes: 0 clean, 1 when any app
+failed, 2 on configuration/catalog errors.
+
+Every app with esbuild entry points is packaged with its desk bundles **compiled**: the
+workspace is already bench-shaped, so the mirror materialises frappe's checkout beside the
+app and packages against it (see [Assets](#assets)). An app whose bundles cannot be
+compiled fails rather than publishing a package that installs and renders nothing;
+`--allow-unbuilt-assets` restores the older, quieter behaviour.
 
 ## 🏢 Deploy Your Own Repository
 
@@ -488,6 +555,19 @@ my-app-1.0.0.fpm
 where Frappe leaves it: `<app>/public/dist/{js,css,css-rtl}/<name>.bundle.<HASH>.*`. The
 resulting manifest entries are recorded as `asset_bundles` in `app_metadata.json`. Any build
 error fails packaging; there is no silent source-only fallback.
+
+**A prod package will not ship an uncompiled desk UI.** An app that declares esbuild entry
+points (`<app>/public/**/*.bundle.{js,ts,css,scss}`) and carries no `public/dist` installs
+cleanly and then renders nothing — a bench that installs from a package never runs a build.
+Packaging such an app as `prod` fails with exit code 4 and says how to build it;
+`--allow-unbuilt-assets` publishes one deliberately, and a `dev` package only warns.
+
+**The bench does not need a virtualenv.** Frappe's asset pipeline is node — its python
+layer only resolves paths and links `sites/assets` — so a bench-shaped directory holding
+frappe's checkout beside the app is enough: fpm links the assets directories itself and
+runs `node esbuild --production --apps <app>` from `apps/frappe`. That is what lets
+`fpm mirror` compile the catalogue's assets in its own build workspace without installing
+Frappe. A real bench (one with `env/bin/python`) still goes through `bench build` as before.
 
 Frappe apps are built from inside `<bench>/apps/`: their frontends locate the bench from
 their own path (erpnext's `banking/`, hrms's `frontend/` read `../../../sites/…`). So a
@@ -618,20 +698,26 @@ already built yourself, or a deliberately source-only package.
 shared dependency such as erpnext would otherwise be duplicated inside every custom app.
 Instead:
 
-- `fpm package` resolves each entry (frappe excepted) to an exact published package —
-  local store first, then configured repositories — and records it in `app_metadata.json`
-  as `required_apps: [{org, name, version, requirement}]`. Unresolvable entries fail
-  packaging (exit 5). Entry names are parsed like Frappe's own installer does
+- `fpm package` resolves each entry (frappe excepted) to a published package and records
+  it in `app_metadata.json` as
+  `required_apps: [{org, name, version, version_spec, requirement, resolved_from}]`. The
+  source is one you name — `--requires`, `--repo`, or `--bench-path` — since the packaging
+  host's own store is ambient state (see
+  [Where required_apps pins come from](#where-required_apps-pins-come-from)). Unresolvable
+  entries fail packaging (exit 5). Entry names are parsed like Frappe's own installer does
   (`erpnext`, `frappe/erpnext`, a git URL, `…@branch` all name `erpnext`).
-- `fpm install` walks the transitive closure and requires every pin to be present in the
-  local FPM store; missing ones are a hard error (exit 6), never a fetch. Install packages
-  in dependency order.
+- `fpm install` walks the transitive closure and requires every requirement to be
+  satisfied from the local FPM store — any version in the recorded release line, or the
+  exact version when the package pinned one; missing ones are a hard error (exit 6), never
+  a fetch. Install packages in dependency order.
 - **Apps already in the bench count.** A required app that the bench itself provides —
   installed with `bench get-app`, or baked into an image such as the ERPNext single-node
-  one — satisfies the requirement when its module's `__version__` matches the pin (or the
-  pin is unversioned); it is never reinstalled, and its own requirements are the bench's
-  concern. At package time, `--bench-path` resolves entries against the build bench's apps
-  the same way (after the local store, before repositories), so packaging hrms inside an
+  one — satisfies the requirement when its module's `__version__` satisfies the pin (any
+  version in the recorded release line, or the exact one for an exact pin, or anything when
+  the requirement is unversioned); it is never reinstalled, and its own requirements are the
+  bench's concern. At package time, `--bench-path` resolves entries against the build
+  bench's apps the same way (after the local store when that is in play, before
+  repositories), so packaging hrms inside an
   ERPNext image pins `frappe/erpnext==<that erpnext's version>` without erpnext ever being
   packaged. `fpm deps --bench-path <bench>` shows which requirements a bench provides.
 - `fpm deps` shows the closure and what is missing; `fpm exists` and published
@@ -700,6 +786,13 @@ install them by default.
 Bundling needs `python3` with `pip` on PATH at packaging time. If a dependency publishes
 no wheel for the target platform, packaging fails rather than producing a package that
 cannot install offline; `--bundle-deps=false` packages without them.
+
+**The vendored set is verified to be a complete closure.** After downloading, packaging
+re-resolves the same requirements against nothing but the wheels it just wrote — with
+`--no-index --find-links wheels/`, which is exactly what the bench runs — so a dependency
+of a dependency that never got downloaded fails the build, naming what is missing, instead
+of shipping a package whose offline install breaks on the target. `fpm mirror` falls back
+to publishing that app without bundled wheels and records it as `published-nodeps`.
 
 Installing a package that bundles `wheels/` pins pip to that directory
 (`--no-index --find-links wheels/`), so **no network access is required**. Packages

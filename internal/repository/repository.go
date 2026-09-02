@@ -70,6 +70,10 @@ type RequiredApp struct {
 	Org     string `json:"org,omitempty"`
 	AppName string `json:"appName"`
 	Version string `json:"version,omitempty"`
+	// VersionSpec is the constraint an install must satisfy, e.g.
+	// ">=16.0.0-0,<17.0.0". Empty means Version is required exactly, which is how
+	// every package published before constraints existed reads.
+	VersionSpec string `json:"version_spec,omitempty"`
 }
 
 // DependenciesFrom converts a manifest's dependency map into published
@@ -118,7 +122,7 @@ func RequiredAppsFrom(apps []metadata.RequiredApp) []RequiredApp {
 	}
 	out := make([]RequiredApp, 0, len(apps))
 	for _, a := range apps {
-		out = append(out, RequiredApp{Org: a.Org, AppName: a.Name, Version: a.Version})
+		out = append(out, RequiredApp{Org: a.Org, AppName: a.Name, Version: a.Version, VersionSpec: a.VersionSpec})
 	}
 	return out
 }

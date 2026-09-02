@@ -3,6 +3,7 @@ package wheels
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -281,4 +282,81 @@ func TestIsUniversalWheel(t *testing.T) {
 			t.Fatalf("IsUniversalWheel(%q) = %v, want %v", file, got, want)
 		}
 	}
+}
+
+// TestVerifyCommandCrossPlatform: the check re-resolves with the same target pins but
+// nothing except the vendored directory to resolve from. That is what the bench does.
+func TestVerifyCommandCrossPlatform(t *testing.T) {
+	target := Target{Platforms: []string{"manylinux2014_aarch64"}, PythonVersion: "3.14"}
+	cmd := VerifyCommand("python3", "/stage/wheels/fpm-requirements.txt", "/stage/wheels", "/tmp/verify", target)
+
+	joined := cmd.String()
+	for _, want := range []string{
+		"-m pip download",
+		"-r /stage/wheels/fpm-requirements.txt",
+		"-d /tmp/verify",
+		"--no-index",
+		"--find-links /stage/wheels",
+		"--only-binary=:all:",
+		"--platform manylinux2014_aarch64",
+		"--platform manylinux_2_28_aarch64",
+		"--python-version 3.14",
+		"--implementation cp",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("VerifyCommand missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+// TestVerifyCommandHost keeps a host package's sdists usable: the bench's own pip can
+// build them at install time, so the check must not force binaries only.
+func TestVerifyCommandHost(t *testing.T) {
+	cmd := VerifyCommand("python3", "/stage/wheels/fpm-requirements.txt", "/stage/wheels", "/tmp/verify", Target{})
+	joined := cmd.String()
+	if !strings.Contains(joined, "--no-index") || !strings.Contains(joined, "--find-links /stage/wheels") {
+		t.Fatalf("host verification must still resolve offline only:\n%s", joined)
+	}
+	if strings.Contains(joined, "--only-binary") || strings.Contains(joined, "--platform") {
+		t.Fatalf("host verification must not pin a cross-target:\n%s", joined)
+	}
+}
+
+// TestVerifyOfflineClosureReportsTheMissingDistribution is issue #9's second half: a
+// wheels directory missing a transitive dependency (regex, pulled in by nltk) must fail
+// packaging with the name of what is missing, not install cleanly and break on a bench.
+func TestVerifyOfflineClosureReportsTheMissingDistribution(t *testing.T) {
+	python := fakePip(t, `ERROR: Could not find a version that satisfies the requirement regex>=2021.8.3 (from nltk)
+ERROR: No matching distribution found for regex>=2021.8.3`, 1)
+
+	err := verifyOfflineClosure(python, "/stage/wheels/fpm-requirements.txt", "/stage/wheels",
+		Target{Platforms: []string{"manylinux2014_x86_64"}, PythonVersion: "3.11"})
+	if err == nil {
+		t.Fatal("an incomplete closure must fail packaging")
+	}
+	for _, want := range []string{"regex>=2021.8.3", "complete dependency closure", "--bundle-deps=false"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error should mention %q, got:\n%v", want, err)
+		}
+	}
+}
+
+// TestVerifyOfflineClosurePasses: a complete set is silent and does not fail the build.
+func TestVerifyOfflineClosurePasses(t *testing.T) {
+	python := fakePip(t, "Saved ./wheels/frappe-1.0.0-py3-none-any.whl", 0)
+	if err := verifyOfflineClosure(python, "/req.txt", "/wheels", Target{}); err != nil {
+		t.Fatalf("a complete closure must verify: %v", err)
+	}
+}
+
+// fakePip writes an executable standing in for the python interpreter pip is driven
+// through, so the verification logic is testable without pip or a network.
+func fakePip(t *testing.T, output string, exitCode int) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "python")
+	script := "#!/bin/sh\ncat <<'OUT'\n" + output + "\nOUT\nexit " + strconv.Itoa(exitCode) + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

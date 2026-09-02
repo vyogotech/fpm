@@ -148,3 +148,48 @@ func TestSaveAndLoadAppMetadata(t *testing.T) {
 		t.Errorf("Loaded metadata after save does not match original. Got %+v, want %+v", loadedMeta, metaToSave)
 	}
 }
+
+// TestRequiredAppConstraint covers how a recorded requirement is read back: a
+// constraint accepts a release line, an old exact pin keeps meaning exactly itself,
+// and a package built before pins existed accepts whatever is there.
+func TestRequiredAppConstraint(t *testing.T) {
+	line := RequiredApp{Name: "erpnext", Org: "frappe", Version: "16.16.0", VersionSpec: ">=16.0.0-0,<17.0.0"}
+	if !line.Accepts("16.30.0") || !line.Accepts("16.16.0") {
+		t.Fatalf("a version inside the line should be accepted")
+	}
+	if line.Accepts("15.120.0") || line.Accepts("17.0.0") {
+		t.Fatalf("a version outside the line should not be accepted")
+	}
+	if got, want := line.Identifier(), "frappe/erpnext>=16.0.0-0,<17.0.0"; got != want {
+		t.Fatalf("Identifier() = %q, want %q", got, want)
+	}
+	if got, want := line.Describe(), "frappe/erpnext>=16.0.0-0,<17.0.0 (built against 16.16.0)"; got != want {
+		t.Fatalf("Describe() = %q, want %q", got, want)
+	}
+
+	exact := RequiredApp{Name: "erpnext", Org: "frappe", Version: "16.16.0"}
+	if !exact.Accepts("16.16.0") || exact.Accepts("16.30.0") {
+		t.Fatalf("an exact pin accepts only itself")
+	}
+	if got, want := exact.Identifier(), "frappe/erpnext==16.16.0"; got != want {
+		t.Fatalf("Identifier() = %q, want %q", got, want)
+	}
+
+	// A pin whose version is not semver at all still matches itself, which is how
+	// git pseudo-versions published before constraints existed keep working.
+	odd := RequiredApp{Name: "payments", Version: "0.0.0-git.20260828.86fefa9faf"}
+	if !odd.Accepts("0.0.0-git.20260828.86fefa9faf") {
+		t.Fatalf("an exact pin must match itself verbatim")
+	}
+
+	unpinned := RequiredApp{Name: "erpnext"}
+	if !unpinned.Accepts("anything") {
+		t.Fatalf("an unpinned requirement accepts any version present")
+	}
+
+	// A malformed spec must not silently widen to "anything".
+	broken := RequiredApp{Name: "erpnext", Version: "16.16.0", VersionSpec: ">=oops"}
+	if broken.Accepts("15.0.0") || !broken.Accepts("16.16.0") {
+		t.Fatalf("a malformed constraint falls back to the exact version")
+	}
+}

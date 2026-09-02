@@ -26,19 +26,37 @@ Empty cells take the default.
 | `majors` | all tagged | semicolon-separated allowlist of major lines, e.g. `14;15;16` |
 | `bundle_deps` | `true` | set `false` for apps whose Python deps ship no wheels (`pip download --only-binary` would fail) |
 | `enabled` | `true` | set `false` to keep an app listed but unbuilt; say why in `notes` |
+| `tier` | `0` | build wave; every app in a lower tier is published before a higher one starts, so an app can pin the `required_apps` this run just published (hrms needs erpnext) |
+| `build_deps` | — | `<slug>@<ref>` pairs, `;`-separated, for another app's source this app's build reads off disk, e.g. `frappe@version-15`. Also selects the frappe whose esbuild compiles this app's desk assets, overriding `--frappe-ref` |
 | `notes` | — | free text; quote the cell if it contains commas |
 
-## Asset builds — `build/<slug>.sh`
+## Asset builds
 
-fpm never builds JS assets; it only packages a `compiled_assets/` directory
-that already exists in the source. If `catalog/build/<slug>.sh` exists, mirror
-runs it in the checkout root before packaging, with `npm_config_cache` and
+Every app is published with its assets **compiled**. A package that ships sources
+installs cleanly and then renders nothing, because a bench that installs from a package
+never runs a build — which is what made the published front-end packages unusable
+(issue #9).
+
+Two kinds of asset, built automatically:
+
+- **Desk bundles** — `<app>/public/**/*.bundle.{js,ts,css,scss}`, compiled by frappe's
+  own esbuild into `<app>/public/dist/`. The workspace is laid out as a bench, so mirror
+  materialises frappe's checkout beside the app and packages against it. The frappe ref
+  comes from this app's `build_deps` pin, else `--frappe-ref` (default `version-16`).
+- **App frontends** — the Vite SPA that crm, helpdesk, insights and friends build into
+  `<app>/public/frontend`, compiled by `fpm package` itself.
+
+An app whose assets cannot be compiled **fails** — isolated and reported — rather than
+publishing a package that installs and serves nothing. `fpm mirror --allow-unbuilt-assets`
+publishes it anyway when that is the deliberate choice.
+
+### Escape hatch — `build/<slug>.sh`
+
+If `catalog/build/<slug>.sh` exists, mirror runs it in the checkout root before
+packaging instead of the automatic build, with `npm_config_cache` and
 `YARN_CACHE_FOLDER` pointed at the shared build cache. The script's contract:
-**leave a `compiled_assets/` directory at the repo root**. A failing build
-script fails that app (isolated and reported) — there is no silent fallback to
-a source-only package once a script exists. Apps without a script publish
-source-only packages; `fpm install` then skips asset deployment and the bench
-builds assets as usual.
+**leave a `compiled_assets/` directory at the repo root**. A failing build script fails
+that app.
 
 ## Licensing
 

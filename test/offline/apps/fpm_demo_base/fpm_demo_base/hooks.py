@@ -5,6 +5,9 @@ app_description = "FPM Demo Base (fpm offline integration fixture)"
 app_email = "dev@example.com"
 app_license = "mit"
 required_apps = ["frappe"]
+# Runs after the app's DocTypes are synced onto a site — and fails loudly if they
+# were not, which is what issue #13 left behind.
+after_install = "fpm_demo_base.install.after_install"
 # Desk (logged-in) pages load these through sites/assets/assets.json.
 app_include_js = ["fpm_demo_base.bundle.js"]
 app_include_css = ["fpm_demo_base.bundle.css"]

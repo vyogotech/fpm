@@ -186,3 +186,57 @@ func writeBenchApp(t *testing.T, bench, name, version string) {
 	require.NoError(t, os.WriteFile(filepath.Join(module, "hooks.py"), []byte("app_name = \""+name+"\"\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(module, "__init__.py"), []byte("__version__ = \""+version+"\"\n"), 0o644))
 }
+
+// TestExportBundleWithAReleaseLine is the co-installation case from issue #14, through
+// the bundle command: hrms was built against erpnext 16.16.0 and the store has moved on
+// to 16.30.0. The requirement's release line accepts it, so the bundle ships the version
+// that is actually there instead of failing on a pin that no longer exists.
+func TestExportBundleWithAReleaseLine(t *testing.T) {
+	store := t.TempDir()
+	cfg := &config.FPMConfig{AppsBasePath: store}
+	storePackaged(t, store, metadata.AppMetadata{Org: "frappe", AppName: "erpnext", PackageVersion: "16.30.0"})
+	hrms := storePackaged(t, store, metadata.AppMetadata{Org: "frappe", AppName: "hrms", PackageVersion: "16.16.0",
+		RequiredApps: []metadata.RequiredApp{{
+			Name: "erpnext", Org: "frappe", Version: "16.16.0",
+			VersionSpec: ">=16.0.0-0,<17.0.0", Requirement: "frappe/erpnext",
+		}}})
+
+	out := filepath.Join(t.TempDir(), "hrms-bundle")
+	m, err := exportBundle(hrms, out, cfg, false, "", "")
+	require.NoError(t, err)
+
+	require.Len(t, m.InstallOrder, 2)
+	assert.Equal(t, "frappe/erpnext==16.30.0", m.InstallOrder[0].Identifier(),
+		"the bundle ships the version in the store, which the release line accepts")
+	assert.FileExists(t, filepath.Join(out, "erpnext-16.30.0.fpm"))
+
+	// Two apps built a day apart against different patch releases of the same
+	// dependency now bundle the one copy the bench can hold.
+	lms := storePackaged(t, store, metadata.AppMetadata{Org: "frappe", AppName: "lms", PackageVersion: "2.62.0",
+		RequiredApps: []metadata.RequiredApp{{
+			Name: "erpnext", Org: "frappe", Version: "16.29.0",
+			VersionSpec: ">=16.0.0-0,<17.0.0", Requirement: "frappe/erpnext",
+		}}})
+	out2 := filepath.Join(t.TempDir(), "lms-bundle")
+	m2, err := exportBundle(lms, out2, cfg, false, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, "frappe/erpnext==16.30.0", m2.InstallOrder[0].Identifier())
+}
+
+// TestExportBundleReleaseLineOutOfRange keeps the line meaningful: a store holding only
+// the previous major cannot satisfy it, and the error says what was needed.
+func TestExportBundleReleaseLineOutOfRange(t *testing.T) {
+	store := t.TempDir()
+	cfg := &config.FPMConfig{AppsBasePath: store}
+	storePackaged(t, store, metadata.AppMetadata{Org: "frappe", AppName: "erpnext", PackageVersion: "15.120.0"})
+	hrms := storePackaged(t, store, metadata.AppMetadata{Org: "frappe", AppName: "hrms", PackageVersion: "16.16.0",
+		RequiredApps: []metadata.RequiredApp{{
+			Name: "erpnext", Org: "frappe", Version: "16.16.0", VersionSpec: ">=16.0.0-0,<17.0.0",
+		}}})
+
+	_, err := exportBundle(hrms, filepath.Join(t.TempDir(), "bundle"), cfg, false, "", "")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, resolver.ErrMissing), "got %v", err)
+	assert.Contains(t, err.Error(), ">=16.0.0-0,<17.0.0")
+	assert.Contains(t, err.Error(), "have 15.120.0")
+}

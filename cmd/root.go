@@ -42,6 +42,11 @@ const (
 	ExitVersionConflict = 9
 	// ExitNotFound: the queried package does not exist (fpm exists).
 	ExitNotFound = 10
+	// ExitSiteHalfInstalled: the app reached the site but its DocTypes did not, and
+	// fpm could not repair it (fpm install --site). The bench is intact and the app
+	// is registered, so this is recoverable with 'bench --site <site> migrate' —
+	// which is why it is not just a generic failure.
+	ExitSiteHalfInstalled = 11
 )
 
 // ErrPlatformMismatch wraps install-time wheel/interpreter incompatibilities.
@@ -52,6 +57,10 @@ var ErrRolledBack = errors.New("installation failed and changes were rolled back
 
 // ErrVersionConflict wraps version conflicts with apps already present in the bench.
 var ErrVersionConflict = errors.New("version conflict with app in bench")
+
+// ErrSiteHalfInstalled wraps a site install that registered the app but left its
+// DocTypes unsynced.
+var ErrSiteHalfInstalled = errors.New("site install left the app without its DocTypes")
 
 // errNotFound wraps "does not exist" answers from fpm exists.
 var errNotFound = errors.New("package not found")
@@ -75,6 +84,8 @@ func ExitCodeFor(err error) int {
 		return ExitVersionConflict
 	case errors.Is(err, ErrRolledBack):
 		return ExitRolledBack
+	case errors.Is(err, ErrSiteHalfInstalled):
+		return ExitSiteHalfInstalled
 	case errors.Is(err, errNotFound):
 		return ExitNotFound
 	default:

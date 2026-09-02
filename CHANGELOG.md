@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`fpm install --site` no longer leaves a site half-installed** ([#13](https://github.com/vyogotech/fpm/issues/13)).
+  fpm changes `sites/apps.txt` from outside Frappe, while Frappe reads its app-to-modules
+  map from a cache and rebuilds it only on a miss. A cache warmed before the install made
+  Frappe's own `sync_for` iterate an empty module list — syncing **no** DocTypes, without
+  saying so — and the app's `after_install` hook then failed on its own missing DocTypes
+  (`ImportError: Module import failed for CRM Lead Status`), leaving the app registered on
+  a site that had none of its tables. fpm now clears the site cache **before**
+  `install-app`, verifies afterwards that the app's DocTypes reached the database, and
+  repairs that state by re-running `install-app --force` in a fresh process. An install
+  that cannot be repaired fails with the new exit code `11` and names
+  `bench --site <site> migrate` as the fix, instead of a generic failure — a caller gating
+  on the exit code can tell a recoverable half-install from a broken one. `--no-site-repair`
+  reports the state without touching it. (Frappe fixed its side in `92136994b`, on
+  `develop` only; every released version still needs this.)
+- **`fpm package` no longer pins `required_apps` from the packaging host's ambient store**
+  ([#14](https://github.com/vyogotech/fpm/issues/14)). The store holds whatever was
+  packaged on this machine, whenever that happened, so the same source built on two
+  machines produced packages demanding two different versions of a shared dependency — and
+  a bench holds one copy of each app, so those packages could not be co-installed. A
+  **prod** package now resolves from a source it is given: `--requires`, `--repo`, a
+  `--bench-path`, or a configured repository. `--requires-from-local-store` opts back into
+  the old behaviour, and `dev` packages are unchanged. `--repo` is now exclusive — it used
+  to be consulted *after* the local store, so it did not actually pin anything — and
+  repeatable, so a build publishing to several backends can pin from any of them.
+
+- **Packages no longer ship a desk UI that was never compiled**
+  ([#9](https://github.com/vyogotech/fpm/issues/9)). `fpm package` only builds assets
+  when given a bench, and without one it packaged whatever the checkout held — for a
+  fresh clone, bundle sources and no `public/dist`. Every front-end app in the published
+  catalogue installed cleanly and then rendered nothing, visible only as one line in the
+  install log. A prod package whose app declares esbuild entry points that nothing
+  compiled is now refused (exit code `4`), with `--allow-unbuilt-assets` to publish one
+  deliberately; a dev package warns.
+- **`fpm mirror` compiles desk assets** ([#9](https://github.com/vyogotech/fpm/issues/9)).
+  Its build workspace is already laid out as a bench, so it now materialises frappe's own
+  checkout beside the app and packages against it. No virtualenv is involved: frappe's
+  asset pipeline is node, and `fpm package --bench-path` now drives `esbuild` directly
+  when the bench has frappe's source but no python environment. `--frappe-ref` selects
+  the frappe branch (default `version-16`); the catalog's `build_deps` column overrides
+  it per app.
+- **Vendored wheels are verified to be a complete offline closure**
+  ([#9](https://github.com/vyogotech/fpm/issues/9)). Packaging re-resolves the app's
+  requirements against nothing but the wheels it just vendored — the same thing the bench
+  does with `pip install --no-index --find-links wheels` — so a missing transitive
+  dependency (`regex`, pulled in by `nltk`) fails the build with the name of what is
+  missing, instead of shipping a package whose offline install breaks days later. In a
+  mirror run the app falls back to publishing without bundled wheels, which the report
+  records as `published-nodeps`.
+
+### Added
+
+- `fpm package --requires '<org>/<app><constraint>'` pins a required app outright, as an
+  exact version (`==16.30.0`) or a range (`>=16.0.0,<17.0.0`). Repeatable; naming an app
+  the checkout does not require is an error rather than a silent no-op.
+- Resolved requirements are recorded as the **release line** of the version they resolved
+  to (`16.16.0` → `>=16.0.0-0,<17.0.0`) in a new `version_spec` field, so a patch upgrade
+  of erpnext no longer invalidates every package built against it, and two apps needing
+  the same dependency stay co-installable. The exact version built against is still
+  recorded, and `--requires-exact` keeps one-version pinning. Packages published before
+  this carry no `version_spec` and are still read as exact pins.
+- Each pin records where it came from — `resolved_from` (`local-store`, `bench:<path>`,
+  `repo:<name>`, `flag:--requires`) and `resolved_from_url` — so a package is auditable
+  after the fact.
+- `fpm mirror` pins `required_apps` against the registries it publishes to rather than
+  the build host's store, so a catalogue build no longer depends on the day it ran.
+- `fpm package --allow-unbuilt-assets` and `fpm mirror --allow-unbuilt-assets` publish an
+  app whose desk bundles were not compiled, which is what happened silently before.
+- `fpm mirror --frappe-ref` selects the frappe branch whose esbuild compiles the
+  catalogue's desk assets.
+- `fpm install --no-site-repair` reports a half-installed site instead of repairing it,
+  and exit code `11` distinguishes that state from a generic failure.
+
 ## [3.1.0] - 2026-08-28
 
 App icon packaging, license, and creator/owner metadata auto-extraction across FPM packages, repository catalogues, and OCI registries.

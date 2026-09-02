@@ -551,6 +551,13 @@ func inspectFPM(t *testing.T, fpmPath string, checkFn func(filesInArchive map[st
 // This is important for running packageCmd multiple times in tests.
 func resetPackageCmdFlags() {
 	packageCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		// A repeatable flag appends, so Set(DefValue) on one would add the literal
+		// "[]" as a value rather than clear it. Slices are emptied, not re-set.
+		if slice, ok := f.Value.(pflag.SliceValue); ok {
+			_ = slice.Replace(nil)
+			f.Changed = false
+			return
+		}
 		// For some flag types, Value.Set might not correctly reset to default if the
 		// default value string is complex (e.g. for slices or maps).
 		// The most reliable way to reset pflag values to their true defaults is often

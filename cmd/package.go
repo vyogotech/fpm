@@ -18,6 +18,7 @@ import (
 	"fpm/internal/gitutils"
 	"fpm/internal/metadata"
 	"fpm/internal/resolver"
+	"fpm/internal/semver"
 	"fpm/internal/wheels"
 
 	"github.com/spf13/cobra"
@@ -31,22 +32,26 @@ func validateFrappeAppStructure(sourceDir string, appName string) error {
 }
 
 var (
-	packageOutputPath       string
-	packageVersion          string
-	packageOverwrite        bool
-	packageType             string
-	packageSkipLocalInstall bool
-	packageBundleDeps       bool
-	packagePlatforms        []string
-	packagePythonVersion    string
-	packageImplementation   string
-	packageABIs             []string
-	packageBenchPath        string
-	packageBuildVerbose     bool
-	packageRepo             string
-	packageWithDeps         bool
-	packageBuildFrontend    bool
-	packageFrontendTimeout  time.Duration
+	packageOutputPath         string
+	packageVersion            string
+	packageOverwrite          bool
+	packageType               string
+	packageSkipLocalInstall   bool
+	packageBundleDeps         bool
+	packagePlatforms          []string
+	packagePythonVersion      string
+	packageImplementation     string
+	packageABIs               []string
+	packageBenchPath          string
+	packageBuildVerbose       bool
+	packageRepos              []string
+	packageRequires           []string
+	packageRequiresFromStore  bool
+	packageExactRequires      bool
+	packageAllowUnbuiltAssets bool
+	packageWithDeps           bool
+	packageBuildFrontend      bool
+	packageFrontendTimeout    time.Duration
 
 	packageFrontendSiteConfig string
 	packageNoBenchScaffold    bool
@@ -64,6 +69,14 @@ The package records the exact git commit it was built from, resolves the app's
 required_apps (hooks.py) to pinned packages, vendors Python dependencies as wheels
 for the destination platform (--platform/--python-version), and — with --bench-path —
 runs Frappe's own asset build so the package ships compiled JS/CSS.
+
+required_apps are pinned from a source you name — --requires, --repo, or the bench
+given by --bench-path — because the packaging host's own FPM store holds whatever
+was packaged on this machine, whenever that happened; a prod package pinned from it
+is not reproducible. Pass --requires-from-local-store to use it anyway. Each pin is
+recorded as the release line of the version it resolved to (>=16.0.0-0,<17.0.0), so
+a patch upgrade of a dependency does not invalidate this package and two apps
+needing the same dependency stay co-installable; --requires-exact pins one version.
 
 When the checkout declares a JavaScript frontend — the Vite SPA that apps such as
 frappe/crm, frappe/helpdesk and frappe/insights build into <app>/public/frontend and
@@ -238,12 +251,27 @@ By default, it also installs the packaged app to the local FPM app store.`,
 			if cfgErr != nil {
 				return fmt.Errorf("failed to initialize FPM configuration to resolve required_apps: %w", cfgErr)
 			}
+			overrides, ovErr := parseRequiresOverrides(packageRequires)
+			if ovErr != nil {
+				return ovErr
+			}
+			if unused := resolver.UnmatchedOverrides(requiredEntries, overrides); len(unused) > 0 {
+				return fmt.Errorf("--requires %s names an app this checkout does not require; "+
+					"%s declares required_apps = %v", strings.Join(unused, ", "), hooksFilePath, requiredEntries)
+			}
+			useLocalStore, srcErr := requiresSourcePolicy(cfg, meta.PackageType, requiredEntries, overrides)
+			if srcErr != nil {
+				return srcErr
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Resolving required_apps from hooks.py: %s\n", strings.Join(requiredEntries, ", "))
-			// Resolved against the local store, then the build bench (an app already
-			// there — from an image, say — pins to the version it carries), then
-			// repositories.
 			pins, resolveErr := resolver.ResolveRequiredApps(requiredEntries, resolver.Options{
-				Cfg: cfg, Remote: true, Repo: packageRepo, BenchPath: packageBenchPath,
+				Cfg: cfg, Remote: true, Repos: packageRepos, BenchPath: packageBenchPath,
+				Overrides:      overrides,
+				SkipLocalStore: !useLocalStore,
+				// Record the release line rather than one exact version, so a patch
+				// upgrade of a dependency does not invalidate this package and two
+				// packages needing the same dependency stay co-installable.
+				ReleaseLine: !packageExactRequires,
 				// An OCI registry publishes no index, so an unqualified entry like
 				// "erpnext" has nothing to resolve the org from. This package's own org
 				// is the right assumption.
@@ -257,8 +285,12 @@ By default, it also installs the packaged app to the local FPM app store.`,
 				meta.Dependencies = map[string]string{}
 			}
 			for _, pin := range pins {
-				meta.Dependencies[pin.Org+"/"+pin.Name] = pin.Version
-				fmt.Fprintf(cmd.OutOrStdout(), "  %s -> %s (%s)\n", pin.Requirement, pin.Identifier(), pin.ResolvedFrom)
+				constraint := pin.VersionSpec
+				if constraint == "" {
+					constraint = pin.Version
+				}
+				meta.Dependencies[pin.Org+"/"+pin.Name] = constraint
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s -> %s (%s)\n", pin.Requirement, pin.Describe(), pin.ResolvedFrom)
 			}
 		}
 
@@ -386,6 +418,16 @@ By default, it also installs the packaged app to the local FPM app store.`,
 			}
 		}
 
+		// --- Step 7d: refuse to ship a desk UI that was never compiled ---
+		// An app with esbuild entry points and no built bundles installs cleanly and
+		// then renders nothing, because there is no runtime build on a bench that
+		// installs from a package. That is what made every front-end package in the
+		// published catalogue unusable (issue #9), and it was only visible as a line
+		// in the install log.
+		if err := checkAssetsBuilt(cmd, meta, packageFrom); err != nil {
+			return err
+		}
+
 		// --- Step 8: archive ---
 		fmt.Printf("Packaging '%s' version '%s' from '%s'...\n", meta.PackageName, meta.PackageVersion, packageFrom)
 		err = archive.CreateFPMArchive(packageFrom, absOutputPath, meta, meta.PackageVersion, archive.Options{
@@ -424,7 +466,7 @@ By default, it also installs the packaged app to the local FPM app store.`,
 				return fmt.Errorf("failed to initialize FPM configuration for --with-deps: %w", err)
 			}
 			bundleDir := filepath.Join(absOutputPath, fmt.Sprintf("%s-%s-bundle", meta.AppName, meta.PackageVersion))
-			manifest, err := exportBundle(finalFpmFilePath, bundleDir, cfg, true, packageRepo, packageBenchPath)
+			manifest, err := exportBundle(finalFpmFilePath, bundleDir, cfg, true, firstOrEmpty(packageRepos), packageBenchPath)
 			if err != nil {
 				return fmt.Errorf("failed to export dependency bundle: %w", err)
 			}
@@ -465,6 +507,166 @@ func wheelTargetFromFlags(cmd *cobra.Command, packageType string) (wheels.Target
 		}
 	}
 	return target, nil
+}
+
+// parseRequiresOverrides turns `--requires org/app==16.30.0` (or a range, or a
+// bare name) into pins that resolution honours before consulting any source.
+func parseRequiresOverrides(values []string) ([]metadata.RequiredApp, error) {
+	var out []metadata.RequiredApp
+	seen := map[string]string{}
+	for _, raw := range values {
+		name, spec := semver.SplitRequirement(raw)
+		if name == "" {
+			return nil, fmt.Errorf("--requires %q names no app; expected [<org>/]<app>[==<version> | <range>]", raw)
+		}
+		org := ""
+		if parts := strings.SplitN(name, "/", 2); len(parts) == 2 {
+			org, name = strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		}
+		if name == "" {
+			return nil, fmt.Errorf("--requires %q names no app after the org", raw)
+		}
+		if previous, dup := seen[name]; dup {
+			return nil, fmt.Errorf("--requires names %s twice (%q and %q); it can only be pinned once", name, previous, raw)
+		}
+		seen[name] = raw
+
+		constraint, err := semver.ParseConstraint(spec)
+		if err != nil {
+			return nil, fmt.Errorf("--requires %q: %w", raw, err)
+		}
+		pin := metadata.RequiredApp{Name: name, Org: org}
+		if exact, isExact := constraint.ExactVersion(); isExact {
+			pin.Version = exact
+		} else if !constraint.Any() {
+			pin.VersionSpec = constraint.String()
+		}
+		out = append(out, pin)
+	}
+	return out, nil
+}
+
+// requiresSourcePolicy decides whether the packaging host's own FPM store may
+// answer a requirement, and refuses to guess for a production package.
+//
+// The store holds whatever happens to have been packaged on this machine, so a
+// prod package that pins from it is not reproducible: the same source, built on
+// another machine or on another day, produces a package demanding a different
+// version of its dependency — and a bench holds one copy of each app, so two
+// such packages cannot be co-installed. A production build therefore has to name
+// its source: a repository, the bench it targets, or the pin itself.
+func requiresSourcePolicy(cfg *config.FPMConfig, packageType string, entries []string, overrides []metadata.RequiredApp) (useLocalStore bool, err error) {
+	if packageRequiresFromStore {
+		return true, nil
+	}
+	if packageType != "prod" {
+		// A dev package is a local iteration artifact; the local store is the point.
+		return true, nil
+	}
+	if len(packageRepos) > 0 || packageBenchPath != "" {
+		return false, nil
+	}
+
+	// Every requirement pinned by hand needs no source at all.
+	pinned := map[string]bool{}
+	for _, ov := range overrides {
+		pinned[ov.Name] = true
+	}
+	var unpinned []string
+	for _, entry := range entries {
+		name := apputils.ParseRequiredAppName(entry)
+		if name == "" || name == resolver.FrappeAppName || pinned[name] {
+			continue
+		}
+		// Suggest the qualified name when hooks.py gave one, so the --requires in
+		// the message can be pasted as it stands.
+		if org := apputils.ParseRequiredAppOrg(entry); org != "" {
+			name = org + "/" + name
+		}
+		unpinned = append(unpinned, name)
+	}
+	if len(unpinned) == 0 {
+		return false, nil
+	}
+
+	if len(config.ListRepositories(cfg)) > 0 {
+		// A configured repository is a shared, auditable source, and the pin it
+		// yields is recorded with the repository it came from.
+		return false, nil
+	}
+
+	choices := [][2]string{
+		{fmt.Sprintf("--requires %s==<version>", unpinned[0]), "pin it exactly"},
+		{fmt.Sprintf("--requires '%s>=16.0.0,<17.0.0'", unpinned[0]), "accept a release line"},
+		{"--repo <name>", "resolve against a configured repository ('fpm repo add' first)"},
+		{"--bench-path <bench>", "pin to the bench this package is built against"},
+		{"--requires-from-local-store", "use this host's store anyway (not reproducible)"},
+		{"--package-type dev", "a development package, where the local store is the point"},
+	}
+	width := 0
+	for _, c := range choices {
+		if len(c[0]) > width {
+			width = len(c[0])
+		}
+	}
+	lines := make([]string, 0, len(choices))
+	for _, c := range choices {
+		lines = append(lines, fmt.Sprintf("  %-*s  %s", width, c[0], c[1]))
+	}
+
+	return false, fmt.Errorf("cannot pin required_apps (%s) for a prod package without a resolution source.\n"+
+		"The packaging host's local FPM store is ambient state — what it holds depends on when and where this build ran — "+
+		"so a package pinned from it is not reproducible and may not co-install with other packages needing the same app.\n"+
+		"Choose one:\n%s",
+		strings.Join(unpinned, ", "), strings.Join(lines, "\n"))
+}
+
+// checkAssetsBuilt fails a production package whose app declares esbuild entry points
+// that nothing compiled.
+//
+// `fpm package` only builds assets when it is given a bench (--bench-path), and
+// without one the package is created from whatever the checkout holds — which for a
+// fresh clone is sources and no dist. Such a package installs, links its assets
+// directory, and serves nothing: Frappe's desk loads the bundles named in
+// sites/assets/assets.json, and this package contributes none. A development package
+// is a different matter — it is iterated on inside a bench that can build — so it only
+// warns.
+func checkAssetsBuilt(cmd *cobra.Command, meta *metadata.AppMetadata, packageFrom string) error {
+	if len(meta.AssetBundles) > 0 {
+		return nil
+	}
+	moduleDir := filepath.Join(packageFrom, meta.AppName)
+	sources, err := benchbuild.BundleSources(moduleDir)
+	if err != nil || len(sources) == 0 {
+		return nil
+	}
+
+	shown := sources
+	if len(shown) > 3 {
+		shown = shown[:3]
+	}
+	summary := fmt.Sprintf("'%s' declares %d esbuild entry point(s) (%s) but the package carries no compiled bundles in %s/public/dist",
+		meta.AppName, len(sources), strings.Join(shown, ", "), meta.AppName)
+
+	if meta.PackageType != "prod" || packageAllowUnbuiltAssets {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s. Installing it will not render the app's desk UI until 'bench build --app %s' is run on the bench.\n",
+			summary, meta.AppName)
+		return nil
+	}
+	return fmt.Errorf("%w: %s.\n"+
+		"A bench that installs from a package does not build assets, so this package would install and then serve nothing.\n"+
+		"Build them by packaging against a bench (--bench-path <bench>, which runs frappe's own asset build), "+
+		"or pass --allow-unbuilt-assets to publish a package whose desk UI has to be built on the destination",
+		benchbuild.ErrBuildFailed, summary)
+}
+
+// firstOrEmpty is the first element of a repeatable flag's values, for the callees
+// that address one repository at a time.
+func firstOrEmpty(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }
 
 // isNotFoundErr reports whether a git/hooks lookup failed because the file simply
@@ -535,6 +737,10 @@ func init() {
 	packageCmd.Flags().DurationVar(&packageFrontendTimeout, "frontend-timeout", frontend.DefaultTimeout, "Time limit for the frontend dependency install and for the frontend build, each")
 	packageCmd.Flags().StringVar(&packageFrontendSiteConfig, "frontend-site-config", "", "A bench's sites/common_site_config.json to build the frontend against. Apps like frappe/crm compile socketio_port into their bundle; without this a default bench config is synthesized (see --help output during the build)")
 	packageCmd.Flags().BoolVar(&packageNoBenchScaffold, "no-bench-scaffold", false, "Fail instead of building a bench-resolving frontend in a temporary bench. Use when the package must be built only against a real bench (--bench-path or a checkout already at <bench>/apps/<app>)")
-	packageCmd.Flags().StringVar(&packageRepo, "repo", "", "Configured repository to resolve required_apps against (default: the local store, then every configured repository by priority)")
+	packageCmd.Flags().StringArrayVar(&packageRepos, "repo", nil, "Configured repository to resolve required_apps against, exclusively: neither this host's FPM store nor the bench answers a requirement when it is set. Repeatable, tried in order — name every backend the build publishes to")
+	packageCmd.Flags().BoolVar(&packageAllowUnbuiltAssets, "allow-unbuilt-assets", false, "Package a prod app that declares esbuild entry points even though nothing compiled them. The package installs but its desk UI does not render until the bench runs 'bench build'")
+	packageCmd.Flags().StringArrayVar(&packageRequires, "requires", nil, "Pin a required app outright instead of resolving it, e.g. --requires frappe/erpnext==16.30.0 or --requires 'frappe/erpnext>=16.0.0,<17.0.0'; repeatable")
+	packageCmd.Flags().BoolVar(&packageRequiresFromStore, "requires-from-local-store", false, "Allow a prod package to pin required_apps from this host's FPM store. The store is ambient state, so the resulting package is not reproducible; prod builds otherwise have to name a source (--requires/--repo/--bench-path)")
+	packageCmd.Flags().BoolVar(&packageExactRequires, "requires-exact", false, "Record each resolved required app as the one exact version it resolved to, instead of that version's release line (>=16.0.0-0,<17.0.0). Exact pins break co-installation when two apps need the same dependency")
 	packageCmd.Flags().BoolVar(&packageWithDeps, "with-deps", false, "Also write <output-path>/<app>-<version>-bundle/: this package plus every package it transitively requires (each once) with an install-order manifest, for 'fpm install <dir>' on an offline bench")
 }
