@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-09-02
+
+Three defects reported against published packages: sites left half-installed by
+`fpm install --site`, `required_apps` pinned from the packaging host's ambient state,
+and packages shipping a desk UI that was never compiled.
+
+**Breaking:** builds that used to succeed can now fail, on purpose. A production
+package must name where its `required_apps` pins come from (`--requires`, `--repo`,
+`--bench-path`, or a configured repository — `--requires-from-local-store` keeps the
+old behaviour), and one whose app declares esbuild entry points that nothing compiled
+is refused (`--allow-unbuilt-assets` to publish it anyway). `--repo` on `fpm package`
+is now exclusive and repeatable. Resolved requirements are recorded as a release line
+rather than one exact version; packages published before this carry no `version_spec`
+and are still read as exact pins.
+
 ### Fixed
 
 - **`fpm install --site` no longer leaves a site half-installed** ([#13](https://github.com/vyogotech/fpm/issues/13)).
