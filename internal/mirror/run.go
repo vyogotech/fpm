@@ -567,6 +567,11 @@ func (r *Runner) packageApp(item BuildItem, checkout, assetBench string) (artifa
 		// published before assets were compiled at all — and mark it, because such a
 		// package installs and then renders nothing.
 		r.Log("  desk asset build failed, retrying without compiled assets: %s", firstLine(errorExcerpt(out)))
+		// Debris from the failed build has to go, or it is packaged as if it were a
+		// deliberate prebuild: esbuild writes bundles one at a time and can leave a
+		// few behind before erroring on the next, and a partial set is worse than
+		// none — it is what the bench's assets.json would then advertise.
+		clearBuiltAssets(checkout, appNameOf(item), r.Log)
 		// The bench has to go with it: --allow-unbuilt-assets permits a package that
 		// carries no compiled bundles, but --bench-path is what runs the build in the
 		// first place, so keeping it would just fail the same way again.
@@ -582,6 +587,30 @@ func (r *Runner) packageApp(item BuildItem, checkout, assetBench string) (artifa
 		return "", false, false, fmt.Errorf("expected exactly one .fpm in %s, found %d", tmpOut, len(matches))
 	}
 	return matches[0], noDeps, noAssets, nil
+}
+
+// appNameOf is the app's module name: the catalog's override when it has one, and
+// otherwise the slug, which is what most of the catalog relies on.
+func appNameOf(item BuildItem) string {
+	if item.AppName != "" {
+		return item.AppName
+	}
+	return item.Slug
+}
+
+// clearBuiltAssets removes an app's compiled output from a checkout, so a package
+// made from it carries no half-built bundles.
+func clearBuiltAssets(checkout, appName string, log func(string, ...any)) {
+	if appName == "" {
+		return
+	}
+	dist := filepath.Join(checkout, appName, "public", "dist")
+	if _, err := os.Stat(dist); err != nil {
+		return
+	}
+	if err := os.RemoveAll(dist); err != nil && log != nil {
+		log("  could not clear the failed build's output at %s: %v", dist, err)
+	}
 }
 
 // withoutFlag returns args with one "--flag value" pair removed. The retry paths build
