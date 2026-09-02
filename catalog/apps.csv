@@ -10,7 +10,7 @@ wiki,https://github.com/frappe/wiki,,,,,,,,,,
 helpdesk,https://github.com/frappe/helpdesk,,,,,1,,false,,frappe@develop,"disabled: its desk build compiles frappe/ui's source in place, and that source imports frappe/ui's peerDependencies (@vueuse/core). Vite resolves those from the vite root (helpdesk/desk), not from the imported file, so they must be in the consumer's tree - which only happens inside a real bench where the whole apps/ directory is one hoisted install. Fetching frappe, pinning it to develop and installing frappe/ui's deps and peers all failed for this reason"
 crm,https://github.com/frappe/crm,,,,,,,,,,
 lms,https://github.com/frappe/lms,lms,,,,,,,,,
-drive,https://github.com/frappe/drive,,branch,develop,0,,,,,,"release tags stop at v0.3.0 and are long stale; develop is where the app is. The old tags also build with pnpm, which current drive no longer uses"
+drive,https://github.com/frappe/drive,,branch,develop,0,,,false,,,"disabled: drive pins pycrdt==0.12.26, which publishes no cp314 wheel (its newest linux build is cp313) and no abi3 wheel, so nothing can be vendored for the 3.14 target. pycrdt is a Rust extension, so its sdist cannot be cross-built either, and an unvendored package fails at install time where there is no Rust toolchain. Re-enable once upstream moves to pycrdt >=0.14.4, which does ship cp314 manylinux wheels. Release tags stop at v0.3.0 and are long stale; develop is where the app is, and the old tags build with pnpm, which current drive no longer uses"
 print_designer,https://github.com/frappe/print_designer,,,,,,,,,,
 webshop,https://github.com/frappe/webshop,,branch,develop,0,,,,1,,no release tags upstream; tracked from develop
 raven,https://github.com/The-Commit-Company/raven,,,,,,,,,,third party team messaging

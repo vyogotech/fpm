@@ -10,6 +10,7 @@ import (
 	"fpm/internal/config"
 	"fpm/internal/metadata"
 	"fpm/internal/repository"
+	"fpm/internal/semver"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -456,4 +457,51 @@ func TestCheckClosurePrefersTheVersionBuiltAgainst(t *testing.T) {
 	assert.Empty(t, missing)
 	require.Len(t, closure, 1)
 	assert.Equal(t, "16.16.0", closure[0].App.Version)
+}
+
+// TestUnversionedRequirementAcceptsTheBenchsOwnVersion is the failure that blocked lms
+// and webshop: both declare `required_apps = ["frappe/payments"]` with no version, and
+// payments is published as a branch pseudo-version (0.0.0-git.<date>.<sha>) while its
+// module declares __version__ = "0.0.1". An exact pin therefore demanded a version the
+// bench could never report, and both installs were refused — one cause, two failures.
+//
+// Recording the release line instead makes the pin say what the app actually declared:
+// any payments, since it asked for no version at all.
+func TestUnversionedRequirementAcceptsTheBenchsOwnVersion(t *testing.T) {
+	const published = "0.0.0-git.20260828.86fefa9faf"
+
+	// What `fpm package` records now for an unversioned requirement.
+	ranged := []metadata.RequiredApp{{
+		Name: "payments", Org: "frappe", Version: published,
+		VersionSpec: semver.MajorLine(published), Requirement: "frappe/payments",
+	}}
+	assert.Equal(t, ">=0.0.0-0,<1.0.0", ranged[0].VersionSpec)
+
+	bench := t.TempDir()
+	benchApp(t, bench, "payments", "0.0.1")
+	closure, missing, err := CheckClosure(t.TempDir(), bench, ranged, "frappe/lms==2.62.1")
+	require.NoError(t, err)
+	assert.Empty(t, missing, "the bench's own payments must satisfy a requirement that named no version")
+	require.Len(t, closure, 1)
+	assert.True(t, closure[0].ProvidedByBench)
+	assert.Equal(t, "0.0.1", closure[0].App.Version)
+
+	// The same requirement satisfied from the store, where payments is extracted under
+	// the pseudo-version it was published as.
+	store := t.TempDir()
+	storeApp(t, store, "frappe", "payments", published)
+	closure, missing, err = CheckLocalClosure(store, ranged, "frappe/lms==2.62.1")
+	require.NoError(t, err)
+	assert.Empty(t, missing)
+	require.Len(t, closure, 1)
+	assert.Equal(t, published, closure[0].App.Version)
+
+	// And what the published packages carry today, built before the release line: an
+	// exact pin, which is exactly what refused both installs.
+	exact := []metadata.RequiredApp{{Name: "payments", Org: "frappe", Version: published}}
+	_, missing, err = CheckClosure(t.TempDir(), bench, exact, "frappe/lms==2.62.1")
+	require.NoError(t, err)
+	require.Len(t, missing, 1, "an exact pin cannot be satisfied by the bench")
+	assert.Contains(t, missing[0].Reason, "0.0.1")
+	assert.Contains(t, missing[0].Reason, published)
 }
