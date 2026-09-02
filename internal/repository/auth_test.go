@@ -189,3 +189,30 @@ func TestDescribeAuthFailure(t *testing.T) {
 		t.Fatalf("guidance should name the password variable, got %q", msg)
 	}
 }
+
+// TestTooLargeGuidance: a 413 on publish almost never comes from fpm's own registry
+// (1 GiB) or its nginx (500 MB) but from a proxy in front, so the message has to point
+// at the thing that actually refused it. The catalogue hit this with a 101 MB package
+// behind a CDN whose request-body cap is 100 MB.
+func TestTooLargeGuidance(t *testing.T) {
+	err := &HTTPStatusError{URL: "https://registry.example/x.fpm", StatusCode: http.StatusRequestEntityTooLarge, Status: "413 Request Entity Too Large"}
+	if !IsTooLarge(err) {
+		t.Fatal("a 413 must be recognised as a size refusal")
+	}
+	if IsTooLarge(&HTTPStatusError{StatusCode: http.StatusUnauthorized}) {
+		t.Fatal("401 is not a size refusal")
+	}
+	if IsAuthFailure(err) {
+		t.Fatal("413 is not an auth failure")
+	}
+
+	msg := DescribeTooLarge("fpm-http", 106*(1<<20))
+	for _, want := range []string{"106.0 MB", "fpm-http", "proxy or CDN", "100 MB"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("guidance should mention %q, got: %s", want, msg)
+		}
+	}
+	if strings.Contains(DescribeTooLarge("r", 0), "MB)") {
+		t.Fatal("an unknown size must not be rendered")
+	}
+}
