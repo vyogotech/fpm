@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -102,17 +103,46 @@ func FetchRemotePackageMetadata(repoBaseURL, org, appName string, client *http.C
 	if err := json.Unmarshal(body, &pkgMeta); err != nil {
 		return nil, false, fmt.Errorf("failed to parse package-metadata.json from %s: %w. Body: %s", fullMetadataURL, err, string(body))
 	}
+	// Carried so a publish that adds a version to this document can write it back
+	// conditional on nothing else having written in between.
+	pkgMeta.SetSourceETag(resp.Header.Get("ETag"))
 	return &pkgMeta, true, nil
 }
+
+// uploadTimeout bounds a single upload request. A part of a split upload gets the
+// same budget as a whole small artifact.
+const uploadTimeout = 300 * time.Second
+
+// clientUserAgent identifies this client to a registry.
+const clientUserAgent = "fpm-client/0.1.0"
 
 // UploadHTTPFile uploads a single file using a specified HTTP method (e.g., "PUT" or "POST").
 // For POST, it uses multipart/form-data and `fileFieldName` is used. `additionalFields` can add more multipart fields.
 // For PUT, it sends raw file body and `contentTypeHeader` is used (e.g. "application/octet-stream").
 func UploadHTTPFile(targetURL, localFilePath, httpMethod, contentTypeHeader string, client *http.Client, fileFieldName string, additionalFields map[string]string) error {
 	if client == nil {
-		client = &http.Client{Timeout: time.Second * 300} // Longer timeout for uploads
+		client = &http.Client{Timeout: uploadTimeout} // Longer timeout for uploads
 	}
-	userAgent := "fpm-client/0.1.0"
+	userAgent := clientUserAgent
+
+	// An artifact too large for one request is uploaded as several. A registry that
+	// does not implement that answers the first call as an unknown request, and the
+	// single-request path below runs instead — which is also what keeps this client
+	// working against a registry that predates split uploads.
+	if httpMethod == http.MethodPut {
+		if info, statErr := os.Stat(localFilePath); statErr == nil && info.Size() > MultipartThreshold {
+			headers := map[string]string{"Content-Type": contentTypeHeader}
+			for k, v := range additionalFields {
+				headers[k] = v
+			}
+			err := UploadHTTPFileMultipart(targetURL, localFilePath, client, headers)
+			var unsupported *ErrMultipartUnsupported
+			if err == nil || !errors.As(err, &unsupported) {
+				return err
+			}
+			fmt.Printf("Registry does not support split uploads; sending %s as one request.\n", filepath.Base(localFilePath))
+		}
+	}
 
 	file, err := os.Open(localFilePath)
 	if err != nil {
@@ -237,6 +267,18 @@ func UploadPackageMetadata(repoBaseURL, org, appName string, metaToUpload *Packa
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Content-Type", "application/json")
 	req.ContentLength = int64(len(jsonData))
+	// This write is the moment a version becomes visible, and it is a read-modify-write:
+	// the caller fetched this document, spliced its version in, and is writing it back.
+	// Two publishes of different versions of one app would otherwise lose whichever
+	// wrote first — its artifact uploaded, and nothing left pointing at it. If-Match
+	// makes the registry refuse a write built on a document that has since changed.
+	if metaToUpload.sourceETag != "" {
+		req.Header.Set("If-Match", metaToUpload.sourceETag)
+	} else {
+		// Nothing was there when it was read, so nothing may be there now: this
+		// creates the document rather than replacing an unseen one.
+		req.Header.Set("If-None-Match", "*")
+	}
 
 	fmt.Printf("Uploading metadata for %s/%s to %s...\n", org, appName, fullMetadataURL)
 	resp, err := client.Do(req)
@@ -245,6 +287,11 @@ func UploadPackageMetadata(repoBaseURL, org, appName string, metaToUpload *Packa
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusPreconditionFailed {
+		// Someone else published to this app between the read and this write. The
+		// caller re-reads and re-applies rather than overwriting their version away.
+		return ErrMetadataChanged
+	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
 		respBodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return fmt.Errorf("failed to upload metadata to %s (status: %s). Response: %s", fullMetadataURL, resp.Status, string(respBodyBytes))
@@ -253,6 +300,20 @@ func UploadPackageMetadata(repoBaseURL, org, appName string, metaToUpload *Packa
 	fmt.Printf("Metadata for %s/%s uploaded successfully to %s.\n", org, appName, fullMetadataURL) // Log with path identifiers
 	return nil
 }
+
+// ErrMetadataChanged reports that a package's metadata changed between being read and
+// being written back, so the update was refused rather than applied on top of a
+// document that no longer exists.
+var ErrMetadataChanged = errors.New("package metadata changed since it was read")
+
+// SetSourceETag records the entity tag the metadata was read with, so writing it back
+// can be made conditional on nothing else having written in between. A registry that
+// serves no ETag leaves this empty and the write proceeds unconditionally, which is
+// how this stays compatible with one that does not support conditional writes.
+func (p *PackageMetadata) SetSourceETag(etag string) { p.sourceETag = etag }
+
+// SourceETag is the entity tag this metadata was read with, if any.
+func (p *PackageMetadata) SourceETag() string { return p.sourceETag }
 
 // FindPackageInSpecificRepo attempts to find and download a specific package version from a single named repository.
 // If requestedVersion is empty or "latest", it resolves to the latest version available.

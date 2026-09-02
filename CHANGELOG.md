@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Split uploads.** An artifact larger than 90 MB is published as several requests of
+  50 MB each and assembled by the registry, so a package is no longer capped by the
+  per-request limit of whatever sits in front of it — Cloudflare refuses a body over
+  100 MB on its Free and Pro plans, which is what has been failing `builder`. A
+  registry that does not implement the protocol answers the first call as an unknown
+  request and the client falls back to a single request, so this is safe against an
+  older registry.
+
+  Nothing about when a version becomes visible changes: a consumer discovers a version
+  by reading `package-metadata.json`, which is written only after the upload completes
+  and is small enough to always be one atomic request. Parts in flight are referenced
+  by nothing, an upload that never completes leaves the key as it was, and a failure
+  aborts the upload rather than leaving parts behind.
+
+- **Conditional metadata writes.** Publishing sends the entity tag the metadata was
+  read with (`If-Match`, or `If-None-Match: *` when creating), and re-reads and
+  re-applies its version when the registry refuses a stale write. Two publishes of one
+  app previously lost whichever wrote first — its artifact uploaded and nothing left
+  pointing at it. Split uploads widen that window from seconds to minutes, which is
+  why it is fixed alongside them. Bounded retries, so an app being published
+  continuously is reported rather than looped over.
+
 ### Changed
 
 - The catalogue mirror runs from the **release** branch: every job checks the catalog
