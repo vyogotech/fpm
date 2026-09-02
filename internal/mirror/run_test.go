@@ -1,6 +1,7 @@
 package mirror
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,7 +181,7 @@ func TestPackageArgsCarryTheAssetBench(t *testing.T) {
 	runner := &Runner{FPMBin: fpmBin, Workspace: ws, OutputPath: t.TempDir(), Log: func(string, ...any) {},
 		RepoNames: []string{"ghcr"}}
 
-	_, _, err = runner.packageApp(BuildItem{Slug: "wiki", Version: "3.0.0"}, t.TempDir(), "/cache/bench")
+	_, _, _, err = runner.packageApp(BuildItem{Slug: "wiki", Version: "3.0.0"}, t.TempDir(), "/cache/bench")
 	if err == nil {
 		t.Fatal("the stub fpm fails; packageApp must report it")
 	}
@@ -196,5 +197,97 @@ func TestPackageArgsCarryTheAssetBench(t *testing.T) {
 	}
 	if !strings.Contains(string(logged), "--repo ghcr") {
 		t.Fatalf("pins must be resolved against the registry this run publishes to: %s", logged)
+	}
+}
+
+// TestPackageAppRetriesWithoutAssets: an old tag whose stylesheets no longer compile
+// against the frappe this run builds with must not fail the whole app. It is published
+// the way every package was before assets were compiled at all — and marked, because
+// such a package installs and then renders nothing.
+func TestPackageAppRetriesWithoutAssets(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "args.log")
+	out := filepath.Join(dir, "out")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Fails with the asset-build contract (exit 4) unless told to allow unbuilt assets.
+	fpmBin := filepath.Join(dir, "fpm")
+	script := `#!/bin/sh
+echo "$@" >> ` + logPath + `
+case "$*" in
+  *--allow-unbuilt-assets*)
+    d=$(echo "$@" | tr ' ' '\n' | grep -A0 '^/.*fpm-mirror' | head -1)
+    for a in "$@"; do case "$a" in /*fpm-mirror*) d="$a";; esac; done
+    : > "$d/wiki-1.0.0.fpm"
+    exit 0
+    ;;
+esac
+echo "Error: asset build failed: frappe build for 'wiki' exited with error" >&2
+exit 4
+`
+	if err := os.WriteFile(fpmBin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := NewWorkspace(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logged []string
+	runner := &Runner{FPMBin: fpmBin, Workspace: ws, OutputPath: out,
+		Log: func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }}
+
+	artifact, noDeps, noAssets, err := runner.packageApp(
+		BuildItem{Slug: "wiki", Version: "1.0.0", BundleDeps: false}, t.TempDir(), "/cache/bench")
+	if err != nil {
+		t.Fatalf("an app whose assets cannot be compiled should still package: %v", err)
+	}
+	if !noAssets {
+		t.Fatal("the package must be marked as shipping no compiled assets")
+	}
+	if noDeps {
+		t.Fatal("wheels were not the problem")
+	}
+	if artifact == "" {
+		t.Fatal("no artifact returned")
+	}
+	if !strings.Contains(strings.Join(logged, "\n"), "retrying without compiled assets") {
+		t.Fatalf("the retry must be reported: %v", logged)
+	}
+}
+
+// TestPackageAppKeepsOtherFailuresFatal: only an asset-build failure degrades. Anything
+// else is a real failure and must not be published in a lesser form.
+func TestPackageAppKeepsOtherFailuresFatal(t *testing.T) {
+	dir := t.TempDir()
+	fpmBin := filepath.Join(dir, "fpm")
+	if err := os.WriteFile(fpmBin, []byte("#!/bin/sh\necho 'Error: something else broke' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := NewWorkspace(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{FPMBin: fpmBin, Workspace: ws, OutputPath: t.TempDir(), Log: func(string, ...any) {}}
+
+	_, _, noAssets, err := runner.packageApp(
+		BuildItem{Slug: "wiki", Version: "1.0.0"}, t.TempDir(), "/cache/bench")
+	if err == nil {
+		t.Fatal("a non-asset failure must stay fatal")
+	}
+	if noAssets {
+		t.Fatal("nothing was published, so nothing can be marked")
+	}
+}
+
+func TestIsAssetBuildFailure(t *testing.T) {
+	if !isAssetBuildFailure("Error: asset build failed: frappe build for 'wiki' exited") {
+		t.Fatal("the message form must be recognised")
+	}
+	if !isAssetBuildFailure("fpm: exit status 4") {
+		t.Fatal("the exit code contract must be recognised")
+	}
+	if isAssetBuildFailure("Error: required app could not be resolved") {
+		t.Fatal("an unrelated failure must not degrade the package")
 	}
 }

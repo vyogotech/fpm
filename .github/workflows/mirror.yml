@@ -340,7 +340,7 @@ jobs:
           # there, must answer to a metadata query.
           REPORT="$REPORT" python3 - > /tmp/to-verify <<'EXTRACT'
           import json, os
-          live = {"published", "published-nodeps", "skipped-exists"}
+          live = {"published", "published-nodeps", "published-noassets", "skipped-exists"}
           for r in json.load(open(os.environ["REPORT"])):
               if r.get("action") in live:
                   print(r.get("app_name") or r["slug"], r["version"])
@@ -569,7 +569,7 @@ jobs:
           # there, must answer to a metadata query.
           REPORT="$REPORT" python3 - > /tmp/to-verify <<'EXTRACT'
           import json, os
-          live = {"published", "published-nodeps", "skipped-exists"}
+          live = {"published", "published-nodeps", "published-noassets", "skipped-exists"}
           for r in json.load(open(os.environ["REPORT"])):
               if r.get("action") in live:
                   print(r.get("app_name") or r["slug"], r["version"])

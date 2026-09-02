@@ -46,9 +46,13 @@ Two kinds of asset, built automatically:
 - **App frontends** — the Vite SPA that crm, helpdesk, insights and friends build into
   `<app>/public/frontend`, compiled by `fpm package` itself.
 
-An app whose assets cannot be compiled **fails** — isolated and reported — rather than
-publishing a package that installs and serves nothing. `fpm mirror --allow-unbuilt-assets`
-publishes it anyway when that is the deliberate choice.
+A version whose assets cannot be compiled against the run's frappe — an old tag whose
+stylesheets no longer build, say — is published **without** them and reported as
+`published-noassets`, so one ancient version does not withhold the versions that do
+build. Treat that action as a defect to fix (drop the line from `majors`, or pin a
+frappe it builds against with `build_deps`), not as a normal outcome: such a package
+installs and then renders nothing. `fpm mirror --allow-unbuilt-assets` skips the
+compile attempt entirely.
 
 ### Escape hatch — `build/<slug>.sh`
 
