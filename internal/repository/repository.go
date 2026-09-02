@@ -136,6 +136,12 @@ type Dependency struct {
 
 // PackageMetadata is the structure of package-metadata.json from a repository.
 type PackageMetadata struct {
+	// sourceETag is the entity tag this document was served with, kept out of the
+	// JSON: it describes the copy that was read, not the package. Writing the
+	// document back conditional on it is what stops two concurrent publishes from
+	// losing one of their versions.
+	sourceETag string `json:"-"`
+
 	Org           string                            `json:"org"`
 	AppName       string                            `json:"appName"`
 	Title         string                            `json:"title,omitempty"`

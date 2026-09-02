@@ -314,9 +314,13 @@ to publish from the local FPM app store.`,
 		remoteMeta.LatestVersion = semver.LatestOf(remoteMeta.Versions)
 
 		fmt.Printf("Uploading updated metadata for %s/%s...\n", appOrg, appName)
-		err = repository.UploadPackageMetadata(targetRepo.URL, appOrg, appName, remoteMeta, httpClient)
-		if err != nil {
-			return fmt.Errorf("failed to upload updated package metadata: %w", err)
+		// This write is what makes the version visible, and it replaces a document
+		// this publish read earlier. A concurrent publish to the same app — which a
+		// sharded mirror does routinely — would otherwise write back a copy that
+		// never saw this version, leaving the artifact uploaded and unreferenced.
+		// The registry refuses such a write; re-reading and re-applying is the fix.
+		if err := publishMetadataWithRetry(targetRepo, appOrg, appName, versionEntry, appVersion, remoteMeta, httpClient); err != nil {
+			return err
 		}
 
 		// Keep the repository's package catalogue current, so `fpm search --remote` can
@@ -380,6 +384,51 @@ func resolveLatestVersionFromLocalStore(appsBasePath, groupID, artifactID string
 	}
 	sort.Strings(availableVersions) // TODO: Replace with SemVer sort
 	return availableVersions[len(availableVersions)-1], nil
+}
+
+// metadataPublishAttempts bounds the optimistic-concurrency retry. Losing the race
+// repeatedly means something is publishing this app continuously, which is worth
+// reporting rather than looping over.
+const metadataPublishAttempts = 4
+
+// publishMetadataWithRetry writes the package's metadata, re-reading and re-applying
+// this version when another publish got there first.
+func publishMetadataWithRetry(repo config.RepositoryConfig, org, appName string,
+	entry repository.PackageVersionMetadata, version string,
+	meta *repository.PackageMetadata, client *http.Client) error {
+
+	for attempt := 1; ; attempt++ {
+		err := repository.UploadPackageMetadata(repo.URL, org, appName, meta, client)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, repository.ErrMetadataChanged) {
+			return fmt.Errorf("failed to upload updated package metadata: %w", err)
+		}
+		if attempt >= metadataPublishAttempts {
+			return fmt.Errorf("failed to upload updated package metadata after %d attempts: %w "+
+				"(another publish keeps updating %s/%s; retry when it settles)",
+				attempt, err, org, appName)
+		}
+
+		fmt.Fprintf(os.Stderr, "Metadata for %s/%s changed while publishing; re-reading and applying %s again (attempt %d).\n",
+			org, appName, version, attempt+1)
+		fresh, found, fetchErr := repository.FetchRemotePackageMetadataForRepo(repo, org, appName, client)
+		if fetchErr != nil {
+			return fmt.Errorf("failed to re-read package metadata after a concurrent publish: %w", fetchErr)
+		}
+		if !found || fresh == nil {
+			// It existed a moment ago and now does not; writing our copy back would
+			// resurrect a document someone deliberately removed.
+			return fmt.Errorf("package metadata for %s/%s disappeared while publishing %s", org, appName, version)
+		}
+		if fresh.Versions == nil {
+			fresh.Versions = map[string]repository.PackageVersionMetadata{}
+		}
+		fresh.Versions[version] = entry
+		fresh.LatestVersion = semver.LatestOf(fresh.Versions)
+		*meta = *fresh
+	}
 }
 
 func init() {
