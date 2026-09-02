@@ -92,7 +92,10 @@ and are still read as exact pins.
 - `fpm package --allow-unbuilt-assets` and `fpm mirror --allow-unbuilt-assets` publish an
   app whose desk bundles were not compiled, which is what happened silently before.
 - `fpm mirror --frappe-ref` selects the frappe branch whose esbuild compiles the
-  catalogue's desk assets.
+  catalogue's desk assets. A version whose assets cannot be compiled against that
+  frappe — an old tag whose stylesheets no longer build — is published without them
+  and reported as `published-noassets` rather than failing the app, the same way
+  `published-nodeps` already covers a failed wheel vendoring.
 - `fpm install --no-site-repair` reports a half-installed site instead of repairing it,
   and exit code `11` distinguishes that state from a generic failure.
 

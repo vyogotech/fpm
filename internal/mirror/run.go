@@ -19,12 +19,14 @@ import (
 
 // Result actions, in the order a build can end.
 const (
-	ActionPublished       = "published"
-	ActionPublishedNoDeps = "published-nodeps" // wheel vendoring failed, shipped without wheels
-	ActionBuilt           = "built"            // --skip-publish
-	ActionBuiltNoDeps     = "built-nodeps"
-	ActionSkippedExists   = "skipped-exists" // registry already had it (publish-time race)
-	ActionFailed          = "failed"
+	ActionPublished         = "published"
+	ActionPublishedNoDeps   = "published-nodeps"   // wheel vendoring failed, shipped without wheels
+	ActionPublishedNoAssets = "published-noassets" // the desk asset build failed, shipped without compiled bundles
+	ActionBuilt             = "built"              // --skip-publish
+	ActionBuiltNoDeps       = "built-nodeps"
+	ActionBuiltNoAssets     = "built-noassets"
+	ActionSkippedExists     = "skipped-exists" // registry already had it (publish-time race)
+	ActionFailed            = "failed"
 )
 
 // Result is the outcome of one planned build.
@@ -135,7 +137,7 @@ func (r *Runner) runOne(item BuildItem) Result {
 		return fail("asset build", err)
 	}
 
-	artifact, noDeps, err := r.packageApp(item, buildRoot, assetBench)
+	artifact, noDeps, noAssets, err := r.packageApp(item, buildRoot, assetBench)
 	if err != nil {
 		return fail("package", err)
 	}
@@ -174,6 +176,9 @@ func (r *Runner) runOne(item BuildItem) Result {
 		if noDeps {
 			result.Action = ActionBuiltNoDeps
 		}
+		if noAssets {
+			result.Action = ActionBuiltNoAssets
+		}
 		result.Detail = final
 		return result
 	}
@@ -209,6 +214,12 @@ func (r *Runner) runOne(item BuildItem) Result {
 	result.Action = ActionPublished
 	if noDeps {
 		result.Action = ActionPublishedNoDeps
+	}
+	if noAssets {
+		// Reported distinctly because such a package installs and then renders
+		// nothing until the destination bench builds its assets: it is publishable,
+		// but it is not the artifact this mirror is supposed to produce.
+		result.Action = ActionPublishedNoAssets
 	}
 	if len(r.RepoNames) > 1 {
 		result.Detail = "published to " + strings.Join(pushed, ", ")
@@ -480,10 +491,10 @@ func (w logWriter) Write(p []byte) (int, error) {
 // packageApp builds the archive into a fresh temporary directory, so the one
 // .fpm file in it is the artifact — no reconstruction of the file name from
 // the repo name, which is the prototype bug this tool replaces.
-func (r *Runner) packageApp(item BuildItem, checkout, assetBench string) (artifact string, noDeps bool, err error) {
+func (r *Runner) packageApp(item BuildItem, checkout, assetBench string) (artifact string, noDeps, noAssets bool, err error) {
 	tmpOut, err := os.MkdirTemp("", "fpm-mirror-*")
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	defer func() {
 		if err != nil {
@@ -544,16 +555,38 @@ func (r *Runner) packageApp(item BuildItem, checkout, assetBench string) (artifa
 		r.Log("  package failed, retrying without bundled wheels: %s", firstLine(errorExcerpt(out)))
 		out, err = r.fpm(append(args, "--bundle-deps=false")...)
 		noDeps = err == nil
+		if err == nil {
+			args = append(args, "--bundle-deps=false")
+		}
+	}
+	if err != nil && assetBench != "" && !r.AllowUnbuiltAssets && isAssetBuildFailure(out) {
+		// An old tag whose stylesheets no longer compile against the frappe this run
+		// builds with (a wiki 1.x mixin against version-16, say) is not something the
+		// mirror can fix, and failing the whole app over one ancient version would
+		// withhold the versions that do build. Publish it the way every package was
+		// published before assets were compiled at all — and mark it, because such a
+		// package installs and then renders nothing.
+		r.Log("  desk asset build failed, retrying without compiled assets: %s", firstLine(errorExcerpt(out)))
+		out, err = r.fpm(append(args, "--allow-unbuilt-assets")...)
+		noAssets = err == nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("%w\n%s", err, errorExcerpt(out))
+		return "", false, false, fmt.Errorf("%w\n%s", err, errorExcerpt(out))
 	}
 
 	matches, err := filepath.Glob(filepath.Join(tmpOut, "*.fpm"))
 	if err != nil || len(matches) != 1 {
-		return "", false, fmt.Errorf("expected exactly one .fpm in %s, found %d", tmpOut, len(matches))
+		return "", false, false, fmt.Errorf("expected exactly one .fpm in %s, found %d", tmpOut, len(matches))
 	}
-	return matches[0], noDeps, nil
+	return matches[0], noDeps, noAssets, nil
+}
+
+// isAssetBuildFailure reports whether `fpm package` failed because it could not
+// compile the app's desk assets, as opposed to anything else. Exit code 4 is the
+// packaged contract for that (ExitAssetBuildFailed); the message is checked too so
+// this keeps working if the subprocess reports the code differently.
+func isAssetBuildFailure(out string) bool {
+	return strings.Contains(out, "exit status 4") || strings.Contains(out, "asset build failed")
 }
 
 func (r *Runner) runBuildScript(script, checkout string) error {
