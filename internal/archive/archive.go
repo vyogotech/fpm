@@ -38,6 +38,16 @@ var defaultIgnorePatterns = []string{
 	".idea/",
 	".vscode/",
 	"*.log",
+	// Repository furniture, not app content: CI workflows, issue templates and the
+	// screenshots a README embeds. drive ships 7.2 MB of them, which a bench neither
+	// serves nor imports — and which pushed its artifact over a registry's upload
+	// limit. The app's own LICENSE and README stay; these never run anywhere.
+	".github/",
+	".gitlab/",
+	".circleci/",
+	".gitattributes",
+	".editorconfig",
+	".pre-commit-config.yaml",
 }
 
 var productionExclusionPatterns = []string{
