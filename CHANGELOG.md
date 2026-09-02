@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.3] - 2026-09-02
+
+### Fixed
+
+- `fpm mirror` clears a failed build's partial output before republishing without
+  assets. esbuild writes bundles one at a time, so a build that dies part-way leaves
+  some behind, and packaging discovered those as if they were a deliberate prebuild —
+  publishing a partial asset set that contradicted the `published-noassets` in the
+  report, and that the bench's assets.json would then advertise. wiki 1.0.0 shipped
+  one such bundle.
+
 ## [4.0.2] - 2026-09-02
 
 ### Fixed
