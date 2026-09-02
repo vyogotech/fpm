@@ -49,6 +49,7 @@ var (
 	packageRequiresFromStore  bool
 	packageExactRequires      bool
 	packageAllowUnbuiltAssets bool
+	packageOverrideDeps       []string
 	packageWithDeps           bool
 	packageBuildFrontend      bool
 	packageFrontendTimeout    time.Duration
@@ -431,8 +432,9 @@ By default, it also installs the packaged app to the local FPM app store.`,
 		// --- Step 8: archive ---
 		fmt.Printf("Packaging '%s' version '%s' from '%s'...\n", meta.PackageName, meta.PackageVersion, packageFrom)
 		err = archive.CreateFPMArchive(packageFrom, absOutputPath, meta, meta.PackageVersion, archive.Options{
-			BundleDeps:  bundleDeps,
-			WheelTarget: target,
+			BundleDeps:          bundleDeps,
+			WheelTarget:         target,
+			DependencyOverrides: packageOverrideDeps,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create package: %w", err)
@@ -738,6 +740,7 @@ func init() {
 	packageCmd.Flags().StringVar(&packageFrontendSiteConfig, "frontend-site-config", "", "A bench's sites/common_site_config.json to build the frontend against. Apps like frappe/crm compile socketio_port into their bundle; without this a default bench config is synthesized (see --help output during the build)")
 	packageCmd.Flags().BoolVar(&packageNoBenchScaffold, "no-bench-scaffold", false, "Fail instead of building a bench-resolving frontend in a temporary bench. Use when the package must be built only against a real bench (--bench-path or a checkout already at <bench>/apps/<app>)")
 	packageCmd.Flags().StringArrayVar(&packageRepos, "repo", nil, "Configured repository to resolve required_apps against, exclusively: neither this host's FPM store nor the bench answers a requirement when it is set. Repeatable, tried in order — name every backend the build publishes to")
+	packageCmd.Flags().StringArrayVar(&packageOverrideDeps, "override-dependency", nil, "Replace a Python requirement the app declares, e.g. --override-dependency 'pycrdt>=0.14.4'. The staged copy's manifest is rewritten before wheels are vendored — the source tree is untouched — so the package and its wheels agree. Repeatable; recorded in app_metadata.json as dependency_overrides. For repackaging an app whose upstream pin cannot be satisfied for the target")
 	packageCmd.Flags().BoolVar(&packageAllowUnbuiltAssets, "allow-unbuilt-assets", false, "Package a prod app that declares esbuild entry points even though nothing compiled them. The package installs but its desk UI does not render until the bench runs 'bench build'")
 	packageCmd.Flags().StringArrayVar(&packageRequires, "requires", nil, "Pin a required app outright instead of resolving it, e.g. --requires frappe/erpnext==16.30.0 or --requires 'frappe/erpnext>=16.0.0,<17.0.0'; repeatable")
 	packageCmd.Flags().BoolVar(&packageRequiresFromStore, "requires-from-local-store", false, "Allow a prod package to pin required_apps from this host's FPM store. The store is ambient state, so the resulting package is not reproducible; prod builds otherwise have to name a source (--requires/--repo/--bench-path)")

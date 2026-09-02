@@ -18,6 +18,8 @@ type BuildItem struct {
 	Version    string `json:"version"`
 	BundleDeps bool   `json:"bundle_deps"`
 	Reason     string `json:"reason"`
+	// PipOverrides replace Python requirements the app declares, from the catalog.
+	PipOverrides []string `json:"pip_overrides,omitempty"`
 
 	buildScript string
 	isBranch    bool
@@ -133,14 +135,15 @@ func BuildPlanForRepos(apps []App, repos []config.RepositoryConfig, client *http
 				continue
 			}
 			plan.Items = append(plan.Items, BuildItem{
-				Slug:        app.Slug,
-				AppName:     app.AppName,
-				Repo:        app.Repo,
-				Ref:         tag.Name,
-				Version:     version,
-				BundleDeps:  app.BundleDeps,
-				Reason:      fmt.Sprintf("latest of the %s line", majorLabel(version)),
-				buildScript: app.BuildScript,
+				Slug:         app.Slug,
+				AppName:      app.AppName,
+				Repo:         app.Repo,
+				Ref:          tag.Name,
+				Version:      version,
+				BundleDeps:   app.BundleDeps,
+				PipOverrides: app.PipOverrides,
+				Reason:       fmt.Sprintf("latest of the %s line", majorLabel(version)),
+				buildScript:  app.BuildScript,
 			})
 		}
 	}
@@ -168,15 +171,16 @@ func planBranch(app App, published map[string]struct{}, now string) (BuildItem, 
 
 	version := BranchPseudoVersion(app.BranchMajor, now, sha)
 	return BuildItem{
-		Slug:        app.Slug,
-		AppName:     app.AppName,
-		Repo:        app.Repo,
-		Ref:         app.Branch,
-		Version:     version,
-		BundleDeps:  app.BundleDeps,
-		Reason:      fmt.Sprintf("tip of branch %s", app.Branch),
-		buildScript: app.BuildScript,
-		isBranch:    true,
+		Slug:         app.Slug,
+		AppName:      app.AppName,
+		Repo:         app.Repo,
+		Ref:          app.Branch,
+		Version:      version,
+		BundleDeps:   app.BundleDeps,
+		PipOverrides: app.PipOverrides,
+		Reason:       fmt.Sprintf("tip of branch %s", app.Branch),
+		buildScript:  app.BuildScript,
+		isBranch:     true,
 	}, nil, nil
 }
 

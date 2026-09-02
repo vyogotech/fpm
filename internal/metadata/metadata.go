@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"fpm/internal/semver"
+	"fpm/internal/wheels"
 )
 
 // AppMetadata defines the structure of the app_metadata.json file
@@ -50,6 +51,11 @@ type AppMetadata struct {
 	// GitDirty is set when the working tree had uncommitted changes to tracked
 	// files, meaning CommitSHA alone does not reproduce the package.
 	GitDirty bool `json:"git_dirty,omitempty"`
+
+	// DependencyOverrides records Python requirements the packager replaced, so a
+	// package that differs from its upstream source says so rather than looking
+	// byte-identical to it. Set by `fpm package --override-dependency`.
+	DependencyOverrides []wheels.Override `json:"dependency_overrides,omitempty"`
 
 	// RequiredApps lists the Frappe apps this app's hooks.py declares in
 	// `required_apps`, each resolved to a pinned package at packaging time. Frappe

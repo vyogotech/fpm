@@ -57,6 +57,11 @@ type Options struct {
 	// WheelTarget is the platform and interpreter to vendor wheels for. The zero
 	// value vendors for the packaging host.
 	WheelTarget wheels.Target
+	// DependencyOverrides replace requirements the app declares, as full specifiers
+	// ("pycrdt>=0.14.4"). They are applied to the staged copy — never to the source
+	// tree — before wheels are vendored, so the package ships the replacement and the
+	// wheels beside it agree with it.
+	DependencyOverrides []string
 	// bundle performs the dependency bundling, defaulting to wheels.Bundle. Tests
 	// substitute it to exercise the staging order without requiring pip or network.
 	bundle bundleFunc
@@ -250,6 +255,21 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 		if bundleInto == nil {
 			bundleInto = wheels.Bundle
 		}
+		// An upstream pin that cannot be satisfied for the target is replaced here,
+		// in the staged copy: `fpm install` runs pip against the manifest the package
+		// ships, so overriding only what pip downloads would produce a package whose
+		// own manifest rejects its vendored wheels.
+		if len(options.DependencyOverrides) > 0 {
+			applied, overrideErr := wheels.ApplyOverrides(stagingDir, options.DependencyOverrides)
+			if overrideErr != nil {
+				return overrideErr
+			}
+			meta.DependencyOverrides = applied
+			for _, o := range applied {
+				fmt.Printf("Overriding declared dependency %s\n", o)
+			}
+		}
+
 		// Read manifests from the staging directory rather than the source tree, so
 		// bundling reflects exactly what the package ships.
 		wheelsStagePath := filepath.Join(stagingDir, wheels.DirName)
