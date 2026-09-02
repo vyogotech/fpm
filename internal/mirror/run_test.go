@@ -322,3 +322,62 @@ func TestIsAssetBuildFailure(t *testing.T) {
 		t.Fatal("an unrelated failure must not degrade the package")
 	}
 }
+
+// TestNoAssetsRetryClearsPartialOutput: esbuild writes bundles one at a time, so a
+// build that fails part-way leaves some behind. Packaging those would discover them as
+// if they were a deliberate prebuild and publish a partial asset set — which is worse
+// than none, because that is what the bench's assets.json would then advertise, and it
+// would contradict the published-noassets the report carries.
+func TestNoAssetsRetryClearsPartialOutput(t *testing.T) {
+	dir := t.TempDir()
+	checkout := t.TempDir()
+	dist := filepath.Join(checkout, "wiki", "public", "dist", "js")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	half := filepath.Join(dist, "wiki.bundle.HALFBILT.js")
+	if err := os.WriteFile(half, []byte("// written before the build failed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fpmBin := filepath.Join(dir, "fpm")
+	script := `#!/bin/sh
+case "$*" in
+  *--allow-unbuilt-assets*)
+    for a in "$@"; do case "$a" in /*fpm-mirror*) d="$a";; esac; done
+    : > "$d/wiki-1.0.0.fpm"
+    exit 0
+    ;;
+esac
+echo "Error: asset build failed" >&2
+exit 4
+`
+	if err := os.WriteFile(fpmBin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := NewWorkspace(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{FPMBin: fpmBin, Workspace: ws, OutputPath: t.TempDir(), Log: func(string, ...any) {}}
+
+	_, _, noAssets, err := runner.packageApp(BuildItem{Slug: "wiki", Version: "1.0.0"}, checkout, "/cache/bench")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !noAssets {
+		t.Fatal("the package must be marked as shipping no compiled assets")
+	}
+	if _, statErr := os.Stat(half); !os.IsNotExist(statErr) {
+		t.Fatal("the failed build's partial output must not be packaged")
+	}
+}
+
+func TestAppNameOf(t *testing.T) {
+	if got := appNameOf(BuildItem{Slug: "marley", AppName: "healthcare"}); got != "healthcare" {
+		t.Fatalf("the catalog override wins, got %q", got)
+	}
+	if got := appNameOf(BuildItem{Slug: "wiki"}); got != "wiki" {
+		t.Fatalf("the slug is the fallback, got %q", got)
+	}
+}
