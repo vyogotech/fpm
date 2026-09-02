@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.2] - 2026-09-02
+
+### Fixed
+
+- The 4.0.1 asset-build fallback was a no-op. It retried with
+  `--allow-unbuilt-assets` while still passing `--bench-path`, and the bench is what
+  runs the build that failed — so the retry repeated the same failure. It now drops
+  the bench as well, which is what makes `published-noassets` reachable. Caught by
+  running the catalogue mirror against 4.0.1: wiki 1.0.0 logged the retry and failed
+  anyway.
+
 ## [4.0.1] - 2026-09-02
 
 Fixes found by running the catalogue mirror against 4.0.0.

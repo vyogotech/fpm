@@ -254,6 +254,37 @@ exit 4
 	if !strings.Contains(strings.Join(logged, "\n"), "retrying without compiled assets") {
 		t.Fatalf("the retry must be reported: %v", logged)
 	}
+
+	// The retry must drop the bench as well: --allow-unbuilt-assets permits a package
+	// with no compiled bundles, but --bench-path is what runs the build that failed, so
+	// keeping it repeats the failure. This is what made the first fix a no-op in CI.
+	invocations, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	lines := strings.Split(strings.TrimSpace(string(invocations)), "\n")
+	retry := lines[len(lines)-1]
+	if strings.Contains(retry, "--bench-path") {
+		t.Fatalf("the retry still asks for an asset build: %s", retry)
+	}
+	if !strings.Contains(retry, "--allow-unbuilt-assets") {
+		t.Fatalf("the retry must permit a package without compiled assets: %s", retry)
+	}
+}
+
+func TestWithoutFlag(t *testing.T) {
+	got := withoutFlag([]string{"package", "--bench-path", "/b", "--version", "1.0.0"}, "--bench-path")
+	if strings.Join(got, " ") != "package --version 1.0.0" {
+		t.Fatalf("flag and its value must both go: %v", got)
+	}
+	got = withoutFlag([]string{"package", "--bench-path=/b", "--version", "1.0.0"}, "--bench-path")
+	if strings.Join(got, " ") != "package --version 1.0.0" {
+		t.Fatalf("the --flag=value spelling must go too: %v", got)
+	}
+	got = withoutFlag([]string{"package", "--version", "1.0.0"}, "--bench-path")
+	if strings.Join(got, " ") != "package --version 1.0.0" {
+		t.Fatalf("an absent flag must change nothing: %v", got)
+	}
 }
 
 // TestPackageAppKeepsOtherFailuresFatal: only an asset-build failure degrades. Anything

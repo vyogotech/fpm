@@ -567,7 +567,10 @@ func (r *Runner) packageApp(item BuildItem, checkout, assetBench string) (artifa
 		// published before assets were compiled at all — and mark it, because such a
 		// package installs and then renders nothing.
 		r.Log("  desk asset build failed, retrying without compiled assets: %s", firstLine(errorExcerpt(out)))
-		out, err = r.fpm(append(args, "--allow-unbuilt-assets")...)
+		// The bench has to go with it: --allow-unbuilt-assets permits a package that
+		// carries no compiled bundles, but --bench-path is what runs the build in the
+		// first place, so keeping it would just fail the same way again.
+		out, err = r.fpm(append(withoutFlag(args, "--bench-path"), "--allow-unbuilt-assets")...)
 		noAssets = err == nil
 	}
 	if err != nil {
@@ -579,6 +582,24 @@ func (r *Runner) packageApp(item BuildItem, checkout, assetBench string) (artifa
 		return "", false, false, fmt.Errorf("expected exactly one .fpm in %s, found %d", tmpOut, len(matches))
 	}
 	return matches[0], noDeps, noAssets, nil
+}
+
+// withoutFlag returns args with one "--flag value" pair removed. The retry paths build
+// on the original argument list, and a flag that caused the failure has to come out of
+// it rather than be contradicted by a later one.
+func withoutFlag(args []string, flag string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == flag {
+			i++ // skip its value
+			continue
+		}
+		if strings.HasPrefix(args[i], flag+"=") {
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
 }
 
 // isAssetBuildFailure reports whether `fpm package` failed because it could not
