@@ -23,6 +23,7 @@ run with `podman run --network none`. `bench new-site`-equivalent state, `instal
 | 3 | Every `fpm install` ran pip with `--no-index --find-links <vendored wheels>`; no download lines | `install-*.log` |
 | 4 | The bench env holds exactly the versions pinned in `wheels/fpm-lock.txt`; the app imports them on the site | `pip-show.txt`, `pip-freeze.txt`, `demo_table.txt` |
 | 5 | `required_apps` were satisfied from the local FPM store; all apps are installed on the site | `list-apps.txt` |
+| 5b | The app's **DocTypes reached the database** and its `after_install` hook ran — the two halves that came apart in [#13](https://github.com/vyogotech/fpm/issues/13), where the app was registered on a site with none of its tables | `demo_note.txt` |
 | 6 | `sites/assets/assets.json` + `assets-rtl.json` equal (keys and values) what a live `bench build --apps …` produces for the same apps in the same image, and are `JSON.stringify(obj, null, 4)`-shaped | `offline-assets*.json`, `reference-assets*.json` |
 | 7 | `/login` and `/app` reference the apps' hashed bundles through `assets.json`; each bundle and a static image return 200 with the expected content | `http-*.html`, `http-assets.txt` |
 

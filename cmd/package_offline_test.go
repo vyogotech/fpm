@@ -112,22 +112,25 @@ func TestPackageResolvesRequiredApps(t *testing.T) {
 		"needs_erpnext/hooks.py": "app_name = \"needs_erpnext\"\nrequired_apps = [\n\t\"frappe\",\n\t\"erpnext\",\n]\n",
 	})
 	resetPackageCmdFlags()
-	args, outDir := packageArgs(t, src, "1.0.0", "--org", "acme")
+	// A prod package has to name its resolution source; here it is this host's own
+	// store, said out loud (see TestPackageProdRefusesAmbientStorePin).
+	args, outDir := packageArgs(t, src, "1.0.0", "--org", "acme", "--requires-from-local-store")
 	_, err := SharedExecuteCommand(rootCmd, args...)
 	require.NoError(t, err)
 	meta, err := SharedReadMetadataFromFpm(t, filepath.Join(outDir, "needs_erpnext-1.0.0.fpm"))
 	require.NoError(t, err)
 	require.Len(t, meta.RequiredApps, 1, "frappe is never a dependency")
-	assert.Equal(t, "frappe/erpnext==15.10.0", meta.RequiredApps[0].Identifier())
+	assert.Equal(t, "15.10.0", meta.RequiredApps[0].Version, "the version resolved against")
+	assert.Equal(t, ">=15.0.0-0,<16.0.0", meta.RequiredApps[0].VersionSpec, "recorded as a release line, not one version")
 	assert.Equal(t, "erpnext", meta.RequiredApps[0].Requirement)
-	assert.Equal(t, "15.10.0", meta.Dependencies["frappe/erpnext"])
+	assert.Equal(t, ">=15.0.0-0,<16.0.0", meta.Dependencies["frappe/erpnext"])
 
 	// Unresolvable requirement: hard failure with its own exit code.
 	src = SharedCreateMinimalAppForPackage(t, t.TempDir(), "needs_hrms", map[string]string{
 		"needs_hrms/hooks.py": "app_name = \"needs_hrms\"\nrequired_apps = [\"erpnext\", \"hrms\"]\n",
 	})
 	resetPackageCmdFlags()
-	args, _ = packageArgs(t, src, "1.0.0", "--org", "acme")
+	args, _ = packageArgs(t, src, "1.0.0", "--org", "acme", "--requires-from-local-store")
 	_, err = SharedExecuteCommand(rootCmd, args...)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, resolver.ErrUnresolved), "got %v", err)
@@ -206,7 +209,7 @@ func TestInstallRefusesMissingRequiredApps(t *testing.T) {
 	// Resolve against a store that has erpnext, then remove it before installing.
 	existsStoreApp(t, store, "frappe", "erpnext", "15.10.0", metadata.AppMetadata{})
 	resetPackageCmdFlags()
-	args, outDir := packageArgs(t, src, "1.0.0", "--org", "acme")
+	args, outDir := packageArgs(t, src, "1.0.0", "--org", "acme", "--requires-from-local-store")
 	_, err := SharedExecuteCommand(rootCmd, args...)
 	require.NoError(t, err)
 	fpmPath := filepath.Join(outDir, "dependent-1.0.0.fpm")
@@ -222,7 +225,7 @@ func TestInstallRefusesMissingRequiredApps(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, resolver.ErrMissing), "got %v", err)
 	assert.Equal(t, ExitMissingRequiredApps, ExitCodeFor(err))
-	assert.Contains(t, err.Error(), "frappe/erpnext==15.10.0")
+	assert.Contains(t, err.Error(), "frappe/erpnext>=15.0.0-0,<16.0.0")
 	_, statErr := os.Stat(pipCalled)
 	assert.True(t, os.IsNotExist(statErr), "the bench must not be touched")
 	_, statErr = os.Lstat(filepath.Join(bench, "apps", "dependent"))

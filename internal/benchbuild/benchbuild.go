@@ -97,11 +97,24 @@ func Build(opts Options) (Result, error) {
 		return Result{Cleanup: func() {}}, fmt.Errorf("%w: app name is required", ErrBuildFailed)
 	}
 
-	python := filepath.Join(bench, "env", "bin", "python")
-	for _, required := range []string{python, filepath.Join(bench, "apps", "frappe"), filepath.Join(bench, "sites")} {
+	for _, required := range []string{filepath.Join(bench, "apps", "frappe"), filepath.Join(bench, "sites")} {
 		if _, err := os.Stat(required); err != nil {
 			return Result{Cleanup: func() {}}, fmt.Errorf("%w: %s is not a usable bench (%s missing)", ErrBuildFailed, bench, required)
 		}
+	}
+	// A real bench drives the build through its virtualenv, exactly as `bench build`
+	// does. A bench-shaped directory without one — frappe's source beside the app, no
+	// python environment, which is what a build workspace such as `fpm mirror`'s is —
+	// still builds: frappe's asset pipeline is node, and its python layer only resolves
+	// paths and links sites/assets, both of which are done here instead.
+	python := filepath.Join(bench, "env", "bin", "python")
+	useNode := false
+	if _, err := os.Stat(python); err != nil {
+		if _, esbErr := os.Stat(filepath.Join(bench, "apps", "frappe", esbuildDir, "esbuild.js")); esbErr != nil {
+			return Result{Cleanup: func() {}}, fmt.Errorf("%w: %s is not a usable bench: it has neither %s nor frappe's asset pipeline at %s",
+				ErrBuildFailed, bench, python, filepath.Join(bench, "apps", "frappe", esbuildDir))
+		}
+		useNode = true
 	}
 	for _, tool := range []string{"node", "yarn"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -147,23 +160,32 @@ func Build(opts Options) (Result, error) {
 		}
 	}
 
-	args := []string{"-m", "frappe.utils.bench_helper", "frappe", "build", "--app", opts.AppName, "--production"}
-	if opts.Verbose {
-		args = append(args, "--verbose")
-	}
-	fmt.Fprintf(out, "Building assets for '%s' in bench %s:\n  (cd sites && %s %s)\n",
-		opts.AppName, bench, python, strings.Join(args, " "))
+	var cmd *exec.Cmd
+	if useNode {
+		var prepErr error
+		cmd, prepErr = esbuildCommand(bench, opts.AppName, buildRoot, out, opts.Verbose)
+		if prepErr != nil {
+			return fail("", prepErr)
+		}
+	} else {
+		args := []string{"-m", "frappe.utils.bench_helper", "frappe", "build", "--app", opts.AppName, "--production"}
+		if opts.Verbose {
+			args = append(args, "--verbose")
+		}
+		fmt.Fprintf(out, "Building assets for '%s' in bench %s:\n  (cd sites && %s %s)\n",
+			opts.AppName, bench, python, strings.Join(args, " "))
 
-	cmd := exec.Command(python, args...)
-	cmd.Dir = filepath.Join(bench, "sites")
-	// The app is in apps/ but not pip-installed into the bench's virtualenv;
-	// frappe.get_module(app) still has to import it to locate its public/ directory,
-	// so put the checkout on the import path.
-	pythonPath := buildRoot
-	if existing := os.Getenv("PYTHONPATH"); existing != "" {
-		pythonPath += string(os.PathListSeparator) + existing
+		cmd = exec.Command(python, args...)
+		cmd.Dir = filepath.Join(bench, "sites")
+		// The app is in apps/ but not pip-installed into the bench's virtualenv;
+		// frappe.get_module(app) still has to import it to locate its public/ directory,
+		// so put the checkout on the import path.
+		pythonPath := buildRoot
+		if existing := os.Getenv("PYTHONPATH"); existing != "" {
+			pythonPath += string(os.PathListSeparator) + existing
+		}
+		cmd.Env = append(os.Environ(), "PYTHONPATH="+pythonPath)
 	}
-	cmd.Env = append(os.Environ(), "PYTHONPATH="+pythonPath)
 
 	var buf strings.Builder
 	if opts.Verbose {
@@ -193,7 +215,7 @@ func Build(opts Options) (Result, error) {
 		bundles[k] = v
 	}
 
-	sources, err := bundleSources(moduleDir)
+	sources, err := BundleSources(moduleDir)
 	if err != nil {
 		return fail(output, fmt.Errorf("%w: %v", ErrBuildFailed, err))
 	}
@@ -329,9 +351,74 @@ func ensureInAppsTxt(bench, app string) (cleanup func(), err error) {
 	}, nil
 }
 
-// bundleSources lists the esbuild entry points under <module>/public, using the
+// esbuildDir is where frappe keeps its asset pipeline inside its own checkout.
+const esbuildDir = "esbuild"
+
+// esbuildCommand prepares frappe's esbuild to run without a bench virtualenv, and
+// returns the command that runs it.
+//
+// It stands in for what frappe's python side does before shelling out to node
+// (frappe/build.py bundle): install frappe's own node dependencies, which esbuild.js
+// imports, and link sites/assets/<app> to each app's public directory, which is where
+// esbuild writes its output — through the symlink, into apps/<app>/<app>/public/dist.
+// Without the links the build succeeds and writes the bundles nowhere the package
+// would pick them up.
+func esbuildCommand(bench, app, buildRoot string, out io.Writer, verbose bool) (*exec.Cmd, error) {
+	frappeDir := filepath.Join(bench, "apps", "frappe")
+	if _, err := os.Stat(filepath.Join(frappeDir, "node_modules")); err != nil {
+		fmt.Fprintf(out, "Installing frappe's node dependencies (yarn install in %s); frappe's esbuild imports them\n", frappeDir)
+		yarn := exec.Command("yarn", "install", "--check-files", "--non-interactive", "--production=false")
+		yarn.Dir = frappeDir
+		yarnOut, yarnErr := yarn.CombinedOutput()
+		if verbose {
+			out.Write(yarnOut)
+		}
+		if yarnErr != nil {
+			return nil, fmt.Errorf("%w: yarn install for frappe failed: %v\n%s",
+				ErrBuildFailed, yarnErr, strings.TrimSpace(string(yarnOut)))
+		}
+	}
+
+	// frappe first, since its own bundles are what an app's imports resolve against.
+	links := map[string]string{
+		"frappe": filepath.Join(frappeDir, "frappe"),
+		app:      filepath.Join(buildRoot, app),
+	}
+	for name, moduleDir := range links {
+		if err := assets.LinkAppAssets(bench, name, moduleDir); err != nil {
+			return nil, fmt.Errorf("%w: could not link %s's assets directory: %v", ErrBuildFailed, name, err)
+		}
+	}
+
+	// `node esbuild --production` is what frappe's own "production" package script
+	// runs; invoking node directly keeps the build independent of which package
+	// manager (and which of its major versions) forwards arguments to a script.
+	args := []string{esbuildDir, "--production", "--apps", app}
+	if verbose {
+		args = append(args, "--verbose")
+	}
+	fmt.Fprintf(out, "Building assets for '%s' with frappe's esbuild:\n  (cd %s && node %s)\n",
+		app, frappeDir, strings.Join(args, " "))
+
+	cmd := exec.Command("node", args...)
+	cmd.Dir = frappeDir
+	// FRAPPE_BENCH_ROOT is esbuild/utils.js's own override for locating the bench;
+	// without it the bench is derived from frappe's path, which is right here but not
+	// when frappe is reached through a symlink. The heap limit matches what frappe's
+	// python side sets: a full app build exceeds node's default.
+	cmd.Env = append(os.Environ(),
+		"FRAPPE_BENCH_ROOT="+bench,
+		"NODE_OPTIONS=--max-old-space-size=4096",
+	)
+	return cmd, nil
+}
+
+// BundleSources lists the esbuild entry points under <module>/public, using the
 // same glob as esbuild.js get_all_files_to_build (excluding node_modules and dist).
-func bundleSources(moduleDir string) ([]string, error) {
+//
+// An app with entry points and no compiled output is an app whose desk UI will not
+// render, so callers use this to tell "nothing to build" from "not built".
+func BundleSources(moduleDir string) ([]string, error) {
 	public := filepath.Join(moduleDir, "public")
 	if info, err := os.Stat(public); err != nil || !info.IsDir() {
 		return nil, nil

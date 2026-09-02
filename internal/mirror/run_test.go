@@ -88,3 +88,113 @@ func TestAutoBuildFrontendAssetsRequiresARealAppName(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+// TestEnsureAssetBenchSkipsAppsWithNothingToCompile: an app with no esbuild entry
+// points (an SPA-only app, or one with no assets) must not drag frappe's whole
+// checkout into the build.
+func TestEnsureAssetBenchSkipsAppsWithNothingToCompile(t *testing.T) {
+	checkout := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(checkout, "crm", "public", "frontend"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := NewWorkspace(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{Workspace: ws, Log: func(string, ...any) {}}
+
+	bench, err := runner.ensureAssetBench("crm", "crm", checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bench != "" {
+		t.Fatalf("no bundles to compile, so no asset bench is needed; got %q", bench)
+	}
+}
+
+// TestEnsureAssetBenchNeedsFrappeInTheCatalog: an app that does have bundles to
+// compile and no frappe to compile them with fails with that reason, rather than
+// producing a package whose desk UI never renders (issue #9).
+func TestEnsureAssetBenchNeedsFrappeInTheCatalog(t *testing.T) {
+	checkout := t.TempDir()
+	dir := filepath.Join(checkout, "wiki", "public", "js")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "wiki.bundle.js"), []byte("// entry"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := NewWorkspace(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{Workspace: ws, Log: func(string, ...any) {}, CatalogRepos: map[string]string{}}
+
+	_, err = runner.ensureAssetBench("wiki", "wiki", checkout)
+	if err == nil {
+		t.Fatal("expected a failure when there is no frappe to build with")
+	}
+	if !strings.Contains(err.Error(), "frappe is not in the catalog") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestFrappeRefPrecedence: the catalog's per-app pin wins over the run's flag, which
+// wins over the default. An app whose module name differs from its slug is found
+// under either.
+func TestFrappeRefPrecedence(t *testing.T) {
+	runner := &Runner{
+		FrappeRef: "version-15",
+		BuildDepRefs: map[string]map[string]string{
+			"helpdesk":    {"frappe": "develop"},
+			"pos_awesome": {"frappe": "version-14"},
+		},
+	}
+	if got := runner.frappeRef("helpdesk", "helpdesk"); got != "develop" {
+		t.Fatalf("catalog pin should win, got %q", got)
+	}
+	if got := runner.frappeRef("posawesome", "pos_awesome"); got != "version-14" {
+		t.Fatalf("a pin keyed by slug must apply to the app it names, got %q", got)
+	}
+	if got := runner.frappeRef("wiki", "wiki"); got != "version-15" {
+		t.Fatalf("the run's --frappe-ref should apply, got %q", got)
+	}
+	if got := (&Runner{}).frappeRef("wiki", "wiki"); got != DefaultFrappeRef {
+		t.Fatalf("default = %q, want %q", got, DefaultFrappeRef)
+	}
+}
+
+// TestPackageArgsCarryTheAssetBench: the bench only reaches `fpm package` as
+// --bench-path, which is what makes it run frappe's asset build.
+func TestPackageArgsCarryTheAssetBench(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "args.log")
+	fpmBin := filepath.Join(t.TempDir(), "fpm")
+	script := "#!/bin/sh\necho \"$@\" > " + logPath + "\nexit 1\n" // exit 1: no artifact to produce
+	if err := os.WriteFile(fpmBin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := NewWorkspace(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{FPMBin: fpmBin, Workspace: ws, OutputPath: t.TempDir(), Log: func(string, ...any) {},
+		RepoNames: []string{"ghcr"}}
+
+	_, _, err = runner.packageApp(BuildItem{Slug: "wiki", Version: "3.0.0"}, t.TempDir(), "/cache/bench")
+	if err == nil {
+		t.Fatal("the stub fpm fails; packageApp must report it")
+	}
+	logged, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(logged), "--bench-path /cache/bench") {
+		t.Fatalf("fpm package must be given the asset bench: %s", logged)
+	}
+	if strings.Contains(string(logged), "--requires-from-local-store") {
+		t.Fatalf("with a registry configured, pins come from it, not the build host's store: %s", logged)
+	}
+	if !strings.Contains(string(logged), "--repo ghcr") {
+		t.Fatalf("pins must be resolved against the registry this run publishes to: %s", logged)
+	}
+}

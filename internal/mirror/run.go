@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"fpm/internal/benchbuild"
 	"fpm/internal/frontend"
 	"fpm/internal/metadata"
 	"fpm/internal/semver"
@@ -61,7 +62,14 @@ type Runner struct {
 	BuildDepRefs  map[string]map[string]string
 	PythonVersion string   // destination interpreter version for vendored wheels (e.g. "3.11")
 	Platforms     []string // target platforms for vendored wheels (e.g. "manylinux2014_x86_64")
-	Log           func(format string, args ...any)
+	// FrappeRef is the frappe branch or tag whose esbuild compiles the catalogue's
+	// desk assets. The catalog's build_deps column overrides it per app.
+	FrappeRef string
+	// AllowUnbuiltAssets publishes an app whose desk bundles could not be compiled,
+	// as the mirror did before it built them at all. The package installs and its
+	// desk UI does not render until the destination bench runs its own build.
+	AllowUnbuiltAssets bool
+	Log                func(format string, args ...any)
 }
 
 // Run executes every planned item, isolating failures per app.
@@ -120,7 +128,14 @@ func (r *Runner) runOne(item BuildItem) Result {
 		buildRoot = root
 	}
 
-	artifact, noDeps, err := r.packageApp(item, buildRoot)
+	// An app with esbuild entry points needs frappe's asset pipeline to compile them;
+	// without that the package installs and renders nothing (issue #9).
+	assetBench, err := r.ensureAssetBench(appName, item.Slug, buildRoot)
+	if err != nil {
+		return fail("asset build", err)
+	}
+
+	artifact, noDeps, err := r.packageApp(item, buildRoot, assetBench)
 	if err != nil {
 		return fail("package", err)
 	}
@@ -253,6 +268,56 @@ func (r *Runner) autoBuildFrontendAssets(appName, checkout string) (buildRoot st
 		return res.BuildRoot, cleanup, nil
 	}
 	return checkout, cleanup, nil
+}
+
+// DefaultFrappeRef is the frappe branch the catalogue's desk assets are compiled
+// with when nothing says otherwise.
+const DefaultFrappeRef = "version-16"
+
+// ensureAssetBench materialises what frappe's asset pipeline needs to compile this
+// app's desk bundles, and returns the bench to package against — or "" when the app
+// declares no bundles and there is nothing to build.
+//
+// The workspace is already laid out as a bench (apps/<slug> beside sites/), which is
+// what app frontends assume; adding frappe's own checkout to it is what turns it into
+// something `fpm package --bench-path` can run frappe's esbuild in. No virtualenv is
+// needed: the asset pipeline is node, and fpm drives it directly.
+//
+// Before this, a catalogue package shipped its bundle *sources* and no compiled
+// output. It installed cleanly and then served a desk UI that renders nothing, because
+// a bench that installs from a package never runs a build (issue #9).
+func (r *Runner) ensureAssetBench(appName, slug, buildRoot string) (string, error) {
+	sources, err := benchbuild.BundleSources(filepath.Join(buildRoot, appName))
+	if err != nil || len(sources) == 0 {
+		return "", err
+	}
+	repoURL, ok := r.CatalogRepos["frappe"]
+	if !ok {
+		return "", fmt.Errorf("%s has %d esbuild entry point(s) to compile, but frappe is not in the catalog, "+
+			"so there is nowhere to fetch the asset pipeline from", appName, len(sources))
+	}
+	ref := r.frappeRef(appName, slug)
+	r.Log("  desk assets: %d bundle source(s); compiling with frappe %s", len(sources), ref)
+	if _, err := r.Workspace.EnsureBuildDependency("frappe", repoURL, ref); err != nil {
+		return "", err
+	}
+	return r.Workspace.BenchRoot(), nil
+}
+
+// frappeRef is the frappe ref this app's assets are built against: the catalog's
+// build_deps pin when it has one, then the run's --frappe-ref, then the default.
+// The pins are keyed by catalog slug; an app whose module is named differently is
+// looked up under both.
+func (r *Runner) frappeRef(appName, slug string) string {
+	for _, key := range []string{slug, appName} {
+		if ref, ok := r.BuildDepRefs[key]["frappe"]; ok && ref != "" {
+			return ref
+		}
+	}
+	if r.FrappeRef != "" {
+		return r.FrappeRef
+	}
+	return DefaultFrappeRef
 }
 
 // ensureBuildDependencies checks out the bench apps this app's build reads off disk.
@@ -415,7 +480,7 @@ func (w logWriter) Write(p []byte) (int, error) {
 // packageApp builds the archive into a fresh temporary directory, so the one
 // .fpm file in it is the artifact — no reconstruction of the file name from
 // the repo name, which is the prototype bug this tool replaces.
-func (r *Runner) packageApp(item BuildItem, checkout string) (artifact string, noDeps bool, err error) {
+func (r *Runner) packageApp(item BuildItem, checkout, assetBench string) (artifact string, noDeps bool, err error) {
 	tmpOut, err := os.MkdirTemp("", "fpm-mirror-*")
 	if err != nil {
 		return "", false, err
@@ -436,6 +501,28 @@ func (r *Runner) packageApp(item BuildItem, checkout string) (artifact string, n
 	}
 	if item.AppName != "" {
 		args = append(args, "--app-name", item.AppName)
+	}
+	// required_apps are pinned against the registries this run publishes to — every one
+	// of them, in order — rather than against anything on the build host. The host's FPM
+	// store and the workspace itself are both ambient state: the store holds whatever was
+	// packaged here, and the workspace holds source checkouts whose declared __version__
+	// is not the version this run publishes for a branch-tracked app. Pinning from either
+	// makes a catalogue build depend on the machine and the day it ran. Dependencies build
+	// before their dependents (see plan.go), so the erpnext an app should pin to is
+	// already published by the time it is packaged.
+	for _, repo := range r.RepoNames {
+		args = append(args, "--repo", repo)
+	}
+	if len(r.RepoNames) == 0 {
+		// --skip-publish with no repository configured: there is nowhere else to
+		// resolve from, so the host's store answers, and the package says so.
+		args = append(args, "--requires-from-local-store")
+	}
+	if assetBench != "" {
+		args = append(args, "--bench-path", assetBench)
+	}
+	if r.AllowUnbuiltAssets {
+		args = append(args, "--allow-unbuilt-assets")
 	}
 	if !item.BundleDeps {
 		args = append(args, "--bundle-deps=false")

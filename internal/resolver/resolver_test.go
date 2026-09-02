@@ -297,3 +297,163 @@ func TestUnqualifiedRequirementStillFailsClearlyWithoutADefault(t *testing.T) {
 		t.Fatalf("want the explicit no-index error, got %v", err)
 	}
 }
+
+// TestOverridesBypassEverySource: a pin stated on the command line is the answer,
+// whatever the store, the bench or a repository holds. It is what makes a
+// production build reproducible without a registry.
+func TestOverridesBypassEverySource(t *testing.T) {
+	base := t.TempDir()
+	storeApp(t, base, "frappe", "erpnext", "15.120.0")
+	bench := t.TempDir()
+	benchApp(t, bench, "erpnext", "17.0.0-dev")
+	cfg := &config.FPMConfig{AppsBasePath: base}
+
+	pins, err := ResolveRequiredApps([]string{"erpnext"}, Options{
+		Cfg: cfg, BenchPath: bench,
+		Overrides: []metadata.RequiredApp{{Name: "erpnext", Org: "frappe", Version: "16.30.0"}},
+	})
+	require.NoError(t, err)
+	require.Len(t, pins, 1)
+	assert.Equal(t, "frappe/erpnext==16.30.0", pins[0].Identifier())
+	assert.Equal(t, OverrideSource, pins[0].ResolvedFrom)
+	assert.Equal(t, "erpnext", pins[0].Requirement)
+}
+
+// TestSkipLocalStore is the fix for issue #14: with the ambient store out of the
+// way, resolution does not silently pin to whatever this machine happens to hold.
+func TestSkipLocalStore(t *testing.T) {
+	base := t.TempDir()
+	storeApp(t, base, "frappe", "erpnext", "15.120.0")
+	cfg := &config.FPMConfig{AppsBasePath: base}
+
+	pins, err := ResolveRequiredApps([]string{"frappe/erpnext"}, Options{Cfg: cfg})
+	require.NoError(t, err)
+	require.Len(t, pins, 1)
+	assert.Equal(t, "local-store", pins[0].ResolvedFrom)
+
+	_, err = ResolveRequiredApps([]string{"frappe/erpnext"}, Options{Cfg: cfg, SkipLocalStore: true})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrUnresolved))
+	assert.NotContains(t, err.Error(), "local FPM store "+base, "the store was not consulted, so it must not be blamed")
+}
+
+// TestNamedRepoIsExclusive: asking for a repository and getting the packaging
+// host's own store back is the bug in issue #14 — --repo existed but the store
+// answered first.
+func TestNamedRepoIsExclusive(t *testing.T) {
+	base := t.TempDir()
+	storeApp(t, base, "frappe", "erpnext", "15.120.0")
+	bench := t.TempDir()
+	benchApp(t, bench, "erpnext", "17.0.0-dev")
+	cfg := &config.FPMConfig{
+		AppsBasePath: base,
+		Repositories: map[string]config.RepositoryConfig{
+			"main": {Name: "main", URL: "http://repo.example", Priority: 1},
+		},
+	}
+	opts := Options{
+		Cfg: cfg, Remote: true, Repos: []string{"main"}, BenchPath: bench,
+		fetchMetadata: func(_ config.RepositoryConfig, org, app string) (*repository.PackageMetadata, bool, error) {
+			return &repository.PackageMetadata{Org: org, AppName: app, LatestVersion: "16.30.0"}, true, nil
+		},
+		fetchIndex: func(config.RepositoryConfig) (*repository.RepositoryIndex, bool, error) {
+			return &repository.RepositoryIndex{Packages: []repository.IndexEntry{{Org: "frappe", AppName: "erpnext"}}}, true, nil
+		},
+	}
+
+	pins, err := ResolveRequiredApps([]string{"erpnext"}, opts)
+	require.NoError(t, err)
+	require.Len(t, pins, 1)
+	assert.Equal(t, "frappe/erpnext==16.30.0", pins[0].Identifier(), "the repository answers, not the store or the bench")
+	assert.Equal(t, "repo:main", pins[0].ResolvedFrom)
+	assert.Equal(t, "http://repo.example", pins[0].ResolvedFromURL, "the pin records which repository it came from")
+}
+
+// TestReleaseLineRecording: the resolved version is recorded, and so is the line
+// that an install will accept.
+func TestReleaseLineRecording(t *testing.T) {
+	base := t.TempDir()
+	storeApp(t, base, "frappe", "erpnext", "16.16.0")
+	cfg := &config.FPMConfig{AppsBasePath: base}
+
+	pins, err := ResolveRequiredApps([]string{"frappe/erpnext"}, Options{Cfg: cfg, ReleaseLine: true})
+	require.NoError(t, err)
+	require.Len(t, pins, 1)
+	assert.Equal(t, "16.16.0", pins[0].Version)
+	assert.Equal(t, ">=16.0.0-0,<17.0.0", pins[0].VersionSpec)
+}
+
+func TestUnmatchedOverrides(t *testing.T) {
+	entries := []string{"frappe", "frappe/erpnext"}
+	overrides := []metadata.RequiredApp{{Name: "erpnext"}, {Name: "erpnextt"}}
+	assert.Equal(t, []string{"erpnextt"}, UnmatchedOverrides(entries, overrides))
+	assert.Empty(t, UnmatchedOverrides(entries, overrides[:1]))
+}
+
+// TestCheckClosureAcceptsAnyVersionInTheLine is the install half of issue #14: a
+// bench that took a patch upgrade, and a store holding a later patch release, both
+// satisfy a package built against an earlier one.
+func TestCheckClosureAcceptsAnyVersionInTheLine(t *testing.T) {
+	base := t.TempDir()
+	storeApp(t, base, "frappe", "erpnext", "16.30.0")
+	required := []metadata.RequiredApp{
+		{Name: "erpnext", Org: "frappe", Version: "16.16.0", VersionSpec: ">=16.0.0-0,<17.0.0"},
+	}
+
+	closure, missing, err := CheckLocalClosure(base, required, "frappe/hrms==16.16.0")
+	require.NoError(t, err)
+	assert.Empty(t, missing)
+	require.Len(t, closure, 1)
+	assert.Equal(t, "frappe/erpnext==16.30.0", closure[0].App.Identifier(),
+		"the concrete version in the store satisfies the line and is what gets installed")
+
+	// The bench provides it instead: same rule.
+	bench := t.TempDir()
+	benchApp(t, bench, "erpnext", "16.42.1")
+	closure, missing, err = CheckClosure(t.TempDir(), bench, required, "frappe/hrms==16.16.0")
+	require.NoError(t, err)
+	assert.Empty(t, missing)
+	require.Len(t, closure, 1)
+	assert.True(t, closure[0].ProvidedByBench)
+	assert.Equal(t, "16.42.1", closure[0].App.Version)
+}
+
+// TestCheckClosureRejectsAnotherLine keeps the constraint meaningful: a v15 store
+// (or bench) does not satisfy a package that needs v16.
+func TestCheckClosureRejectsAnotherLine(t *testing.T) {
+	base := t.TempDir()
+	storeApp(t, base, "frappe", "erpnext", "15.120.0")
+	storeApp(t, base, "frappe", "erpnext", "17.0.0-dev")
+	required := []metadata.RequiredApp{
+		{Name: "erpnext", Org: "frappe", Version: "16.16.0", VersionSpec: ">=16.0.0-0,<17.0.0"},
+	}
+
+	_, missing, err := CheckLocalClosure(base, required, "frappe/hrms==16.16.0")
+	require.NoError(t, err)
+	require.Len(t, missing, 1)
+	assert.Contains(t, missing[0].Reason, ">=16.0.0-0,<17.0.0")
+	assert.Contains(t, missing[0].Reason, "have 15.120.0, 17.0.0-dev")
+
+	bench := t.TempDir()
+	benchApp(t, bench, "erpnext", "15.120.0")
+	_, missing, err = CheckClosure(t.TempDir(), bench, required, "frappe/hrms==16.16.0")
+	require.NoError(t, err)
+	require.Len(t, missing, 1)
+	assert.Contains(t, missing[0].Reason, `bench has erpnext version "15.120.0"`)
+}
+
+// TestCheckClosurePrefersTheVersionBuiltAgainst: when the store holds several
+// versions of the line, the one the package was actually built against wins.
+func TestCheckClosurePrefersTheVersionBuiltAgainst(t *testing.T) {
+	base := t.TempDir()
+	storeApp(t, base, "frappe", "erpnext", "16.16.0")
+	storeApp(t, base, "frappe", "erpnext", "16.30.0")
+
+	closure, missing, err := CheckLocalClosure(base, []metadata.RequiredApp{
+		{Name: "erpnext", Org: "frappe", Version: "16.16.0", VersionSpec: ">=16.0.0-0,<17.0.0"},
+	}, "root")
+	require.NoError(t, err)
+	assert.Empty(t, missing)
+	require.Len(t, closure, 1)
+	assert.Equal(t, "16.16.0", closure[0].App.Version)
+}

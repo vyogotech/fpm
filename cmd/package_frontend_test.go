@@ -211,7 +211,10 @@ func TestPackageIgnoresAppsWithoutAFrontend(t *testing.T) {
 	})
 	logPath := fakeYarn(t, src, nil)
 
-	args, outDir := packageArgs(t, src, "1.0.0", "--org", "acme")
+	// --allow-unbuilt-assets: this app has an esbuild entry point and no bench to
+	// compile it, which a prod package otherwise refuses (see
+	// TestPackageRefusesUnbuiltDeskAssets).
+	args, outDir := packageArgs(t, src, "1.0.0", "--org", "acme", "--allow-unbuilt-assets")
 	out, err := SharedExecuteCommand(rootCmd, args...)
 	require.NoError(t, err, out)
 

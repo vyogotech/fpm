@@ -178,12 +178,19 @@ func BuildCommand(pythonExe, requirementsPath, destDir string, target Target) Co
 		}
 	}
 
-	args := []string{
+	args := append([]string{
 		"-m", "pip", "download",
 		"-r", requirementsPath,
 		"-d", destDir,
-		"--only-binary=:all:",
-	}
+	}, targetArgs(target)...)
+	return Command{Name: pythonExe, Args: args}
+}
+
+// targetArgs are the pip flags that pin resolution to a cross-target: binaries only
+// (source cannot be built for a foreign platform), every platform tag the target
+// accepts, and the destination interpreter.
+func targetArgs(target Target) []string {
+	args := []string{"--only-binary=:all:"}
 	for _, p := range target.Platforms {
 		args = append(args, "--platform", p)
 		switch p {
@@ -200,6 +207,31 @@ func BuildCommand(pythonExe, requirementsPath, destDir string, target Target) Co
 	args = append(args, "--python-version", target.PythonVersion, "--implementation", impl)
 	for _, abi := range target.ABIs {
 		args = append(args, "--abi", abi)
+	}
+	return args
+}
+
+// VerifyCommand returns the pip invocation that re-resolves the same requirements
+// using nothing but the wheels already vendored into wheelsDir.
+//
+// It is the packaging-time equivalent of what `fpm install` runs on the bench
+// (`pip install --no-index --find-links wheels -e apps/<app>`): if pip cannot build
+// the dependency graph from these files alone, neither can the bench, and there is no
+// network there to fall back on. A gap in the transitive closure — a dependency of a
+// dependency that never got downloaded — is invisible in the wheels directory itself
+// and only shows up as an install failure days later, which is what issue #9 reported.
+func VerifyCommand(pythonExe, requirementsPath, wheelsDir, destDir string, target Target) Command {
+	args := []string{
+		"-m", "pip", "download",
+		"-r", requirementsPath,
+		"-d", destDir,
+		"--no-index",
+		"--find-links", wheelsDir,
+	}
+	if !target.IsHost() {
+		// A host package's wheels directory may legitimately hold an sdist, which the
+		// bench's pip builds at install time, so only a cross-target forces binaries.
+		args = append(args, targetArgs(target)...)
 	}
 	return Command{Name: pythonExe, Args: args}
 }
@@ -338,6 +370,13 @@ func Bundle(appDir, destDir string, target Target) (Result, error) {
 		return Result{}, nil
 	}
 
+	// Everything above only proves pip downloaded something. This proves the result is
+	// installable with no network, which is the whole promise of a bundled package.
+	if err := verifyOfflineClosure(pythonExe, mergedPath, destDir, target); err != nil {
+		os.RemoveAll(destDir)
+		return Result{}, err
+	}
+
 	pins := PinsFromFiles(files)
 	if err := writeLock(filepath.Join(destDir, LockFileName), target, req, pins, builtFromSdist); err != nil {
 		os.RemoveAll(destDir)
@@ -346,6 +385,38 @@ func Bundle(appDir, destDir string, target Target) (Result, error) {
 
 	fmt.Printf("Bundled %d dependency file(s) into %s/ (pinned in %s/%s)\n", len(files), DirName, DirName, LockFileName)
 	return Result{Bundled: true, Pins: pins}, nil
+}
+
+// verifyOfflineClosure re-resolves the requirements against the vendored wheels alone.
+// Anything pip cannot satisfy here is a dependency the destination bench would also be
+// unable to find, so packaging fails rather than shipping a package whose offline
+// install breaks on a missing transitive dependency.
+func verifyOfflineClosure(pythonExe, requirementsPath, wheelsDir string, target Target) error {
+	scratch, err := os.MkdirTemp("", "fpm-verify-")
+	if err != nil {
+		return fmt.Errorf("failed to create a directory to verify the bundled wheels in: %w", err)
+	}
+	defer os.RemoveAll(scratch)
+
+	cmd := VerifyCommand(pythonExe, requirementsPath, wheelsDir, scratch, target)
+	fmt.Printf("Verifying the bundled wheels install offline...\n  %s\n", cmd)
+	output, runErr := exec.Command(cmd.Name, cmd.Args...).CombinedOutput()
+	if runErr == nil {
+		fmt.Printf("Verified: every dependency resolves from %s/ alone.\n", DirName)
+		return nil
+	}
+
+	missing := unsatisfiedRequirement(string(output))
+	detail := ""
+	if missing != "" {
+		detail = fmt.Sprintf("%q is missing from the bundled set. ", missing)
+	}
+	return fmt.Errorf("the bundled wheels are not a complete dependency closure for %s: %s"+
+		"installing this package offline would fail the same way on the bench.\n%s\n"+
+		"This usually means a transitive dependency publishes no wheel for the target; "+
+		"check --platform and --python-version match the destination bench, or pass --bundle-deps=false "+
+		"to ship a package that resolves its dependencies from the network instead.\n%w",
+		target.Describe(), detail, strings.TrimSpace(string(output)), runErr)
 }
 
 // listDistributions returns the distribution files in dir, sorted.

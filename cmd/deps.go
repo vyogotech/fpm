@@ -278,9 +278,10 @@ func resolveDepsPackage(target string, cfg *config.FPMConfig, repoName string, a
 			}
 			for i, r := range vMeta.RequiredApps {
 				appMeta.RequiredApps[i] = metadata.RequiredApp{
-					Org:     r.Org,
-					Name:    r.AppName,
-					Version: r.Version,
+					Org:         r.Org,
+					Name:        r.AppName,
+					Version:     r.Version,
+					VersionSpec: r.VersionSpec,
 				}
 			}
 			for _, d := range vMeta.Dependencies {
@@ -341,9 +342,19 @@ func buildInstallPlan(
 				}
 			}
 
+			// A requirement with a constraint takes any store version that satisfies
+			// it, preferring the version the package was built against.
+			available := resolver.StoreVersions(cfg.AppsBasePath, org, reqApp.Name)
 			reqVer := reqApp.Version
-			if reqVer == "" {
-				reqVer = semver.Latest(resolver.StoreVersions(cfg.AppsBasePath, org, reqApp.Name))
+			switch {
+			case reqApp.VersionSpec != "":
+				if reqVer == "" || !resolver.InStore(cfg.AppsBasePath, org, reqApp.Name, reqVer) {
+					if selected := reqApp.Constraint().Select(available); selected != "" {
+						reqVer = selected
+					}
+				}
+			case reqVer == "":
+				reqVer = semver.Latest(available)
 			}
 
 			identifier := fmt.Sprintf("%s/%s==%s", org, reqApp.Name, reqVer)
@@ -353,7 +364,7 @@ func buildInstallPlan(
 
 			// 1. Check Bench
 			if benchVer, inBench := benchApps[reqApp.Name]; inBench {
-				if reqVer == "" || benchVer == "" || benchVer == reqVer {
+				if benchVer == "" || reqApp.Accepts(benchVer) {
 					item := InstallPlanItem{
 						Org:             org,
 						AppName:         reqApp.Name,
@@ -443,9 +454,10 @@ func buildInstallPlan(
 						}
 						for i, r := range vMeta.RequiredApps {
 							depMeta.RequiredApps[i] = metadata.RequiredApp{
-								Org:     r.Org,
-								Name:    r.AppName,
-								Version: r.Version,
+								Org:         r.Org,
+								Name:        r.AppName,
+								Version:     r.Version,
+								VersionSpec: r.VersionSpec,
 							}
 						}
 						break

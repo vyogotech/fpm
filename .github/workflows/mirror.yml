@@ -35,6 +35,14 @@ on:
         description: 'Target Python version for vendored wheels (e.g. 3.14, 3.11)'
         required: false
         default: '3.14'
+      frappe_ref:
+        description: "The frappe branch whose esbuild compiles the catalogue's desk assets (e.g. version-16, version-15)"
+        required: false
+        default: 'version-16'
+      allow_unbuilt_assets:
+        description: 'Publish an app even when its desk bundles could not be compiled (its UI will not render until the destination bench builds them)'
+        type: boolean
+        default: false
       build_from_source:
         description: 'Compile the CLI from this branch instead of using the latest release (for validating an unreleased change)'
         type: boolean
@@ -222,10 +230,27 @@ jobs:
         id: restore-build-cache
         uses: actions/cache/restore@v4
         with:
-          path: ~/.fpm/build-cache
+          # frappe's checkout is excluded: every shard builds its app's desk assets
+          # against the same frappe, so it is cached once for all of them by the step
+          # below instead of ~20 times here.
+          path: |
+            ~/.fpm/build-cache
+            !~/.fpm/build-cache/bench/apps/frappe
           key: fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-${{ github.run_id }}
           restore-keys: |
             fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-
+
+      # Frappe's own checkout and node_modules are what compiles an app's desk bundles
+      # (`node esbuild --production --apps <app>`), and they are identical for every
+      # shard, so they are cached once per frappe ref rather than per app. A cold
+      # restore costs a clone plus a yarn install inside the shard; a warm one costs
+      # nothing, which is what keeps the asset build affordable across the catalogue.
+      - name: Restore Frappe Asset Pipeline
+        id: restore-frappe
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.fpm/build-cache/bench/apps/frappe
+          key: fpm-mirror-frappe-v1-${{ runner.os }}-${{ inputs.frappe_ref || 'version-16' }}
 
       - name: Report Cache State
         run: |
@@ -275,9 +300,18 @@ jobs:
             ARGS="${{ steps.repos.outputs.repo_args }} --apps ${{ matrix.slug }}"
           fi
           PYTHON_VER="${{ inputs.python_version || '3.14' }}"
+          FRAPPE_REF="${{ inputs.frappe_ref || 'version-16' }}"
           ARGS="$ARGS --catalog catalog/apps.csv --python-version $PYTHON_VER"
+          # An app with esbuild entry points is packaged with its bundles compiled by
+          # this frappe. Without that the package installs and its desk UI renders
+          # nothing, which is what shipped for every front-end app before (issue #9).
+          ARGS="$ARGS --frappe-ref $FRAPPE_REF"
           ARGS="$ARGS --cache-dir $HOME/.fpm/build-cache --output-path dist"
           ARGS="$ARGS --report dist/mirror-report-${{ matrix.slug }}.json"
+
+          if [ "${{ inputs.allow_unbuilt_assets }}" = "true" ]; then
+            ARGS="$ARGS --allow-unbuilt-assets"
+          fi
 
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
@@ -332,8 +366,20 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: ~/.fpm/build-cache
+          path: |
+            ~/.fpm/build-cache
+            !~/.fpm/build-cache/bench/apps/frappe
           key: fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-${{ github.run_id }}
+
+      # Only the shard that had to fetch and install it writes it back; the rest
+      # restored the same entry and would only race to store an identical copy.
+      - name: Save Frappe Asset Pipeline
+        if: ${{ always() && steps.restore-frappe.outputs.cache-hit != 'true' }}
+        continue-on-error: true   # a concurrent shard may have saved this key first
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.fpm/build-cache/bench/apps/frappe
+          key: fpm-mirror-frappe-v1-${{ runner.os }}-${{ inputs.frappe_ref || 'version-16' }}
 
       # dist/ is deliberately not cached — it is this run's output, and restoring stale
       # .fpm files into it would be actively wrong. The report is uploaded instead.
@@ -413,10 +459,27 @@ jobs:
         id: restore-build-cache
         uses: actions/cache/restore@v4
         with:
-          path: ~/.fpm/build-cache
+          # frappe's checkout is excluded: every shard builds its app's desk assets
+          # against the same frappe, so it is cached once for all of them by the step
+          # below instead of ~20 times here.
+          path: |
+            ~/.fpm/build-cache
+            !~/.fpm/build-cache/bench/apps/frappe
           key: fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-${{ github.run_id }}
           restore-keys: |
             fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-
+
+      # Frappe's own checkout and node_modules are what compiles an app's desk bundles
+      # (`node esbuild --production --apps <app>`), and they are identical for every
+      # shard, so they are cached once per frappe ref rather than per app. A cold
+      # restore costs a clone plus a yarn install inside the shard; a warm one costs
+      # nothing, which is what keeps the asset build affordable across the catalogue.
+      - name: Restore Frappe Asset Pipeline
+        id: restore-frappe
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.fpm/build-cache/bench/apps/frappe
+          key: fpm-mirror-frappe-v1-${{ runner.os }}-${{ inputs.frappe_ref || 'version-16' }}
 
       - name: Report Cache State
         run: |
@@ -466,9 +529,18 @@ jobs:
             ARGS="${{ steps.repos.outputs.repo_args }} --apps ${{ matrix.slug }}"
           fi
           PYTHON_VER="${{ inputs.python_version || '3.14' }}"
+          FRAPPE_REF="${{ inputs.frappe_ref || 'version-16' }}"
           ARGS="$ARGS --catalog catalog/apps.csv --python-version $PYTHON_VER"
+          # An app with esbuild entry points is packaged with its bundles compiled by
+          # this frappe. Without that the package installs and its desk UI renders
+          # nothing, which is what shipped for every front-end app before (issue #9).
+          ARGS="$ARGS --frappe-ref $FRAPPE_REF"
           ARGS="$ARGS --cache-dir $HOME/.fpm/build-cache --output-path dist"
           ARGS="$ARGS --report dist/mirror-report-${{ matrix.slug }}.json"
+
+          if [ "${{ inputs.allow_unbuilt_assets }}" = "true" ]; then
+            ARGS="$ARGS --allow-unbuilt-assets"
+          fi
 
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
@@ -523,8 +595,20 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: ~/.fpm/build-cache
+          path: |
+            ~/.fpm/build-cache
+            !~/.fpm/build-cache/bench/apps/frappe
           key: fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-${{ github.run_id }}
+
+      # Only the shard that had to fetch and install it writes it back; the rest
+      # restored the same entry and would only race to store an identical copy.
+      - name: Save Frappe Asset Pipeline
+        if: ${{ always() && steps.restore-frappe.outputs.cache-hit != 'true' }}
+        continue-on-error: true   # a concurrent shard may have saved this key first
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.fpm/build-cache/bench/apps/frappe
+          key: fpm-mirror-frappe-v1-${{ runner.os }}-${{ inputs.frappe_ref || 'version-16' }}
 
       # dist/ is deliberately not cached — it is this run's output, and restoring stale
       # .fpm files into it would be actively wrong. The report is uploaded instead.

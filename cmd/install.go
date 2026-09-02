@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"fpm/internal/appstore"
@@ -37,6 +38,7 @@ var (
 	installVerbose                bool
 	installSkipRequiredAppsCheck  bool
 	installIgnorePlatformMismatch bool
+	installNoSiteRepair           bool
 )
 
 // copyDirContents recursively copies contents from src to dst.
@@ -88,7 +90,13 @@ from the local FPM store, then from remote repositories.
 
 By default, transitive dependencies (hooks.py required_apps) are resolved across all configured
 repositories, downloaded into the local store, and installed in dependency order. Use --no-deps
-to install only the target package.`,
+to install only the target package.
+
+With --site, the app is also installed onto that site. fpm clears the site cache first, because
+it has just changed sites/apps.txt from the outside and frappe reads its app-to-modules map from
+a cache; a stale one makes frappe sync none of the app's DocTypes and then fail in after_install.
+After the install fpm checks the app's DocTypes actually reached the database, and repairs a site
+left in that half-installed state (--no-site-repair to report it instead, exit code ` + fmt.Sprint(ExitSiteHalfInstalled) + `).`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, configErr := config.InitConfig()
@@ -571,7 +579,40 @@ func installOne(cmd *cobra.Command, packagePathArg, benchPath, siteName string, 
 // benchPythonExecutable is the interpreter of a Frappe bench's virtualenv.
 const benchPythonExecutable = "./env/bin/python"
 
-// installAppOnSite runs `frappe --site <site> install-app <app>` without process-global os.Chdir.
+// frappeCommand builds a frappe CLI invocation that runs out of the bench's own
+// virtualenv, from <bench>/sites — the working directory bench itself uses — and
+// without a process-global os.Chdir.
+func frappeCommand(benchPath, siteName string, args ...string) *exec.Cmd {
+	full := append([]string{"-m", "frappe.utils.bench_helper", "frappe", "--site", siteName}, args...)
+	execCmd := exec.Command(filepath.Join(benchPath, "env", "bin", "python"), full...)
+	execCmd.Dir = filepath.Join(benchPath, "sites")
+	return execCmd
+}
+
+// clearSiteCache runs `bench --site <site> clear-cache`, reporting failure without
+// treating it as fatal.
+func clearSiteCache(benchPath, siteName, why string) {
+	fmt.Printf("Clearing site cache (%s): (cd sites && frappe --site %s clear-cache)\n", why, siteName)
+	if out, err := frappeCommand(benchPath, siteName, "clear-cache").CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: clear-cache for site '%s' failed: %v\n%s\nRun 'bench --site %s clear-cache' yourself.\n",
+			siteName, err, strings.TrimSpace(string(out)), siteName)
+		return
+	}
+	fmt.Printf("Cleared cache for site '%s'.\n", siteName)
+}
+
+// installAppOnSite runs `frappe --site <site> install-app <app>` and makes sure the
+// app's DocTypes actually reached the database.
+//
+// Frappe caches the app-to-modules map in redis and only rebuilds it from
+// sites/apps.txt on a cache miss. fpm has just changed apps.txt from the outside,
+// so a cache warmed before that install makes frappe's own `sync_for` iterate an
+// empty module list — it syncs no DocTypes at all, silently — and the app's
+// after_install hook then fails on its own missing DocTypes, leaving the site
+// half-installed: app registered, tables absent (issue #13). Frappe grew a guard
+// for this in develop (92136994b), but every released version still needs the
+// cache cleared first, which is why that happens here before install-app rather
+// than only after it.
 func installAppOnSite(benchPath, siteName, appName string) error {
 	pythonExe := filepath.Join(benchPath, "env", "bin", "python")
 	if _, statErr := os.Stat(pythonExe); statErr != nil {
@@ -580,33 +621,158 @@ func installAppOnSite(benchPath, siteName, appName string) error {
 			appName, siteName, pythonExe, benchPath, siteName, appName)
 	}
 
-	args := []string{"-m", "frappe.utils.bench_helper", "frappe", "--site", siteName, "install-app", appName}
-	fmt.Printf("\nInstalling app '%s' onto site '%s': (cd sites && %s %s)\n",
-		appName, siteName, pythonExe, strings.Join(args, " "))
+	clearSiteCache(benchPath, siteName, "apps.txt changed, so frappe's cached module map is stale")
 
-	execCmd := exec.Command(pythonExe, args...)
-	execCmd.Dir = filepath.Join(benchPath, "sites")
-	output, err := execCmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to install app '%s' onto site '%s':\n%s\nError: %w",
-			appName, siteName, string(output), err)
+	fmt.Printf("\nInstalling app '%s' onto site '%s': (cd sites && frappe --site %s install-app %s)\n",
+		appName, siteName, siteName, appName)
+	output, installErr := frappeCommand(benchPath, siteName, "install-app", appName).CombinedOutput()
+	if installErr == nil {
+		fmt.Printf("Successfully installed app '%s' onto site '%s'.\nOutput:\n%s\n", appName, siteName, string(output))
 	}
 
-	fmt.Printf("Successfully installed app '%s' onto site '%s'.\nOutput:\n%s\n",
-		appName, siteName, string(output))
-
-	clearArgs := []string{"-m", "frappe.utils.bench_helper", "frappe", "--site", siteName, "clear-cache"}
-	fmt.Printf("Clearing site cache: (cd sites && %s %s)\n", pythonExe, strings.Join(clearArgs, " "))
-	clearCmd := exec.Command(pythonExe, clearArgs...)
-	clearCmd.Dir = filepath.Join(benchPath, "sites")
-	if out, err := clearCmd.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: clear-cache for site '%s' failed: %v\n%s\nRun 'bench --site %s clear-cache' yourself.\n",
-			siteName, err, strings.TrimSpace(string(out)), siteName)
-	} else {
-		fmt.Printf("Cleared cache for site '%s'.\n", siteName)
+	// Verify what the install claims: the app's own DocTypes have to exist now.
+	if err := ensureAppDocTypesSynced(benchPath, siteName, appName, installErr, string(output)); err != nil {
+		return err
 	}
+
+	clearSiteCache(benchPath, siteName, "so the running site picks up the new app")
 	fmt.Printf("Note: running web/worker processes load an app when they start; restart them (bench restart) for '%s' to be served.\n", appName)
 	return nil
+}
+
+// ensureAppDocTypesSynced checks that the DocTypes the app ships on disk are in the
+// site's database, and repairs a half-installed site when they are not.
+//
+// installErr is the error `install-app` exited with, if any: a failure whose cause
+// is the missing sync is repairable, while any other failure is returned as-is
+// rather than papered over by a retry.
+func ensureAppDocTypesSynced(benchPath, siteName, appName string, installErr error, installOutput string) error {
+	failed := func(err error) error {
+		return fmt.Errorf("failed to install app '%s' onto site '%s':\n%s\nError: %w",
+			appName, siteName, installOutput, err)
+	}
+
+	expected := appDocTypeNames(benchPath, appName, doctypeVerificationLimit)
+	if len(expected) == 0 {
+		// The app ships no DocTypes, so there is nothing to verify either way.
+		if installErr != nil {
+			return failed(installErr)
+		}
+		return nil
+	}
+
+	present, countErr := countSiteDocTypes(benchPath, siteName, expected)
+	if countErr != nil {
+		// The site could not be queried at all — it does not exist, the database is
+		// down, the frappe version has no such entry point. Nothing here can be
+		// concluded about the sync, so the install's own outcome stands.
+		if installErr == nil {
+			fmt.Fprintf(os.Stderr, "Note: could not verify that %s's DocTypes reached site '%s': %v\n", appName, siteName, countErr)
+			return nil
+		}
+		return failed(installErr)
+	}
+	if present > 0 {
+		if installErr != nil {
+			// The sync happened; install-app failed for its own reasons, which a
+			// retry would not change.
+			return failed(installErr)
+		}
+		return nil
+	}
+
+	// The exact half-installed state from issue #13: the app is registered on the
+	// site, and not one of its DocTypes is in the database.
+	fmt.Fprintf(os.Stderr, "\nWarning: app '%s' is registered on site '%s' but none of its %d DocType(s) reached the database — "+
+		"frappe synced nothing for it (a stale module map).\n", appName, siteName, len(expected))
+	if installNoSiteRepair {
+		return fmt.Errorf("%w: site '%s' is half-installed for app '%s': the app is registered but its DocTypes are missing. "+
+			"Run 'bench --site %s migrate' to finish it (--no-site-repair stopped fpm from doing that)",
+			ErrSiteHalfInstalled, siteName, appName, siteName)
+	}
+
+	fmt.Fprintf(os.Stderr, "Repairing: clearing the site cache and re-running install-app --force, "+
+		"which re-syncs the DocTypes and re-runs %s's install hooks in a fresh process.\n", appName)
+	clearSiteCache(benchPath, siteName, "to rebuild frappe's module map from apps.txt")
+	repairOut, repairErr := frappeCommand(benchPath, siteName, "install-app", "--force", appName).CombinedOutput()
+	if repairErr == nil {
+		if present, countErr = countSiteDocTypes(benchPath, siteName, expected); countErr == nil && present > 0 {
+			fmt.Printf("Repaired: %d of %d checked DocType(s) of '%s' are now on site '%s'.\nOutput:\n%s\n",
+				present, len(expected), appName, siteName, string(repairOut))
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: site '%s' is half-installed for app '%s': the app is registered but its DocTypes are missing, "+
+		"and re-running install-app did not fix it. Run 'bench --site %s migrate' to finish the install.\nFirst attempt:\n%s\nRepair attempt:\n%s",
+		ErrSiteHalfInstalled, siteName, appName, siteName, installOutput, string(repairOut))
+}
+
+// doctypeVerificationLimit bounds how many DocType names are sent to the site in
+// one query. The failure being checked for is all-or-nothing — frappe either
+// synced the app or synced nothing — so a sample is as conclusive as the full set,
+// and a bounded argument list keeps the command safe for an app shipping hundreds.
+const doctypeVerificationLimit = 100
+
+// appDocTypeNames lists the DocTypes an app ships, read from the doctype JSON
+// files in the bench's copy of it (<bench>/apps/<app>, which fpm has just linked
+// into the store). Names are sorted, so the sample is the same on every run.
+func appDocTypeNames(benchPath, appName string, limit int) []string {
+	matches, err := filepath.Glob(filepath.Join(benchPath, "apps", appName, appName, "*", "doctype", "*", "*.json"))
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, path := range matches {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			continue
+		}
+		var doc struct {
+			Name    string `json:"name"`
+			DocType string `json:"doctype"`
+		}
+		if json.Unmarshal(data, &doc) != nil || doc.DocType != "DocType" || doc.Name == "" {
+			continue
+		}
+		names = append(names, doc.Name)
+	}
+	sort.Strings(names)
+	if limit > 0 && len(names) > limit {
+		names = names[:limit]
+	}
+	return names
+}
+
+// countSiteDocTypes reports how many of the named DocTypes exist on the site.
+// `frappe --site <site> execute` prints the returned value as JSON, and prints
+// nothing at all when it is falsy — so no output, with a zero exit status, is a
+// count of zero.
+func countSiteDocTypes(benchPath, siteName string, names []string) (int, error) {
+	filters, err := json.Marshal(map[string]any{"dt": "DocType", "filters": map[string]any{"name": []any{"in", names}}})
+	if err != nil {
+		return 0, err
+	}
+	out, err := frappeCommand(benchPath, siteName, "execute", "frappe.db.count", "--kwargs", string(filters)).CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("%v: %s", err, strings.TrimSpace(lastLines(string(out), 5)))
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if n, convErr := strconv.Atoi(strings.TrimSpace(lines[i])); convErr == nil {
+			return n, nil
+		}
+	}
+	// Frappe printed nothing it could parse as a number: the count was zero.
+	return 0, nil
+}
+
+// lastLines returns at most n trailing lines of s, for error excerpts.
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // Helper function to read metadata from an FPM file's app_metadata.json
@@ -920,6 +1086,7 @@ func init() {
 	installCmd.Flags().BoolVar(&installDryRun, "dry-run", false, "Print the installation plan without modifying the bench")
 	installCmd.Flags().BoolVarP(&installVerbose, "verbose", "v", false, "Show detailed output during installation and rollback")
 	installCmd.Flags().BoolVar(&installSkipRequiredAppsCheck, "skip-required-apps-check", false, "Do not fail when a required app (hooks.py required_apps) is missing from the local FPM store or bench; for benches whose required apps were installed outside fpm")
+	installCmd.Flags().BoolVar(&installNoSiteRepair, "no-site-repair", false, "Do not re-run 'install-app --force' when a site install leaves the app registered but its DocTypes unsynced; fail and leave the site as it is")
 	installCmd.Flags().BoolVar(&installIgnorePlatformMismatch, "ignore-platform-mismatch", false, "Do not fail when the package's vendored wheels were built for another platform or Python version; pip then decides")
 	rootCmd.AddCommand(installCmd)
 }

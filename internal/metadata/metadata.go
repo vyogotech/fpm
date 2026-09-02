@@ -2,8 +2,11 @@ package metadata
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+
+	"fpm/internal/semver"
 )
 
 // AppMetadata defines the structure of the app_metadata.json file
@@ -87,24 +90,81 @@ type RequiredApp struct {
 	Name string `json:"name"`
 	// Org is the organisation the app was resolved under.
 	Org string `json:"org,omitempty"`
-	// Version is the exact package version the requirement was pinned to.
+	// Version is the exact package version the requirement resolved to when this
+	// package was built. It is what the package was built and tested against; it
+	// is only what an install must match when VersionSpec is empty.
 	Version string `json:"version,omitempty"`
+	// VersionSpec is the constraint an install has to satisfy, e.g.
+	// ">=16.0.0-0,<17.0.0". Empty means the exact Version is required, which is
+	// how packages built before ranges existed are read.
+	//
+	// It exists because pinning exactly made packages mutually uninstallable for
+	// no real reason: two apps needing the same dependency, packaged a day apart,
+	// pinned two different patch versions, and a bench holds one copy of an app.
+	VersionSpec string `json:"version_spec,omitempty"`
 	// Requirement is the raw hooks.py entry, e.g. "frappe/erpnext" or a git URL.
 	Requirement string `json:"requirement,omitempty"`
-	// ResolvedFrom names where the pin came from: "local-store" or "repo:<name>".
+	// ResolvedFrom names where the pin came from, so a package is auditable after
+	// the fact: "local-store", "bench:<path>", "repo:<name>", or "flag:--requires"
+	// when the packager stated it outright.
 	ResolvedFrom string `json:"resolved_from,omitempty"`
+	// ResolvedFromURL is the repository URL behind ResolvedFrom when the pin came
+	// from a repository; a repository's local name alone does not identify it.
+	ResolvedFromURL string `json:"resolved_from_url,omitempty"`
 }
 
-// Identifier renders the requirement as <org>/<name>==<version>.
+// Identifier renders the requirement as <org>/<name>==<version>, or
+// <org>/<name><spec> when it accepts a range rather than one version.
 func (r RequiredApp) Identifier() string {
 	id := r.Name
 	if r.Org != "" {
 		id = r.Org + "/" + r.Name
 	}
+	if r.VersionSpec != "" {
+		return id + r.VersionSpec
+	}
 	if r.Version != "" {
 		id += "==" + r.Version
 	}
 	return id
+}
+
+// Constraint is the requirement's acceptance rule: its VersionSpec when it has
+// one, otherwise an exact match on Version, otherwise "anything". A malformed
+// spec falls back to the exact version rather than silently accepting anything.
+func (r RequiredApp) Constraint() semver.Constraint {
+	if r.VersionSpec != "" {
+		if c, err := semver.ParseConstraint(r.VersionSpec); err == nil {
+			return c
+		}
+	}
+	if r.Version != "" {
+		return semver.MustParseConstraint("==" + r.Version)
+	}
+	return semver.Constraint{}
+}
+
+// Accepts reports whether a version of the app satisfies this requirement.
+func (r RequiredApp) Accepts(version string) bool {
+	if r.VersionSpec == "" && r.Version == "" {
+		// Packaged without a pin at all: any version present satisfies it.
+		return true
+	}
+	if r.VersionSpec == "" {
+		// Exact pins predate constraints and are compared as written, so a
+		// version string that is not semver at all still matches itself.
+		return version == r.Version || r.Constraint().Matches(version)
+	}
+	return r.Constraint().Matches(version)
+}
+
+// Describe renders the requirement for a human: the constraint plus, when the
+// two differ, the version it was actually built against.
+func (r RequiredApp) Describe() string {
+	if r.VersionSpec != "" && r.Version != "" {
+		return fmt.Sprintf("%s (built against %s)", r.Identifier(), r.Version)
+	}
+	return r.Identifier()
 }
 
 // LoadAppMetadata loads metadata from app_metadata.json file in the given appPath.

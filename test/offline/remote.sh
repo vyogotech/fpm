@@ -87,7 +87,10 @@ phase_package() {
 	chmod -R u+w "$WORK/apps"
 
 	local flags
-	flags="--org $ORG --version $VERSION --output-path /out --bench-path $BENCH --python-version $PYTHON_VERSION $(platform_flags)"
+	# --requires-from-local-store: the offline workflow pins a required app from the
+	# builder's own store (package the base, then the child). A prod package will not
+	# do that silently — the store is ambient state — so the workflow says it outright.
+	flags="--org $ORG --version $VERSION --output-path /out --bench-path $BENCH --python-version $PYTHON_VERSION --requires-from-local-store $(platform_flags)"
 	podman run --rm "${USERNS[@]}" \
 		-v "$WORK/apps:/work/apps:Z" -v "$OUT:/out:Z" -v "$WORK/bin:/opt/fpm:ro,Z" \
 		-v "$WORK/builder-home/.fpm:/home/frappe/.fpm:Z" \
@@ -314,6 +317,17 @@ phase_verify() {
 	frappe_cmd "execute fpm_demo_base.utils.demo_table" > "$OUT/demo_table.txt" 2>&1 \
 		|| fail "the app cannot import its vendored dependencies on the site"
 	pass "Python deps match wheels/fpm-lock.txt pins and import on the site ($(grep -v '^#' "$OUT/fpm_demo_base.lock" | tr '\n' ' '))"
+
+	# --- 2b. the app's DocTypes reached the database, and its install hook ran ---
+	# Issue #13: `install-app` registered the app on the site while frappe synced none
+	# of its DocTypes, so after_install failed on its own missing table and the site was
+	# left half-installed. fpm_demo_base ships a DocType and an after_install that
+	# writes to it, so both halves have to have happened for this to answer.
+	frappe_cmd "execute fpm_demo_base.utils.demo_note" > "$OUT/demo_note.txt" 2>&1 \
+		|| fail "the app's DocType is not on the site: the install synced no DocTypes (issue #13)"
+	grep -q "after_install" "$OUT/demo_note.txt" \
+		|| fail "after_install did not create its record; the site is half-installed (issue #13). Output: $(cat "$OUT/demo_note.txt")"
+	pass "the app's DocTypes are synced on $SITE and after_install ran (FPM Demo Note record present)"
 
 	# --- 3. required_apps satisfied from already-installed local packages ---
 	grep -q "Required app $ORG/fpm_demo_base==$VERSION satisfied from local FPM store" "$OUT/install-fpm_demo_child.log" \
