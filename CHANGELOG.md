@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-09-02
+
+Fixes found by running the catalogue mirror against 4.0.0.
+
+### Fixed
+
+- `fpm mirror` publishes a version whose desk assets cannot be compiled instead of
+  failing the whole app, and reports it as `published-noassets`. wiki 1.0.0's
+  stylesheets no longer build against frappe `version-16` (`Undefined mixin`), which
+  under 4.0.0 failed the entire wiki shard and withheld 2.0.1 and 3.1.0 with it. The
+  new action is the same shape as `published-nodeps` for wheel vendoring: publishable,
+  visibly degraded, and a defect to fix in the catalog rather than a normal outcome.
+- `fpm publish` explains an HTTP 413. The refusal comes from a proxy in front of the
+  registry rather than the registry itself — registryd accepts 1 GiB and its nginx
+  500 MB, while a CDN in front commonly caps request bodies at 100 MB — so the limit
+  to raise is not on the machine the publisher is looking at. The catalogue's builder
+  package (101 MB) had been failing with a bare `exit status 1`.
+- The catalog restricts hrms to v16, as erpnext already was. The mirror vendors wheels
+  for one `--python-version` per run (3.14), which is not what a v14/v15 bench runs,
+  and hrms v15 requires an erpnext v15 that is published for python 3.11 — that pair
+  could never install together.
+
 ## [4.0.0] - 2026-09-02
 
 Three defects reported against published packages: sites left half-installed by
@@ -92,10 +114,7 @@ and are still read as exact pins.
 - `fpm package --allow-unbuilt-assets` and `fpm mirror --allow-unbuilt-assets` publish an
   app whose desk bundles were not compiled, which is what happened silently before.
 - `fpm mirror --frappe-ref` selects the frappe branch whose esbuild compiles the
-  catalogue's desk assets. A version whose assets cannot be compiled against that
-  frappe — an old tag whose stylesheets no longer build — is published without them
-  and reported as `published-noassets` rather than failing the app, the same way
-  `published-nodeps` already covers a failed wheel vendoring.
+  catalogue's desk assets.
 - `fpm install --no-site-repair` reports a half-installed site instead of repairing it,
   and exit code `11` distinguishes that state from a generic failure.
 
