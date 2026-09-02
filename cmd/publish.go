@@ -266,6 +266,14 @@ to publish from the local FPM app store.`,
 				return fmt.Errorf("failed to upload FPM package: %w\n%s",
 					err, repository.DescribeAuthFailure(targetRepo.Name, targetRepo.Username, statusErr.StatusCode))
 			}
+			if repository.IsTooLarge(err) {
+				size := int64(0)
+				if info, statErr := os.Stat(fpmFilePathToPublish); statErr == nil {
+					size = info.Size()
+				}
+				return fmt.Errorf("failed to upload FPM package: %w\n%s",
+					err, repository.DescribeTooLarge(targetRepo.Name, size))
+			}
 			return fmt.Errorf("failed to upload FPM package: %w", err)
 		}
 

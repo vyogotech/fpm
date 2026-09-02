@@ -160,6 +160,33 @@ func IsAuthFailure(err error) bool {
 		statusErr.StatusCode == http.StatusForbidden
 }
 
+// DescribeTooLarge turns an HTTP 413 into guidance. The status usually comes from a
+// proxy in front of the registry rather than from the registry itself — fpm's own
+// registry accepts artifacts up to 1 GiB, and its nginx up to 500 MB, while a CDN in
+// front commonly caps request bodies at 100 MB — so the size to raise is not on the
+// machine the publisher is looking at.
+func DescribeTooLarge(repoName string, sizeBytes int64) string {
+	size := ""
+	if sizeBytes > 0 {
+		size = fmt.Sprintf(" (%.1f MB)", float64(sizeBytes)/(1<<20))
+	}
+	return fmt.Sprintf(
+		"The package%s was refused as too large by %q, or by a proxy or CDN in front of it — "+
+			"an upload cap of 100 MB is a common default, and it applies before the registry sees the request. "+
+			"Raise that limit for the registry's hostname, publish this package through a route that does not pass "+
+			"through it, or reduce the artifact (its vendored wheels and compiled frontend are usually most of the size).",
+		size, repoName)
+}
+
+// IsTooLarge reports whether an upload was refused for its size.
+func IsTooLarge(err error) bool {
+	var statusErr *HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	return statusErr.StatusCode == http.StatusRequestEntityTooLarge
+}
+
 // DescribeAuthFailure turns an HTTP 401/403 into guidance, since the underlying status
 // alone gives no hint that credentials are the missing piece.
 func DescribeAuthFailure(repoName, username string, statusCode int) string {
