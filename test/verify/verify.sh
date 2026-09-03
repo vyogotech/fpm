@@ -199,7 +199,11 @@ main() {
 	: > "$OUT/results.tsv"
 
 	if [ -n "${FPM_VERIFY_FPM:-}" ]; then
-		cp "$FPM_VERIFY_FPM" "$WORK/bin/fpm"
+		# -ef: a caller that already staged the binary here (the workflow does) would
+		# otherwise make cp refuse to copy a file onto itself and take the run with it.
+		if [ ! "$FPM_VERIFY_FPM" -ef "$WORK/bin/fpm" ]; then
+			cp "$FPM_VERIFY_FPM" "$WORK/bin/fpm"
+		fi
 	else
 		log "building fpm for the image's architecture"
 		local arch; arch="$(podman image inspect "$IMAGE" --format '{{.Architecture}}' 2>/dev/null || echo amd64)"
