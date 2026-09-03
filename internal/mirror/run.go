@@ -67,6 +67,9 @@ type Runner struct {
 	// FrappeRef is the frappe branch or tag whose esbuild compiles the catalogue's
 	// desk assets. The catalog's build_deps column overrides it per app.
 	FrappeRef string
+	// InstallCheck installs each built package into a throwaway bench before it is
+	// published. The zero value disables it.
+	InstallCheck InstallCheck
 	// AllowUnbuiltAssets publishes an app whose desk bundles could not be compiled,
 	// as the mirror did before it built them at all. The package installs and its
 	// desk UI does not render until the destination bench runs its own build.
@@ -161,6 +164,15 @@ func (r *Runner) runOne(item BuildItem) Result {
 	}
 	if manifest.WheelPlatform != "" {
 		r.Log("  wheels: verified vendored wheels for %s (python %s)", manifest.WheelPlatform, manifest.WheelPythonVersion)
+	}
+
+	// Installing it is the only thing that proves the package works. A failure keeps
+	// it out of the registry rather than leaving the discovery to whoever installs it
+	// next — which for the catalogue meant months of packages that rendered nothing.
+	if r.InstallCheck.Enabled() {
+		if err := r.InstallCheck.Verify(artifact, appName, item.Version); err != nil {
+			return fail("install check", err)
+		}
 	}
 
 	final := filepath.Join(r.OutputPath, filepath.Base(artifact))

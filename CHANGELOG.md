@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`fpm mirror --verify-install <image>`** — between packaging and publishing, each
+  artifact is installed into a throwaway bench onto a real site, and a package that
+  does not install never reaches the registry. Publishing proves an artifact exists;
+  installing it is the only thing that proves it works, and that gap is what let the
+  catalogue ship packages that installed and rendered nothing. The mirror workflow
+  enables it by default. A bench that will not start is reported and skipped rather
+  than blocking a publish, since that says nothing about the package.
+
 - **`test/verify/verify.sh` and a "Verify Published Packages" workflow** — on demand,
   install a published package into a throwaway Single Node Frappista bench and assert
   what a user would notice: the install exits 0, the app is listed on the site, its

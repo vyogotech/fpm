@@ -39,6 +39,7 @@ var (
 	mirrorAllowThirdParty    bool
 	mirrorPythonVersion      string
 	mirrorFrappeRef          string
+	mirrorVerifyInstallImage string
 	mirrorAllowUnbuiltAssets bool
 	mirrorPlatforms          []string
 )
@@ -225,17 +226,22 @@ func runMirror() error {
 	}
 
 	runner := &mirror.Runner{
-		FPMBin:             fpmBin,
-		Workspace:          workspace,
-		OutputPath:         mirrorOutputPath,
-		RepoNames:          repoNames,
-		CatalogRepos:       catalogRepos,
-		BuildDepRefs:       buildDepRefs,
-		SkipPublish:        mirrorSkipPublish,
-		Republish:          mirrorRepublish,
-		PythonVersion:      pyVer,
-		Platforms:          platforms,
-		FrappeRef:          mirrorFrappeRef,
+		FPMBin:        fpmBin,
+		Workspace:     workspace,
+		OutputPath:    mirrorOutputPath,
+		RepoNames:     repoNames,
+		CatalogRepos:  catalogRepos,
+		BuildDepRefs:  buildDepRefs,
+		SkipPublish:   mirrorSkipPublish,
+		Republish:     mirrorRepublish,
+		PythonVersion: pyVer,
+		Platforms:     platforms,
+		FrappeRef:     mirrorFrappeRef,
+		InstallCheck: mirror.InstallCheck{
+			Image:  mirrorVerifyInstallImage,
+			FPMBin: fpmBin,
+			Log:    func(format string, args ...any) { fmt.Printf(format+"\n", args...) },
+		},
 		AllowUnbuiltAssets: mirrorAllowUnbuiltAssets,
 	}
 	results := runner.Run(plan)
@@ -271,6 +277,7 @@ func init() {
 	mirrorCmd.Flags().StringVar(&mirrorCacheDir, "cache-dir", "", "Persistent build cache (default ~/.fpm/build-cache)")
 	mirrorCmd.Flags().BoolVar(&mirrorNoClean, "no-clean", false, "Keep checkout state between builds (debugging)")
 	mirrorCmd.Flags().BoolVar(&mirrorAllowThirdParty, "allow-third-party", false, "Also build catalog entries whose repository is outside the frappe GitHub organisation. Off by default: the mirror publishes the frappe org's own apps, and a third-party entry is reported as disabled rather than silently skipped")
+	mirrorCmd.Flags().StringVar(&mirrorVerifyInstallImage, "verify-install", "", "Install every built package into this bench image (e.g. docker.io/vyogo/erpnext:sne-develop) before publishing it, and refuse to publish one that does not install. Needs podman")
 	mirrorCmd.Flags().StringVar(&mirrorFrappeRef, "frappe-ref", mirror.DefaultFrappeRef, "The frappe branch or tag whose esbuild compiles the catalogue's desk assets. The catalog's build_deps column overrides it per app")
 	mirrorCmd.Flags().BoolVar(&mirrorAllowUnbuiltAssets, "allow-unbuilt-assets", false, "Publish an app whose desk bundles could not be compiled. The package installs and its desk UI does not render until the destination bench runs its own build")
 	mirrorCmd.Flags().StringVar(&mirrorPythonVersion, "python-version", "", "Target Python version for vendored wheels (e.g. 3.11, 3.12; defaults to host python version)")
