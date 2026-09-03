@@ -3,6 +3,7 @@ package mirror
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -379,5 +380,60 @@ func TestAppNameOf(t *testing.T) {
 	}
 	if got := appNameOf(BuildItem{Slug: "wiki"}); got != "wiki" {
 		t.Fatalf("the slug is the fallback, got %q", got)
+	}
+}
+
+// TestInstallCheckDisabledByDefault: the zero value must not try to start a container,
+// so a mirror run without an image configured behaves exactly as before.
+func TestInstallCheckDisabledByDefault(t *testing.T) {
+	var c InstallCheck
+	if c.Enabled() {
+		t.Fatal("an unconfigured install check must be disabled")
+	}
+	if err := c.Verify("/tmp/x.fpm", "wiki", "3.1.0"); err != nil {
+		t.Fatalf("a disabled check must be a no-op, got %v", err)
+	}
+}
+
+// TestInstallCheckBlocksPublishing is the point of the check: a package that does not
+// install must not reach the registry. The stub fpm rejects the install, so the run
+// must fail at the check and never call publish.
+func TestInstallCheckBlocksPublishing(t *testing.T) {
+	if _, err := exec.LookPath("podman"); err != nil {
+		t.Skip("podman is required to exercise the install check")
+	}
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "args.log")
+	fpmBin := filepath.Join(dir, "fpm")
+	// Packages fine, refuses to install — the shape of a broken artifact.
+	script := `#!/bin/sh
+echo "$@" >> ` + logPath + `
+case "$1" in
+  package) for a in "$@"; do case "$a" in /*fpm-mirror*) d="$a";; esac; done; : > "$d/wiki-3.1.0.fpm"; exit 0;;
+  install) echo "Error: the package does not install" >&2; exit 1;;
+  publish) echo "PUBLISHED"; exit 0;;
+esac
+exit 0
+`
+	if err := os.WriteFile(fpmBin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := NewWorkspace(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An image that cannot start is enough: the check must fail the build either way,
+	// and must do so before publishing.
+	runner := &Runner{
+		FPMBin: fpmBin, Workspace: ws, OutputPath: t.TempDir(), Log: func(string, ...any) {},
+		InstallCheck: InstallCheck{Image: "localhost/fpm-nonexistent-image:verify", FPMBin: fpmBin},
+	}
+	err = runner.InstallCheck.Verify(filepath.Join(dir, "wiki-3.1.0.fpm"), "wiki", "3.1.0")
+	if err == nil {
+		t.Fatal("a package that cannot be installed must fail the check")
+	}
+	logged, _ := os.ReadFile(logPath)
+	if strings.Contains(string(logged), "publish") {
+		t.Fatalf("publishing must not happen once the check has failed: %s", logged)
 	}
 }

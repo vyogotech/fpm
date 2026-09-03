@@ -162,9 +162,18 @@ jobs:
           for app, version, result in sorted(rows):
               mark = "✅" if result == "ok" else "❌"
               print(f"| {app} | {version or '?'} | {mark} {result} |")
-          bad = [r for r in rows if r[2] != "ok"]
+          # A container that never started says nothing about the package, and marking
+          # it as a failure costs someone an investigation into an artifact that is
+          # probably fine.
+          infra = [r for r in rows if r[2] == "bench-unavailable"]
+          bad = [r for r in rows if r[2] not in ("ok", "bench-unavailable")]
+          if infra:
+              print(f"\n{len(infra)} app(s) could not be tested: the bench never came up. "
+                    "That is infrastructure, not the package — re-run those.")
           if bad:
               print(f"\n**{len(bad)} of {len(rows)} packages did not verify.**")
+              sys.exit(1)
+          if infra:
               sys.exit(1)
           print(f"\nAll {len(rows)} packages install and run.")
           PY

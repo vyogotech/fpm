@@ -68,19 +68,32 @@ verify_one() {
 	[ -n "$version" ] && target="$target==$version"
 	log "verifying $target in $IMAGE"
 
-	podman rm -f "$container" >/dev/null 2>&1 || true
-	podman run -d --name "$container" "${USERNS[@]}" \
-		-v "$WORK/bin:/opt/fpm:ro,Z" \
-		"$IMAGE" bash -c "sed -i '/^watch:/d' $BENCH/Procfile; exec /usr/libexec/s2i/run" >/dev/null
+	# Starting the bench is infrastructure, not the thing under test: rootless podman
+	# on a shared runner intermittently fails to map the user namespace, and reporting
+	# that as a bad package would be a lie that costs someone an investigation. So a
+	# container that never comes up is retried on a fresh one, and only a repeated
+	# failure is reported — as its own result, never as an install failure.
+	local ready=0 attempt
+	for attempt in 1 2 3; do
+		podman rm -f "$container" >/dev/null 2>&1 || true
+		podman run -d --name "$container" "${USERNS[@]}" \
+			-v "$WORK/bin:/opt/fpm:ro,Z" \
+			"$IMAGE" bash -c "sed -i '/^watch:/d' $BENCH/Procfile; exec /usr/libexec/s2i/run" >/dev/null 2>&1 || true
 
-	local ready=0
-	for _ in $(seq 1 90); do
-		if cexec "$container" "(mariadb-admin ping || mysqladmin ping) >/dev/null 2>&1 && redis-cli ping >/dev/null 2>&1"; then ready=1; break; fi
-		sleep 2
+		local waited=0
+		for _ in $(seq 1 90); do
+			if cexec "$container" "(mariadb-admin ping || mysqladmin ping) >/dev/null 2>&1 && redis-cli ping >/dev/null 2>&1"; then ready=1; break; fi
+			# A container that has already exited will never answer; stop waiting on it.
+			if [ "$(podman inspect -f '{{.State.Status}}' "$container" 2>/dev/null || echo gone)" != "running" ]; then break; fi
+			waited=$((waited+1))
+			sleep 2
+		done
+		[ "$ready" -eq 1 ] && break
+		log "the bench did not come up (attempt $attempt/3); retrying on a fresh container"
+		podman logs --tail 10 "$container" 2>&1 | sed 's/^/      /' || true
 	done
 	if [ "$ready" -ne 1 ]; then
-		podman logs --tail 30 "$container" || true
-		fail "$app: the bench never came up"
+		fail "$app: the bench never came up after 3 attempts — infrastructure, not the package"
 		cleanup "$container"
 		record "$app" "$version" "bench-unavailable"
 		return
