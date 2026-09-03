@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`test/verify/verify.sh` and a "Verify Published Packages" workflow** — on demand,
+  install a published package into a throwaway Single Node Frappista bench and assert
+  what a user would notice: the install exits 0, the app is listed on the site, its
+  DocTypes are in the database, and its compiled bundles are in `assets.json` and
+  served over HTTP.
+
+  Publishing proves an artifact exists; it does not prove it works. The catalogue
+  shipped front-end packages for months that installed and then rendered nothing
+  because nothing ever installed one — of 18 apps published, two had ever been proven
+  installable. Each app is verified on its own runner, since an install is not
+  isolated from what a previous app did to the site. It drives the released binary by
+  default, so it tests what users actually run.
+
 ## [4.2.0] - 2026-09-03
 
 ### Added
