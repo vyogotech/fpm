@@ -7,39 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- `fpm mirror --republish` reuses the pseudo-version a branch-tracked app already has
-  instead of stamping today's date on the same commit. Republishing rebuilds a tree
-  because the packaging changed, not because the source did, so a new version string
-  was a duplicate that consumers see as an update and that moves `latest_version` for
-  no change — payments accumulated three versions of one commit
-  (`0.0.0-git.20260827/28/0903.86fefa9faf`) this way. A head that has genuinely moved
-  still gets a new version.
-
-### Added
-
-- **`fpm mirror --verify-install <image>`** — between packaging and publishing, each
-  artifact is installed into a throwaway bench onto a real site, and a package that
-  does not install never reaches the registry. Publishing proves an artifact exists;
-  installing it is the only thing that proves it works, and that gap is what let the
-  catalogue ship packages that installed and rendered nothing. The mirror workflow
-  enables it by default. A bench that will not start is reported and skipped rather
-  than blocking a publish, since that says nothing about the package.
-
-- **`test/verify/verify.sh` and a "Verify Published Packages" workflow** — on demand,
-  install a published package into a throwaway Single Node Frappista bench and assert
-  what a user would notice: the install exits 0, the app is listed on the site, its
-  DocTypes are in the database, and its compiled bundles are in `assets.json` and
-  served over HTTP.
-
-  Publishing proves an artifact exists; it does not prove it works. The catalogue
-  shipped front-end packages for months that installed and then rendered nothing
-  because nothing ever installed one — of 18 apps published, two had ever been proven
-  installable. Each app is verified on its own runner, since an install is not
-  isolated from what a previous app did to the site. It drives the released binary by
-  default, so it tests what users actually run.
-
 ## [4.2.0] - 2026-09-03
 
 ### Added
@@ -66,6 +33,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   why it is fixed alongside them. Bounded retries, so an app being published
   continuously is reported rather than looped over.
 
+
+- **`fpm mirror --verify-install <image>`** — between packaging and publishing, each
+  artifact is installed into a throwaway bench onto a real site, and a package that
+  does not install never reaches the registry. Publishing proves an artifact exists;
+  installing it is the only thing that proves it works, and that gap is what let the
+  catalogue ship packages that installed and rendered nothing. The mirror workflow
+  enables it by default. A bench that will not start is reported and skipped rather
+  than blocking a publish, since that says nothing about the package.
+
+- **`test/verify/verify.sh` and a "Verify Published Packages" workflow** — on demand,
+  install a published package into a throwaway Single Node Frappista bench and assert
+  what a user would notice: the install exits 0, the app is listed on the site, its
+  DocTypes are in the database, and its compiled bundles are in `assets.json` and
+  served over HTTP.
+
+  Publishing proves an artifact exists; it does not prove it works. The catalogue
+  shipped front-end packages for months that installed and then rendered nothing
+  because nothing ever installed one — of 18 apps published, two had ever been proven
+  installable. Each app is verified on its own runner, since an install is not
+  isolated from what a previous app did to the site. It drives the released binary by
+  default, so it tests what users actually run.
+
 ### Changed
 
 - The catalogue mirror runs from the **release** branch: every job checks the catalog
@@ -74,6 +63,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The schedule stays registered on the default branch because GitHub registers cron
   triggers only there, so the trigger lives on `main` while what it acts on lives on
   `release`. A dispatch can point elsewhere with the new `catalog_ref` input.
+
+### Fixed
+
+- `fpm mirror --republish` reuses the pseudo-version a branch-tracked app already has
+  instead of stamping today's date on the same commit. Republishing rebuilds a tree
+  because the packaging changed, not because the source did, so a new version string
+  was a duplicate that consumers see as an update and that moves `latest_version` for
+  no change — payments accumulated three versions of one commit
+  (`0.0.0-git.20260827/28/0903.86fefa9faf`) this way. A head that has genuinely moved
+  still gets a new version.
 
 ## [4.1.1] - 2026-09-03
 
