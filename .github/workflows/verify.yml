@@ -1,0 +1,176 @@
+name: Verify Published Packages
+
+# Publishing proves an artifact exists; it does not prove it works. The catalogue
+# shipped front-end packages for months that installed and then rendered nothing,
+# because nothing ever installed one. This does to a published package exactly what a
+# user would — fpm install onto a real site in a Single Node Frappista container — and
+# asserts what a user would notice.
+#
+# On demand, so a package can be checked the moment it is published rather than at the
+# mercy of a nightly.
+on:
+  workflow_dispatch:
+    inputs:
+      apps:
+        description: 'Comma-separated apps to verify, optionally pinned (crm,wiki==3.1.0). "all" verifies everything the registry lists'
+        required: true
+        default: 'all'
+      image:
+        description: 'Bench image to install into. The erpnext one also satisfies apps that require erpnext'
+        required: false
+        default: 'docker.io/vyogo/erpnext:sne-develop'
+      registry:
+        description: 'Registry to install from'
+        required: false
+        default: 'https://fpm.vyogo.tech'
+      build_from_source:
+        description: 'Drive the verification with a CLI built from this branch instead of the latest release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fpm-verify-${{ inputs.apps }}
+  cancel-in-progress: true
+
+jobs:
+  # The app list is resolved once so the matrix below can put each app on its own
+  # runner: an install is not isolated from what a previous app did to the site, and a
+  # verification whose result depends on the order apps ran in proves nothing.
+  plan:
+    name: Resolve Apps
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      apps: ${{ steps.list.outputs.apps }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: List Apps
+        id: list
+        run: |
+          if [ "${{ inputs.apps }}" = "all" ]; then
+            APPS=$(curl -sS --max-time 30 "${{ inputs.registry }}/metadata/index.json" | python3 -c "
+          import json,sys
+          d = json.load(sys.stdin)
+          print(json.dumps(sorted({p['appName'] for p in d.get('packages', []) if p.get('org') == 'frappe'})))")
+          else
+            APPS=$(python3 -c "
+          import json
+          print(json.dumps([a.strip() for a in '''${{ inputs.apps }}'''.split(',') if a.strip()]))")
+          fi
+          echo "apps=$APPS" >> "$GITHUB_OUTPUT"
+          echo "verifying: $APPS"
+
+  verify:
+    name: verify ${{ matrix.app }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        app: ${{ fromJson(needs.plan.outputs.apps) }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Free Disk Space
+        run: |
+          # The bench image is several gigabytes; "no space left on device" reads like
+          # a verification failure rather than a capacity one.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
+          df -h / | tail -1
+
+      - name: Set up Go
+        if: ${{ inputs.build_from_source }}
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Obtain FPM CLI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p test/verify/.work/bin
+          if [ "${{ inputs.build_from_source }}" = "true" ]; then
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o test/verify/.work/bin/fpm ./cmd/fpm
+          else
+            # The verification must exercise what users actually run.
+            tmp="$(mktemp -d)"
+            gh release download --repo "$GITHUB_REPOSITORY" \
+              --pattern 'fpm-linux-amd64' --pattern 'fpm-linux-amd64.sha256' --dir "$tmp"
+            ( cd "$tmp" && sha256sum -c fpm-linux-amd64.sha256 )
+            install -m 0755 "$tmp/fpm-linux-amd64" test/verify/.work/bin/fpm
+          fi
+          test/verify/.work/bin/fpm --version
+
+      - name: Verify ${{ matrix.app }}
+        env:
+          FPM_VERIFY_IMAGE: ${{ inputs.image }}
+          FPM_VERIFY_REGISTRY: ${{ inputs.registry }}
+          FPM_VERIFY_FPM: test/verify/.work/bin/fpm
+        run: test/verify/verify.sh '${{ matrix.app }}'
+
+      - name: Upload Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fpm-verify-${{ matrix.app }}
+          path: test/verify/.work/out/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # fail-fast is off so every app reports; this turns the matrix back into one verdict.
+  summary:
+    name: Summarise
+    needs: verify
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Collect Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fpm-verify-*
+          path: results
+          merge-multiple: true
+
+      - name: Summarise
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob, sys
+          rows = []
+          for path in sorted(glob.glob("results/**/results.tsv", recursive=True)):
+              for line in open(path):
+                  parts = line.rstrip("\n").split("\t")
+                  if len(parts) == 3:
+                      rows.append(parts)
+          print("## Package verification\n")
+          if not rows:
+              print("No app reported a result.")
+              sys.exit(1)
+          print("| app | version | result |")
+          print("|---|---|---|")
+          for app, version, result in sorted(rows):
+              mark = "✅" if result == "ok" else "❌"
+              print(f"| {app} | {version or '?'} | {mark} {result} |")
+          bad = [r for r in rows if r[2] != "ok"]
+          if bad:
+              print(f"\n**{len(bad)} of {len(rows)} packages did not verify.**")
+              sys.exit(1)
+          print(f"\nAll {len(rows)} packages install and run.")
+          PY
+
+      - name: Fail if any app errored
+        if: ${{ needs.verify.result != 'success' }}
+        run: |
+          echo "Some verification jobs did not complete (result: ${{ needs.verify.result }})." >&2
+          exit 1
