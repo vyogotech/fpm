@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `fpm mirror --republish` reuses the pseudo-version a branch-tracked app already has
+  instead of stamping today's date on the same commit. Republishing rebuilds a tree
+  because the packaging changed, not because the source did, so a new version string
+  was a duplicate that consumers see as an update and that moves `latest_version` for
+  no change — payments accumulated three versions of one commit
+  (`0.0.0-git.20260827/28/0903.86fefa9faf`) this way. A head that has genuinely moved
+  still gets a new version.
+
 ### Added
 
 - **`fpm mirror --verify-install <image>`** — between packaging and publishing, each

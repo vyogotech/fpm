@@ -95,12 +95,9 @@ func BuildPlanForRepos(apps []App, repos []config.RepositoryConfig, client *http
 		if err != nil {
 			return nil, err
 		}
-		if cfg.republish {
-			published = map[string]struct{}{}
-		}
 
 		if app.Track == TrackBranch {
-			item, skip, err := planBranch(app, published, now)
+			item, skip, err := planBranch(app, published, now, cfg.republish)
 			if err != nil {
 				return nil, err
 			}
@@ -127,7 +124,7 @@ func BuildPlanForRepos(apps []App, repos []config.RepositoryConfig, client *http
 
 		for _, tag := range wanted {
 			version := NormalizeVersion(tag.Name)
-			if _, exists := published[version]; exists {
+			if _, exists := published[version]; exists && !cfg.republish {
 				plan.Skipped = append(plan.Skipped, SkipItem{
 					Slug:   app.Slug,
 					Detail: fmt.Sprintf("%s already published", version),
@@ -151,25 +148,37 @@ func BuildPlanForRepos(apps []App, repos []config.RepositoryConfig, client *http
 	return plan, nil
 }
 
-func planBranch(app App, published map[string]struct{}, now string) (BuildItem, *SkipItem, error) {
+func planBranch(app App, published map[string]struct{}, now string, republish bool) (BuildItem, *SkipItem, error) {
 	sha, err := ResolveRemoteBranch(app.Repo, app.Branch)
 	if err != nil {
 		return BuildItem{}, nil, err
 	}
 
-	// An unchanged branch republishes nothing: the head commit is embedded in
-	// every pseudo-version, so its presence in any published version means
-	// this exact tree is already in the registry.
+	// A pseudo-version carries the head commit, so finding one means this exact tree
+	// is already in the registry.
+	existing := ""
 	for version := range published {
 		if strings.Contains(version, "-git.") && strings.HasSuffix(version, "."+ShortSHA(sha)) {
-			return BuildItem{}, &SkipItem{
-				Slug:   app.Slug,
-				Detail: fmt.Sprintf("branch %s head %s already published as %s", app.Branch, ShortSHA(sha), version),
-			}, nil
+			existing = version
+			break
 		}
 	}
+	if existing != "" && !republish {
+		// An unchanged branch republishes nothing, which is what makes a nightly cheap.
+		return BuildItem{}, &SkipItem{
+			Slug:   app.Slug,
+			Detail: fmt.Sprintf("branch %s head %s already published as %s", app.Branch, ShortSHA(sha), existing),
+		}, nil
+	}
 
-	version := BranchPseudoVersion(app.BranchMajor, now, sha)
+	// Republishing rebuilds this tree because the packaging changed, not because the
+	// source did. Minting a fresh pseudo-version would stamp today's date on an
+	// identical commit — a duplicate that consumers see as an update and that moves
+	// latest_version for no change — so the version it already has is reused.
+	version := existing
+	if version == "" {
+		version = BranchPseudoVersion(app.BranchMajor, now, sha)
+	}
 	return BuildItem{
 		Slug:         app.Slug,
 		AppName:      app.AppName,
@@ -178,10 +187,18 @@ func planBranch(app App, published map[string]struct{}, now string) (BuildItem, 
 		Version:      version,
 		BundleDeps:   app.BundleDeps,
 		PipOverrides: app.PipOverrides,
-		Reason:       fmt.Sprintf("tip of branch %s", app.Branch),
+		Reason:       branchReason(app.Branch, existing != ""),
 		buildScript:  app.BuildScript,
 		isBranch:     true,
 	}, nil, nil
+}
+
+// branchReason distinguishes a new commit from a rebuild of one already published.
+func branchReason(branch string, rebuilt bool) string {
+	if rebuilt {
+		return fmt.Sprintf("rebuilding the published head of branch %s", branch)
+	}
+	return fmt.Sprintf("tip of branch %s", branch)
 }
 
 func publishedVersions(repoBaseURL string, app App, client *http.Client) (map[string]struct{}, error) {
@@ -287,7 +304,7 @@ func PlanAdHoc(repoURL, ref, slug, appName string, repos []config.RepositoryConf
 				continue
 			}
 			version := NormalizeVersion(tag.Name)
-			if _, exists := published[version]; exists {
+			if _, exists := published[version]; exists && !cfg.republish {
 				return &Plan{Skipped: []SkipItem{{Slug: slug, Detail: version + " already published"}}}, nil
 			}
 			return &Plan{Items: []BuildItem{{
@@ -307,7 +324,7 @@ func PlanAdHoc(repoURL, ref, slug, appName string, repos []config.RepositoryConf
 		}
 	}
 	app.Branch = branch
-	item, skip, err := planBranch(app, published, now)
+	item, skip, err := planBranch(app, published, now, planConfigFrom(opts).republish)
 	if err != nil {
 		return nil, err
 	}

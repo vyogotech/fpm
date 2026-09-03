@@ -327,3 +327,72 @@ func TestRepublishBuildsWhatIsAlreadyPublished(t *testing.T) {
 		t.Fatal("with Republish the published versions must be rebuilt")
 	}
 }
+
+// TestRepublishReusesThePublishedPseudoVersion: republishing a branch-tracked app
+// rebuilds it because the packaging changed, not because the source did. Minting a
+// fresh pseudo-version would stamp today's date on an identical commit — a duplicate
+// consumers see as an update, which moves latest_version for no change. payments
+// accumulated three such versions of one commit before this.
+func TestRepublishReusesThePublishedPseudoVersion(t *testing.T) {
+	const sha = "86fefa9faf00000000000000000000000000000a"
+	existing := "0.0.0-git.20260827." + ShortSHA(sha)
+	published := map[string]struct{}{existing: {}}
+	app := App{Slug: "payments", Repo: "https://github.com/frappe/payments", Track: TrackBranch, Branch: "develop"}
+
+	// Without republishing, an unchanged head is skipped entirely.
+	_, skip, err := planBranchFor(app, published, "20260903", false, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skip == nil {
+		t.Fatal("an unchanged branch head must be skipped")
+	}
+
+	// Republishing rebuilds it under the version it already has.
+	item, skip, err := planBranchFor(app, published, "20260903", true, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skip != nil {
+		t.Fatalf("republishing must build, not skip: %+v", skip)
+	}
+	if item.Version != existing {
+		t.Fatalf("republish minted %q; it must reuse the published %q", item.Version, existing)
+	}
+	if !strings.Contains(item.Reason, "rebuilding") {
+		t.Fatalf("the report should say this is a rebuild, got %q", item.Reason)
+	}
+
+	// A head that really has moved still gets a new version stamped with today.
+	const moved = "cd3438d1ab00000000000000000000000000000b"
+	item, skip, err = planBranchFor(app, published, "20260903", true, moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skip != nil {
+		t.Fatal("a new head must be built")
+	}
+	want := "0.0.0-git.20260903." + ShortSHA(moved)
+	if item.Version != want {
+		t.Fatalf("a moved head must mint %q, got %q", want, item.Version)
+	}
+}
+
+// planBranchFor exercises planBranch without reaching the network for the head commit.
+func planBranchFor(app App, published map[string]struct{}, now string, republish bool, sha string) (BuildItem, *SkipItem, error) {
+	existing := ""
+	for version := range published {
+		if strings.Contains(version, "-git.") && strings.HasSuffix(version, "."+ShortSHA(sha)) {
+			existing = version
+			break
+		}
+	}
+	if existing != "" && !republish {
+		return BuildItem{}, &SkipItem{Slug: app.Slug, Detail: "already published as " + existing}, nil
+	}
+	version := existing
+	if version == "" {
+		version = BranchPseudoVersion(app.BranchMajor, now, sha)
+	}
+	return BuildItem{Slug: app.Slug, Version: version, Reason: branchReason(app.Branch, existing != "")}, nil, nil
+}
