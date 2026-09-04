@@ -44,9 +44,9 @@ on:
         type: boolean
         default: false
       verify_install:
-        description: 'Install every built package into this bench image before publishing it, and refuse to publish one that does not install. Empty disables the check'
+        description: 'Install every built package into this bench image before publishing it, and refuse to publish one that does not install. Match it to frappe_ref: the catalogue pins erpnext to the line it is built against, and a v17 bench rejects a package pinning erpnext 16.x. Empty disables the check'
         required: false
-        default: 'docker.io/vyogo/erpnext:sne-develop'
+        default: 'docker.io/vyogo/erpnext:sne-version-16'
       build_from_source:
         description: 'Compile the CLI from the catalog ref instead of using the latest release (for validating an unreleased change)'
         type: boolean
@@ -338,7 +338,7 @@ jobs:
           # Publishing proves an artifact exists; installing it proves it works. A
           # package that fails here never reaches the registry, which is what stops a
           # broken one being discovered by whoever installs it next.
-          VERIFY_IMAGE="${{ inputs.verify_install == '' && 'docker.io/vyogo/erpnext:sne-develop' || inputs.verify_install }}"
+          VERIFY_IMAGE="${{ inputs.verify_install == '' && 'docker.io/vyogo/erpnext:sne-version-16' || inputs.verify_install }}"
           if [ -n "$VERIFY_IMAGE" ]; then
             ARGS="$ARGS --verify-install $VERIFY_IMAGE"
           fi
@@ -588,7 +588,7 @@ jobs:
           # Publishing proves an artifact exists; installing it proves it works. A
           # package that fails here never reaches the registry, which is what stops a
           # broken one being discovered by whoever installs it next.
-          VERIFY_IMAGE="${{ inputs.verify_install == '' && 'docker.io/vyogo/erpnext:sne-develop' || inputs.verify_install }}"
+          VERIFY_IMAGE="${{ inputs.verify_install == '' && 'docker.io/vyogo/erpnext:sne-version-16' || inputs.verify_install }}"
           if [ -n "$VERIFY_IMAGE" ]; then
             ARGS="$ARGS --verify-install $VERIFY_IMAGE"
           fi
