@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a preference — both mounts are read-only and the image runs as frappe either way — so a
   refusal now retries in the default namespace, and only a second failure skips.
 
+  The fallback also opens the mounts it needs: keep-id was making them readable as well
+  as mapping the user, and the artifact lives in an `os.MkdirTemp` directory, which is
+  0700 — so without it the install died on `stat: permission denied` before it began.
+
 ## [4.3.1] - 2026-09-04
 
 ### Fixed
