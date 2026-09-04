@@ -55,6 +55,13 @@ func GetGitRemoteOriginInfo(repoPath string) (org string, repoName string, err e
 		return "", "", fmt.Errorf("remote 'origin' URL not found or 'url' field missing in %s", gitConfigPath)
 	}
 
+	// A remote may be recorded with a trailing slash — `git remote add origin
+	// https://github.com/frappe/wiki/` is accepted, and tooling that joins paths emits
+	// it — and the pattern below anchors on the end of the string. The slash alone made
+	// the organisation unparseable, so every such checkout had to be packaged with
+	// --org passed by hand.
+	originURL = strings.TrimRight(strings.TrimSpace(originURL), "/")
+
 	// Regex to parse common Git URL formats (SSH and HTTPS)
 	// Catches:
 	// - git@host:org/repo.git
