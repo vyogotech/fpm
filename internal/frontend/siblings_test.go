@@ -47,3 +47,47 @@ func TestSiblingAppsIgnoresSelfAndFindsNoneWhenAbsent(t *testing.T) {
 		t.Fatalf("got %v, want none (crm is not its own sibling)", got)
 	}
 }
+
+// TestSiblingAppsSeesLinkDependencies: an app can name a sibling as a dependency rather
+// than in a script — helpdesk's desk/package.json carries
+// `"@framework/ui": "link:../../frappe/ui"`. yarn resolves that relative to the
+// package.json declaring it, so it fails at install time, before any build script runs.
+// Scanning only scripts missed it entirely, which is the whole of helpdesk's coupling to
+// frappe and the reason its build has to happen at <bench>/apps/<app>.
+func TestSiblingAppsSeesLinkDependencies(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "package.json"), `{
+	  "scripts": {"build": "cd desk && yarn build"}
+	}`)
+	write(t, filepath.Join(root, "desk", "package.json"), `{
+	  "scripts": {"build": "vite build"},
+	  "dependencies": {"@framework/ui": "link:../../frappe/ui", "vue": "^3.3.0"}
+	}`)
+
+	got, err := SiblingApps(root, "helpdesk")
+	if err != nil {
+		t.Fatalf("SiblingApps: %v", err)
+	}
+	if len(got) != 1 || got[0] != "frappe/ui" {
+		t.Fatalf("SiblingApps = %v, want [frappe/ui]", got)
+	}
+}
+
+// TestSiblingAppsIgnoresOrdinaryDependencies keeps the scan from turning every registry
+// package into a phantom bench app.
+func TestSiblingAppsIgnoresOrdinaryDependencies(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "package.json"), `{
+	  "scripts": {"build": "vite build"},
+	  "dependencies": {"vue": "^3.3.0", "pinia": "^2.0.23"},
+	  "devDependencies": {"vite": "^5.0.0"}
+	}`)
+
+	got, err := SiblingApps(root, "crm")
+	if err != nil {
+		t.Fatalf("SiblingApps: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("SiblingApps = %v, want none", got)
+	}
+}

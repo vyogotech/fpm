@@ -718,6 +718,11 @@ type packageJSON struct {
 	Name           string            `json:"name"`
 	PackageManager string            `json:"packageManager"`
 	Scripts        map[string]string `json:"scripts"`
+	// Dependencies and DevDependencies are read for their *values*, not their names:
+	// a sibling app can be depended on directly with yarn's path protocols, as
+	// helpdesk does with `"@framework/ui": "link:../../frappe/ui"`.
+	Dependencies    map[string]string `json:"dependencies"`
+	DevDependencies map[string]string `json:"devDependencies"`
 }
 
 func readPackageJSON(dir string) (packageJSON, bool, error) {
@@ -1370,8 +1375,8 @@ func SiblingApps(sourcePath, appName string) ([]string, error) {
 		if err != nil || !ok {
 			return
 		}
-		for _, script := range pkg.Scripts {
-			for _, m := range siblingAppRef.FindAllStringSubmatch(script, -1) {
+		record := func(text string) {
+			for _, m := range siblingAppRef.FindAllStringSubmatch(text, -1) {
 				if m[1] == appName {
 					continue
 				}
@@ -1380,6 +1385,20 @@ func SiblingApps(sourcePath, appName string) ([]string, error) {
 					ref += "/" + m[2]
 				}
 				seen[ref] = true
+			}
+		}
+		for _, script := range pkg.Scripts {
+			record(script)
+		}
+		// A dependency can name a sibling outright — `link:../../frappe/ui` — and yarn
+		// resolves it relative to the package.json declaring it, so it fails at install
+		// time rather than during the build. Scanning only scripts missed that, which
+		// is the whole of helpdesk's coupling to frappe.
+		for _, deps := range []map[string]string{pkg.Dependencies, pkg.DevDependencies} {
+			for _, spec := range deps {
+				if strings.HasPrefix(spec, "link:") || strings.HasPrefix(spec, "file:") {
+					record(spec)
+				}
 			}
 		}
 	}

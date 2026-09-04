@@ -228,6 +228,57 @@ func Build(opts Options) (Result, error) {
 	return Result{Bundles: bundles, Output: output, BuildRoot: buildRoot, Cleanup: cleanup}, nil
 }
 
+// Staged is an app checkout placed at <bench>/apps/<app> for the duration of a build,
+// together with the cleanup that removes whatever was put there.
+type Staged struct {
+	// BuildRoot is <bench>/apps/<app>: the tree to build in and to package from.
+	BuildRoot string
+	// Cleanup removes the staged copy and the apps.txt entry. Never nil.
+	Cleanup func()
+}
+
+// Stage places the app at <bench>/apps/<app> without building anything, so a caller can
+// run something else there first.
+//
+// That caller is `fpm package`, and the something else is the app's own frontend build.
+// It has to run inside the bench, not in the checkout: helpdesk's desk/package.json
+// declares `"@framework/ui": "link:../../frappe/ui"`, which yarn resolves relative to
+// the package it is declared in — <bench>/apps/<app>/desk/../../frappe/ui, i.e. a
+// sibling app. Outside a bench that path does not exist and the install fails before
+// the build starts. Building in the bench also means a frontend that imports
+// sites/common_site_config.json finds the real one rather than a synthesized stand-in.
+//
+// Build stages too, and staging a tree that is already <bench>/apps/<app> is a no-op, so
+// the two compose: Stage, build the frontend, then Build.
+func Stage(benchPath, appName, sourcePath string, out io.Writer) (Staged, error) {
+	noop := func() {}
+	if out == nil {
+		out = os.Stdout
+	}
+	if appName == "" {
+		return Staged{Cleanup: noop}, fmt.Errorf("%w: app name is required", ErrBuildFailed)
+	}
+	bench, err := filepath.Abs(benchPath)
+	if err != nil {
+		return Staged{Cleanup: noop}, err
+	}
+	source, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return Staged{Cleanup: noop}, err
+	}
+
+	buildRoot, cleanupStage, err := stageAppIntoBench(bench, appName, source, out)
+	if err != nil {
+		return Staged{Cleanup: noop}, err
+	}
+	cleanupAppsTxt, err := ensureInAppsTxt(bench, appName)
+	if err != nil {
+		cleanupStage()
+		return Staged{Cleanup: noop}, err
+	}
+	return Staged{BuildRoot: buildRoot, Cleanup: func() { cleanupAppsTxt(); cleanupStage() }}, nil
+}
+
 // stageAppIntoBench makes <bench>/apps/<app> the app checkout for the duration of the
 // build. A source that already is that directory is built in place. Otherwise the
 // source is copied there (minus .git, node_modules and caches), which is what a

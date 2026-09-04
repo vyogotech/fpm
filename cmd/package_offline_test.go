@@ -46,7 +46,11 @@ func packageArgs(t *testing.T, sourceDir, version string, extra ...string) (args
 	resetPackageCmdFlags()
 	t.Cleanup(resetPackageCmdFlags)
 	outDir := t.TempDir()
-	args = append([]string{"package", "--bundle-deps=false", "--skip-local-install", "--version", version, "--output-path", outDir}, extra...)
+	// --no-bench-scaffold keeps the suite hermetic: without a bench, packaging an app
+	// that declares esbuild entry points now fetches frappe's asset pipeline to compile
+	// them. A test that wants that path builds against a fake bench instead.
+	args = append([]string{"package", "--bundle-deps=false", "--skip-local-install", "--no-bench-scaffold",
+		"--version", version, "--output-path", outDir}, extra...)
 	args = append(args, sourceDir)
 	return args, outDir
 }
