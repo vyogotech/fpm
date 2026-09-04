@@ -74,28 +74,47 @@ func (c InstallCheck) Verify(artifact, appName, version string) error {
 	artifactDir, artifactFile := filepath.Split(artifact)
 
 	c.log("  install check: %s==%s into %s", appName, version, c.Image)
-	run := exec.Command("podman", "run", "-d", "--name", name,
-		"--userns=keep-id:uid=1001,gid=0",
-		"-v", artifactDir+":/artifact:ro,Z",
-		"-v", filepath.Dir(c.FPMBin)+":/opt/fpm:ro,Z",
-		c.Image, "bash", "-c",
-		"sed -i '/^watch:/d' "+bench+"/Procfile; exec /usr/libexec/s2i/run")
-	if out, err := run.CombinedOutput(); err != nil {
+	// keep-id maps the host user into the container, which needs subuid/subgid ranges
+	// the host may not have: on a GitHub runner it fails with `crun: writing file
+	// /proc/N/gid_map: Invalid argument`, and eight of twelve checks in one run were
+	// skipped for it — a gate that does not run is not a gate. Nothing is written
+	// through either mount (both are read-only) and the image runs as frappe either way,
+	// so the mapping is a preference, not a requirement, and the check falls back to the
+	// default namespace rather than giving up.
+	start := func(keepID bool) (string, error) {
+		args := []string{"run", "-d", "--name", name}
+		if keepID {
+			args = append(args, "--userns=keep-id:uid=1001,gid=0")
+		}
+		args = append(args,
+			"-v", artifactDir+":/artifact:ro,Z",
+			"-v", filepath.Dir(c.FPMBin)+":/opt/fpm:ro,Z",
+			c.Image, "bash", "-c",
+			"sed -i '/^watch:/d' "+bench+"/Procfile; exec /usr/libexec/s2i/run")
+		out, err := exec.Command("podman", args...).CombinedOutput()
+		return string(out), err
+	}
+
+	out, err := start(true)
+	if err != nil && isHostContainerFailure(err) {
+		_ = exec.Command("podman", "rm", "-f", name).Run()
+		c.log("  install check: the container runtime refused --userns=keep-id; retrying in the default namespace")
+		out, err = start(false)
+	}
+	if err != nil {
 		_ = exec.Command("podman", "rm", "-f", name).Run()
 		// podman separates its own failures from the runtime's by exit code: 125 is
 		// podman itself (an image that does not exist, a bad flag) and 126 is the OCI
 		// runtime unable to invoke the container. The first is the operator's problem
 		// and must fail the build; the second is the host's, and is the same class of
-		// thing as a bench that never comes up — rootless podman on a shared runner
-		// intermittently cannot map the user namespace (`crun: writing file
-		// /proc/N/gid_map: Invalid argument`). Counting that against the package
-		// withheld four of twelve apps in one run.
+		// thing as a bench that never comes up. Counting it against the package withheld
+		// good artifacts.
 		if isHostContainerFailure(err) {
 			c.log("  install check skipped: %s could not be started by the container runtime: %v\n%s",
-				c.Image, err, tail(string(out), 400))
+				c.Image, err, tail(out, 400))
 			return nil
 		}
-		return fmt.Errorf("could not start %s: %v\n%s", c.Image, err, tail(string(out), 400))
+		return fmt.Errorf("could not start %s: %v\n%s", c.Image, err, tail(out, 400))
 	}
 	defer func() {
 		_ = exec.Command("podman", "rm", "-f", name).Run()
@@ -119,7 +138,7 @@ func (c InstallCheck) Verify(artifact, appName, version string) error {
 	// app's DocTypes reached the database and repairs the state issue #13 left, so a
 	// clean exit here already means more than "the files were copied".
 	install := fmt.Sprintf("fpm install /artifact/%s --bench-path %s --site %s", artifactFile, bench, c.Site)
-	out, err := c.exec(name, install, installCheckTimeout)
+	out, err = c.exec(name, install, installCheckTimeout)
 	if err != nil {
 		return fmt.Errorf("the package does not install: %v\n%s", err, tail(out, 1500))
 	}
