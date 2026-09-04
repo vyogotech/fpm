@@ -134,3 +134,58 @@ func TestInstallCheckSkipsWhenTheContainerWillNotStart(t *testing.T) {
 		t.Fatalf("the reason has to survive into the log, got: %s", joined)
 	}
 }
+
+// TestInstallCheckFallsBackWhenKeepIdIsRefused: keep-id needs subuid/subgid ranges the
+// host may not have, and on a GitHub runner it fails outright — eight of twelve checks
+// in one run were skipped for it. Nothing is written through either mount and the image
+// runs as frappe either way, so the check retries in the default namespace rather than
+// giving up on a gate that exists to stop broken packages reaching the registry.
+func TestInstallCheckFallsBackWhenKeepIdIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "podman.log")
+	// keep-id is refused the way crun refuses it; the same run without it succeeds.
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> " + logPath + "\n" +
+		"case \"$*\" in\n" +
+		"  *keep-id*) echo 'crun: writing file `/proc/9/gid_map`: Invalid argument' >&2; exit 126 ;;\n" +
+		"  run*) echo container-id; exit 0 ;;\n" +
+		"  exec*) echo wiki; exit 0 ;;\n" + // the bench pings, and list-apps reports the app
+		"esac\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "podman"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	artifact := filepath.Join(t.TempDir(), "wiki-3.1.0.fpm")
+	if err := os.WriteFile(artifact, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logged []string
+	c := InstallCheck{
+		Image: "example/bench:latest", Site: "dev.localhost",
+		FPMBin: filepath.Join(t.TempDir(), "fpm"),
+		Log:    func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) },
+	}
+	// The stub answers every later exec successfully, so a clean return means the
+	// container was started by the fallback and the check ran against it.
+	if err := c.Verify(artifact, "wiki", "3.1.0"); err != nil {
+		t.Fatalf("the check must fall back rather than fail: %v", err)
+	}
+	invocations, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := 0
+	for _, line := range strings.Split(string(invocations), "\n") {
+		if strings.HasPrefix(line, "run ") {
+			runs++
+		}
+	}
+	if runs < 2 {
+		t.Fatalf("keep-id was refused, so a second start without it is required; saw %d run(s):\n%s", runs, invocations)
+	}
+	if strings.Contains(strings.Join(logged, "\n"), "install check skipped") {
+		t.Fatalf("the fallback succeeded, so nothing should have been skipped: %v", logged)
+	}
+}
