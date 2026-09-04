@@ -145,11 +145,7 @@ func Build(opts Options) (Result, error) {
 	// import. node_modules is a build-time artifact: the archive step leaves it out.
 	if _, statErr := os.Stat(filepath.Join(buildRoot, "package.json")); statErr == nil {
 		fmt.Fprintf(out, "Installing '%s' node dependencies (yarn install --check-files in %s)\n", opts.AppName, buildRoot)
-		// --production=false forces devDependencies on: a release pipeline that exports
-		// NODE_ENV=production would otherwise have yarn skip them, and the build then
-		// fails on a module that is only ever a devDependency (autoprefixer, postcss).
-		yarn := exec.Command("yarn", "install", "--check-files", "--non-interactive", "--production=false")
-		yarn.Dir = buildRoot
+		yarn := yarnInstall(buildRoot)
 		yarnOut, yarnErr := yarn.CombinedOutput()
 		if opts.Verbose {
 			out.Write(yarnOut)
@@ -402,6 +398,35 @@ func ensureInAppsTxt(bench, app string) (cleanup func(), err error) {
 	}, nil
 }
 
+// yarnInstall is the dependency install both of this package's yarn calls make.
+//
+// --production=false forces devDependencies on: a release pipeline that exports
+// NODE_ENV=production would otherwise have yarn skip them, and the build then fails
+// on a module that is only ever a devDependency (autoprefixer, postcss).
+//
+// SKIP_YARN_COREPACK_CHECK turns off yarn 1's corepack probe, which is not scoped to
+// the directory it installs in. findPackageManager (yarn 1.22's cli.js) walks from
+// the install directory to the filesystem root and stops at the first package.json
+// carrying a "packageManager" field — a package.json without the field does not end
+// the walk, and nothing else does either: not the app root, not a yarn.lock, not a
+// .git. One stray manifest in $HOME therefore fails every build underneath it, and
+// fpm's own build cache lives at ~/.fpm/build-cache, so on such a machine every
+// packaging run of an app with esbuild entry points died on
+//
+//	error This project's package.json defines "packageManager": "yarn@pnpm@10.32.1"
+//
+// naming a project the app being packaged has nothing to do with. internal/frontend
+// sidesteps the same walk from the other end, by writing the field into the app's own
+// manifest so the walk stops on the first file it reads (ensureLocalPackageManager);
+// here the variable yarn itself provides does it without touching the checkout. Older
+// yarns that predate the probe ignore the variable.
+func yarnInstall(dir string) *exec.Cmd {
+	cmd := exec.Command("yarn", "install", "--check-files", "--non-interactive", "--production=false")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "SKIP_YARN_COREPACK_CHECK=1")
+	return cmd
+}
+
 // esbuildDir is where frappe keeps its asset pipeline inside its own checkout.
 const esbuildDir = "esbuild"
 
@@ -418,8 +443,7 @@ func esbuildCommand(bench, app, buildRoot string, out io.Writer, verbose bool) (
 	frappeDir := filepath.Join(bench, "apps", "frappe")
 	if _, err := os.Stat(filepath.Join(frappeDir, "node_modules")); err != nil {
 		fmt.Fprintf(out, "Installing frappe's node dependencies (yarn install in %s); frappe's esbuild imports them\n", frappeDir)
-		yarn := exec.Command("yarn", "install", "--check-files", "--non-interactive", "--production=false")
-		yarn.Dir = frappeDir
+		yarn := yarnInstall(frappeDir)
 		yarnOut, yarnErr := yarn.CombinedOutput()
 		if verbose {
 			out.Write(yarnOut)

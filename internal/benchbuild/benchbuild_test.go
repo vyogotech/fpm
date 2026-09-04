@@ -209,3 +209,31 @@ func TestBuildRejectsADirectoryThatIsNeitherBenchNorWorkspace(t *testing.T) {
 		t.Fatalf("the error should name both ways a bench can build: %v", err)
 	}
 }
+
+// TestYarnInstallDisablesTheCorepackWalk: yarn 1's corepack probe walks from the
+// install directory to the filesystem root, so a stray "packageManager" manifest in
+// any ancestor — $HOME above ~/.fpm/build-cache, in the report that prompted this —
+// failed every asset build under it. The install must carry the variable that turns
+// the probe off, and must still force devDependencies on.
+func TestYarnInstallDisablesTheCorepackWalk(t *testing.T) {
+	dir := t.TempDir()
+	cmd := yarnInstall(dir)
+
+	if cmd.Dir != dir {
+		t.Errorf("install runs in %q, want %q", cmd.Dir, dir)
+	}
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "--production=false") {
+		t.Errorf("devDependencies are not forced on: %s", args)
+	}
+	var got string
+	for _, kv := range cmd.Env {
+		if v, ok := strings.CutPrefix(kv, "SKIP_YARN_COREPACK_CHECK="); ok {
+			got = v
+		}
+	}
+	if got != "1" {
+		t.Errorf("SKIP_YARN_COREPACK_CHECK=%q, want \"1\"; without it an unrelated "+
+			"package.json in any parent directory fails the build", got)
+	}
+}
