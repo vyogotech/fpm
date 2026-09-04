@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as mapping the user, and the artifact lives in an `os.MkdirTemp` directory, which is
   0700 — so without it the install died on `stat: permission denied` before it began.
 
+- **A killed install no longer fails the package.** SIGKILL (exit 137) arrives with no
+  diagnostic and is the runner running out of memory installing a large app beside a
+  live bench — builder was killed in one catalogue run and installed cleanly in the next
+  without changing. The check reports that it could not reach a verdict rather than
+  inventing one. An install that exits with an ordinary error still fails the build.
+
 ## [4.3.1] - 2026-09-04
 
 ### Fixed
