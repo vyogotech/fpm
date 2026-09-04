@@ -69,6 +69,14 @@ type AppMetadata struct {
 	// the bench's sites/assets/assets.json (and assets-rtl.json for rtl_ keys)
 	// after install. It is what external tooling can read without unpacking.
 	AssetBundles map[string]string `json:"asset_bundles,omitempty"`
+	// AssetBuildFrappeRef and AssetBuildFrappeCommit record which frappe's esbuild
+	// compiled AssetBundles. The bundles are built by frappe's own pipeline, and that
+	// pipeline differs between release lines, so "compiled" alone does not say whether
+	// a package suits the bench installing it — an app on version-15 whose desk assets
+	// were built with version-16 installs cleanly and misbehaves at runtime. The commit
+	// is the auditable half; the ref is for humans.
+	AssetBuildFrappeRef    string `json:"asset_build_frappe_ref,omitempty"`
+	AssetBuildFrappeCommit string `json:"asset_build_frappe_commit,omitempty"`
 
 	// FrontendBuilt records that `fpm package` compiled the app's JavaScript SPA
 	// (the Vite project frappe/crm, frappe/helpdesk and friends ship) and that the

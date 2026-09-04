@@ -61,7 +61,12 @@ func spaHTML(app, dir string) string {
 // fakeYarn puts a `yarn` on PATH that logs its invocations and, on build, writes the
 // files a Vite build of a frappe-ui app produces. It lets the packaging path be
 // exercised end to end without node installed.
-func fakeYarn(t *testing.T, root string, outputs map[string]string) string {
+//
+// Outputs are written relative to the build's working directory, not to a fixed root,
+// because that is what a real build does — and because the working directory is not
+// always the checkout: when the app has to be built inside a bench, `fpm package` stages
+// it at <bench>/apps/<app> first and the build runs there.
+func fakeYarn(t *testing.T, outputs map[string]string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake package manager is a POSIX shell script")
@@ -71,8 +76,8 @@ func fakeYarn(t *testing.T, root string, outputs map[string]string) string {
 
 	var writes strings.Builder
 	for rel, content := range outputs {
-		writes.WriteString("mkdir -p \"$FAKE_ROOT/" + filepath.Dir(rel) + "\"\n")
-		writes.WriteString("printf '%s' '" + content + "' > \"$FAKE_ROOT/" + rel + "\"\n")
+		writes.WriteString("mkdir -p \"$PWD/" + filepath.Dir(rel) + "\"\n")
+		writes.WriteString("printf '%s' '" + content + "' > \"$PWD/" + rel + "\"\n")
 	}
 
 	script := "#!/bin/sh\n" +
@@ -83,7 +88,6 @@ func fakeYarn(t *testing.T, root string, outputs map[string]string) string {
 
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "yarn"), []byte(script), 0o755))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("FAKE_ROOT", root)
 	return logPath
 }
 
@@ -93,7 +97,7 @@ func fakeYarn(t *testing.T, root string, outputs map[string]string) string {
 // then serves a blank page.
 func TestPackageBuildsAndShipsTheSPAFrontend(t *testing.T) {
 	src := crmShapedApp(t, "crm")
-	fakeYarn(t, src, map[string]string{
+	fakeYarn(t, map[string]string{
 		"crm/public/frontend/index.html":             spaHTML("crm", "frontend"),
 		"crm/public/frontend/assets/index-A1B2C3.js": "console.log(1)",
 		"crm/www/crm.html":                           spaHTML("crm", "frontend"),
@@ -131,7 +135,7 @@ func TestPackageBuildsAndShipsTheSPAFrontend(t *testing.T) {
 // two projects would run the same Vite build twice.
 func TestPackageRunsTheFrontendBuildExactlyOnce(t *testing.T) {
 	src := crmShapedApp(t, "crm")
-	logPath := fakeYarn(t, src, map[string]string{
+	logPath := fakeYarn(t, map[string]string{
 		"crm/public/frontend/index.html": spaHTML("crm", "frontend"),
 		"crm/www/crm.html":               spaHTML("crm", "frontend"),
 	})
@@ -153,7 +157,7 @@ func TestPackageRunsTheFrontendBuildExactlyOnce(t *testing.T) {
 // render the SPA at, so fpm supplies the template crm's copy-html-entry would have.
 func TestPackageWritesTheSPARouteWhenTheBuildScriptDoesNot(t *testing.T) {
 	src := crmShapedApp(t, "insights")
-	fakeYarn(t, src, map[string]string{
+	fakeYarn(t, map[string]string{
 		"insights/public/frontend/index.html": spaHTML("insights", "frontend"),
 	})
 
@@ -176,7 +180,7 @@ func TestPackageWritesTheSPARouteWhenTheBuildScriptDoesNot(t *testing.T) {
 // blank page, which is worse than a failed packaging run.
 func TestPackageFailsWhenTheFrontendBuildProducesNothing(t *testing.T) {
 	src := crmShapedApp(t, "crm")
-	fakeYarn(t, src, nil)
+	fakeYarn(t, nil)
 
 	args, _ := packageArgs(t, src, "1.0.0", "--org", "frappe")
 	_, err := SharedExecuteCommand(rootCmd, args...)
@@ -188,7 +192,7 @@ func TestPackageFailsWhenTheFrontendBuildProducesNothing(t *testing.T) {
 // caller that builds the frontend itself or deliberately ships without it.
 func TestPackageSkipsTheFrontendBuildOnRequest(t *testing.T) {
 	src := crmShapedApp(t, "crm")
-	logPath := fakeYarn(t, src, nil)
+	logPath := fakeYarn(t, nil)
 
 	args, outDir := packageArgs(t, src, "1.0.0", "--org", "frappe", "--build-frontend=false")
 	out, err := SharedExecuteCommand(rootCmd, args...)
@@ -209,7 +213,7 @@ func TestPackageIgnoresAppsWithoutAFrontend(t *testing.T) {
 	src := SharedCreateMinimalAppForPackage(t, t.TempDir(), "classic", map[string]string{
 		"classic/public/js/classic.bundle.js": "// an esbuild entry point, not an SPA",
 	})
-	logPath := fakeYarn(t, src, nil)
+	logPath := fakeYarn(t, nil)
 
 	// --allow-unbuilt-assets: this app has an esbuild entry point and no bench to
 	// compile it, which a prod package otherwise refuses (see
@@ -232,7 +236,7 @@ func TestPackageIgnoresAppsWithoutAFrontend(t *testing.T) {
 // symlink frappe's make_asset_dirs creates.
 func TestInstallServesThePackagedSPA(t *testing.T) {
 	src := crmShapedApp(t, "crm")
-	fakeYarn(t, src, map[string]string{
+	fakeYarn(t, map[string]string{
 		"crm/public/frontend/index.html":             spaHTML("crm", "frontend"),
 		"crm/public/frontend/assets/index-A1B2C3.js": "console.log(1)",
 		"crm/www/crm.html":                           spaHTML("crm", "frontend"),
@@ -337,7 +341,7 @@ website_route_rules = [
 ]
 `,
 	})
-	fakeYarn(t, src, map[string]string{
+	fakeYarn(t, map[string]string{
 		"erpnext/public/banking/index.html":        spaHTML("erpnext", "banking"),
 		"erpnext/public/banking/assets/app-XYZ.js": "console.log(2)",
 		"erpnext/www/banking.html":                 spaHTML("erpnext", "banking"),

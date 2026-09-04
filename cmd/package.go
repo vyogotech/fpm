@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"fpm/internal/appstore"
 	"fpm/internal/apputils"
 	"fpm/internal/archive"
+	"fpm/internal/assetbench"
 	"fpm/internal/assets"
 	"fpm/internal/benchbuild"
 	"fpm/internal/config"
@@ -56,6 +58,8 @@ var (
 
 	packageFrontendSiteConfig string
 	packageNoBenchScaffold    bool
+	packageFrappeRef          string
+	packageBuildAssets        bool
 )
 
 var packageCmd = &cobra.Command{
@@ -68,8 +72,12 @@ that is not a Frappe app is rejected immediately with exit code ` + fmt.Sprint(E
 
 The package records the exact git commit it was built from, resolves the app's
 required_apps (hooks.py) to pinned packages, vendors Python dependencies as wheels
-for the destination platform (--platform/--python-version), and — with --bench-path —
-runs Frappe's own asset build so the package ships compiled JS/CSS.
+for the destination platform (--platform/--python-version), and compiles the app's
+assets so the package ships them: the Vite SPA an app such as frappe/crm builds into
+<app>/public/frontend, and the classic *.bundle.* desk entry points frappe's esbuild
+compiles into <app>/public/dist. The desk bundles need frappe's asset pipeline, which
+fpm fetches and caches itself; --bench-path builds them in a bench you already have
+instead, and --no-bench-scaffold refuses to build either without one.
 
 required_apps are pinned from a source you name — --requires, --repo, or the bench
 given by --bench-path — because the packaging host's own FPM store holds whatever
@@ -321,40 +329,55 @@ By default, it also installs the packaged app to the local FPM app store.`,
 			return err
 		}
 
-		// --- Step 7: build assets inside a bench ---
-		// The build runs in <bench>/apps/<app> (the source itself when it already lives
-		// there, otherwise a staged copy), and the package is created from that tree so
-		// it carries everything the build produced.
 		meta.AssetsBuilt = false
 		meta.AssetBundles = nil
 		packageFrom := absSourcePath
-		if packageBenchPath != "" {
-			result, buildErr := benchbuild.Build(benchbuild.Options{
-				BenchPath:  packageBenchPath,
-				AppName:    meta.AppName,
-				SourcePath: absSourcePath,
-				Verbose:    packageBuildVerbose,
-				Stdout:     cmd.OutOrStdout(),
-			})
-			if buildErr != nil {
-				return buildErr
-			}
-			defer result.Cleanup()
-			meta.AssetsBuilt = true
-			meta.AssetBundles = result.Bundles
-			packageFrom = result.BuildRoot
-		}
 
-		// --- Step 7b: build the app's JavaScript frontend ---
+		// --- Step 6b: settle on a bench, and stage into it before anything is built ---
+		// Both builds want to run at <bench>/apps/<app>. The frontend build wants it
+		// because an app may reach out of its own tree: helpdesk's desk/package.json
+		// declares `"@framework/ui": "link:../../frappe/ui"`, which only resolves when
+		// the checkout has frappe as a sibling. The asset build wants it because that
+		// is where frappe's esbuild globs for entry points.
+		//
+		// Whether a bench is needed at all is decided from what the checkout declares
+		// before either build: esbuild entry points that are already committed, or a
+		// build script that reads a sibling app. An app that generates its entry points
+		// during its own build (frappe/wiki) is caught after the frontend build instead,
+		// in step 7b — there is no way to know earlier, and staging the built tree then
+		// costs one copy rather than a wasted frappe fetch for every SPA-only app.
+		assetBenchPath := packageBenchPath
+		if assetBenchPath == "" {
+			// A checkout that already sits at <bench>/apps/<app> brings its own bench,
+			// and using it beats both staging a copy elsewhere and fetching a second
+			// frappe. Every `fpm mirror` checkout is such a tree, which is what keeps a
+			// catalogue run from scaffolding anything.
+			assetBenchPath = enclosingBench(absSourcePath)
+		}
+		if assetBenchPath == "" && packageBuildAssets && !packageNoBenchScaffold && hasBundleSources(absSourcePath, meta.AppName) {
+			assetBenchPath = ensureAssetBench(cmd, meta.AppName, frappeRefForApp(cmd, meta.GitRef))
+		}
+		if assetBenchPath != "" {
+			staged, stageErr := benchbuild.Stage(assetBenchPath, meta.AppName, absSourcePath, cmd.OutOrStdout())
+			if stageErr != nil {
+				return stageErr
+			}
+			defer staged.Cleanup()
+			packageFrom = staged.BuildRoot
+		}
+		warnAboutSiblings(cmd, packageFrom, meta.AppName)
+
+		// --- Step 7: build the app's JavaScript frontend ---
 		// Apps like frappe/crm, frappe/helpdesk and frappe/insights ship a Vite SPA
 		// whose output — <app>/public/frontend and the <app>/www/<app>.html route it
 		// is rendered from — is listed in the app's own .gitignore and is never
 		// produced by frappe's esbuild, which only globs *.bundle.*. Without this step
 		// the package installs cleanly and then serves a blank page.
 		//
-		// It runs in packageFrom, which with --bench-path is the staged copy inside
-		// <bench>/apps/<app>: a frappe-ui frontend resolves the bench from its own
-		// physical path (../../../sites), which only holds there.
+		// It runs in the checkout itself. A frappe-ui frontend resolves the bench from
+		// its own physical path (../../../../sites); internal/frontend satisfies that
+		// where the checkout stands rather than moving it, and --bench-path's own site
+		// config is handed to it below so the values compiled in are that bench's.
 		meta.FrontendBuilt = false
 		meta.FrontendDirs, meta.FrontendRoutes, meta.FrontendSource = nil, nil, ""
 		if packageBuildFrontend {
@@ -364,7 +387,7 @@ By default, it also installs the packaged app to the local FPM app store.`,
 				Verbose:        packageBuildVerbose,
 				Stdout:         cmd.OutOrStdout(),
 				Timeout:        packageFrontendTimeout,
-				SiteConfigPath: packageFrontendSiteConfig,
+				SiteConfigPath: frontendSiteConfig(packageFrontendSiteConfig, packageBenchPath),
 				NoScaffold:     packageNoBenchScaffold,
 			})
 			if fe.Cleanup != nil {
@@ -392,6 +415,58 @@ By default, it also installs the packaged app to the local FPM app store.`,
 				"Skipping the frontend build in %s (--build-frontend=false): the package will not carry %s/public/frontend "+
 					"and the app will serve a blank page unless the checkout already holds a compiled frontend.\n",
 				project.Rel, meta.AppName)
+		}
+
+		// --- Step 7b: compile the classic desk bundles ---
+		// This runs after the frontend build, not before, because an app's esbuild entry
+		// points are not always checked in: frappe/wiki generates
+		// wiki/public/js/wiki-highlight.bundle.js from its own `yarn build` (it is in
+		// wiki's .gitignore). Compiling first globbed an entry-point set that did not
+		// exist yet, so the bundle was shipped as source and the package's code
+		// highlighting never loaded — while the error told the user to package against a
+		// bench, which is what they had just done.
+		//
+		// The bench is fetched rather than demanded. --bench-path still wins, and names
+		// the bench whose frappe (and whose site config) the package is compiled against;
+		// without it fpm materialises the little that frappe's esbuild needs, cached
+		// under the fpm build cache. Before this, an app with bundle sources and no bench
+		// to hand could only be packaged with --allow-unbuilt-assets, which ships exactly
+		// the unusable artifact that flag's own help text warns about.
+		// An app whose entry points its own build wrote (frappe/wiki) only becomes a
+		// candidate for a bench now. Staging happens inside benchbuild.Build below, and
+		// carries the frontend output along with it.
+		if assetBenchPath == "" && packageBuildAssets && !packageNoBenchScaffold && hasBundleSources(packageFrom, meta.AppName) {
+			assetBenchPath = ensureAssetBench(cmd, meta.AppName, frappeRefForApp(cmd, meta.GitRef))
+		}
+		// Only when there is something to compile. An app with no *.bundle.* entry
+		// points — lms 2.62 and every SPA-only app — has nothing for frappe's esbuild to
+		// do, and running it anyway cost a yarn install and left the package claiming
+		// assets_built with an empty bundle map, which reads as "the desk assets were
+		// built" when what happened is that there were none.
+		if packageBuildAssets && assetBenchPath != "" && hasBundleSources(packageFrom, meta.AppName) {
+			// The build runs in <bench>/apps/<app> (the source itself when it already
+			// lives there, otherwise a staged copy), and the package is created from
+			// that tree so it carries everything the build produced.
+			result, buildErr := benchbuild.Build(benchbuild.Options{
+				BenchPath:  assetBenchPath,
+				AppName:    meta.AppName,
+				SourcePath: packageFrom,
+				Verbose:    packageBuildVerbose,
+				Stdout:     cmd.OutOrStdout(),
+			})
+			if buildErr != nil {
+				return buildErr
+			}
+			defer result.Cleanup()
+			meta.AssetsBuilt = true
+			meta.AssetBundles = result.Bundles
+			meta.AssetBuildFrappeCommit = assetbench.FrappeCommit(assetBenchPath)
+			if packageBenchPath == "" {
+				// Only a bench fpm resolved has a ref to name; one the caller supplied is
+				// whatever they checked out, and the commit says it exactly.
+				meta.AssetBuildFrappeRef = frappeRefForApp(cmd, meta.GitRef)
+			}
+			packageFrom = result.BuildRoot
 		}
 
 		// --- Step 7c: record whatever classic bundles are on disk ---
@@ -655,11 +730,26 @@ func checkAssetsBuilt(cmd *cobra.Command, meta *metadata.AppMetadata, packageFro
 			summary, meta.AppName)
 		return nil
 	}
+	// The remedy depends on why nothing compiled them. Telling someone who passed
+	// --bench-path to pass --bench-path is what this error used to do.
+	remedy := "Build them by letting fpm fetch frappe's asset pipeline (drop --no-bench-scaffold), " +
+		"by packaging against a bench (--bench-path <bench>), " +
+		"or pass --allow-unbuilt-assets to publish a package whose desk UI has to be built on the destination"
+	switch {
+	case packageBenchPath != "":
+		remedy = fmt.Sprintf("The bench at %s ran frappe's asset build and produced none of them, "+
+			"which usually means its frappe is too old for this app's bundle sources or the build failed silently. "+
+			"Package with --build-verbose to see it, or pass --allow-unbuilt-assets to publish a package "+
+			"whose desk UI has to be built on the destination", packageBenchPath)
+	case packageNoBenchScaffold:
+		remedy = "Drop --no-bench-scaffold to let fpm fetch frappe's asset pipeline and compile them, " +
+			"pass --bench-path <bench> to build against a bench you already have, " +
+			"or pass --allow-unbuilt-assets to publish a package whose desk UI has to be built on the destination"
+	}
 	return fmt.Errorf("%w: %s.\n"+
 		"A bench that installs from a package does not build assets, so this package would install and then serve nothing.\n"+
-		"Build them by packaging against a bench (--bench-path <bench>, which runs frappe's own asset build), "+
-		"or pass --allow-unbuilt-assets to publish a package whose desk UI has to be built on the destination",
-		benchbuild.ErrBuildFailed, summary)
+		"%s",
+		benchbuild.ErrBuildFailed, summary, remedy)
 }
 
 // firstOrEmpty is the first element of a repeatable flag's values, for the callees
@@ -733,12 +823,14 @@ func init() {
 	packageCmd.Flags().StringVar(&packagePythonVersion, "python-version", "", "Python version of the destination bench, e.g. 3.11. Required with --platform when the app has dependencies to vendor; never guessed from the packaging host")
 	packageCmd.Flags().StringVar(&packageImplementation, "implementation", wheels.DefaultImplementation, "Python implementation tag of the destination bench (cp for CPython)")
 	packageCmd.Flags().StringArrayVar(&packageABIs, "abi", nil, "Restrict vendored wheels to these ABI tags (e.g. cp311, abi3); repeatable. Default: derived from --python-version by pip")
-	packageCmd.Flags().StringVar(&packageBenchPath, "bench-path", "", "Path to a Frappe bench with node/yarn available: runs 'bench build --app <app> --production' so the package ships compiled JS/CSS")
+	packageCmd.Flags().StringVar(&packageBenchPath, "bench-path", "", "Path to a Frappe bench with node/yarn available: runs 'bench build --app <app> --production' so the package ships compiled JS/CSS. Without it, an app that declares esbuild entry points gets frappe's asset pipeline fetched into "+defaultBuildCacheHint()+" and compiled there")
+	packageCmd.Flags().StringVar(&packageFrappeRef, "frappe-ref", assetbench.DefaultFrappeRef, "The frappe ref whose esbuild compiles this app's desk bundles when fpm fetches the asset pipeline itself. When this is not set and the checkout is on a frappe release line (a version-NN branch, as erpnext's and hrms's are), that line is used instead of the default, because it is the frappe the app is written against. Ignored with --bench-path, which uses that bench's frappe. Either way the frappe used is recorded in the package as asset_build_frappe_ref/_commit")
+	packageCmd.Flags().BoolVar(&packageBuildAssets, "build-assets", true, "Compile the app's classic *.bundle.* desk entry points with frappe's esbuild. Use --build-assets=false to package without them — the counterpart to --build-frontend=false, and what a caller passes when it already knows the asset build fails for this version and has accepted that with --allow-unbuilt-assets. Staging and the frontend build are unaffected")
 	packageCmd.Flags().BoolVar(&packageBuildVerbose, "build-verbose", false, "Stream the asset and frontend build output instead of showing it only on failure")
 	packageCmd.Flags().BoolVar(&packageBuildFrontend, "build-frontend", true, "Compile the app's JavaScript frontend (the Vite SPA that apps like frappe/crm build into <app>/public/frontend) when the checkout declares one. Use --build-frontend=false to package without it")
 	packageCmd.Flags().DurationVar(&packageFrontendTimeout, "frontend-timeout", frontend.DefaultTimeout, "Time limit for the frontend dependency install and for the frontend build, each")
 	packageCmd.Flags().StringVar(&packageFrontendSiteConfig, "frontend-site-config", "", "A bench's sites/common_site_config.json to build the frontend against. Apps like frappe/crm compile socketio_port into their bundle; without this a default bench config is synthesized (see --help output during the build)")
-	packageCmd.Flags().BoolVar(&packageNoBenchScaffold, "no-bench-scaffold", false, "Fail instead of building a bench-resolving frontend in a temporary bench. Use when the package must be built only against a real bench (--bench-path or a checkout already at <bench>/apps/<app>)")
+	packageCmd.Flags().BoolVar(&packageNoBenchScaffold, "no-bench-scaffold", false, "Never build a bench for this package: fail instead of building a bench-resolving frontend in a temporary bench, and do not fetch frappe's asset pipeline to compile esbuild entry points. Use when the package must be built only against a real bench (--bench-path or a checkout already at <bench>/apps/<app>), or on a host with no network")
 	packageCmd.Flags().StringArrayVar(&packageRepos, "repo", nil, "Configured repository to resolve required_apps against, exclusively: neither this host's FPM store nor the bench answers a requirement when it is set. Repeatable, tried in order — name every backend the build publishes to")
 	packageCmd.Flags().StringArrayVar(&packageOverrideDeps, "override-dependency", nil, "Replace a Python requirement the app declares, e.g. --override-dependency 'pycrdt>=0.14.4'. The staged copy's manifest is rewritten before wheels are vendored — the source tree is untouched — so the package and its wheels agree. Repeatable; recorded in app_metadata.json as dependency_overrides. For repackaging an app whose upstream pin cannot be satisfied for the target")
 	packageCmd.Flags().BoolVar(&packageAllowUnbuiltAssets, "allow-unbuilt-assets", false, "Package a prod app that declares esbuild entry points even though nothing compiled them. The package installs but its desk UI does not render until the bench runs 'bench build'")
@@ -746,4 +838,136 @@ func init() {
 	packageCmd.Flags().BoolVar(&packageRequiresFromStore, "requires-from-local-store", false, "Allow a prod package to pin required_apps from this host's FPM store. The store is ambient state, so the resulting package is not reproducible; prod builds otherwise have to name a source (--requires/--repo/--bench-path)")
 	packageCmd.Flags().BoolVar(&packageExactRequires, "requires-exact", false, "Record each resolved required app as the one exact version it resolved to, instead of that version's release line (>=16.0.0-0,<17.0.0). Exact pins break co-installation when two apps need the same dependency")
 	packageCmd.Flags().BoolVar(&packageWithDeps, "with-deps", false, "Also write <output-path>/<app>-<version>-bundle/: this package plus every package it transitively requires (each once) with an install-order manifest, for 'fpm install <dir>' on an offline bench")
+}
+
+// frontendSiteConfig is the sites/common_site_config.json an app's frontend is compiled
+// against: what --frontend-site-config names, else the bench --bench-path names.
+//
+// The frontend build no longer runs inside that bench — it runs in the checkout, before
+// the desk bundles are compiled, because an app's entry points may be generated by it —
+// so the bench's config is passed in explicitly rather than found by walking up from
+// the build directory. A bench without one is not an error: internal/frontend
+// synthesizes frappe's defaults, which is what it did here before.
+func frontendSiteConfig(explicit, benchPath string) string {
+	if explicit != "" || benchPath == "" {
+		return explicit
+	}
+	candidate := filepath.Join(benchPath, "sites", "common_site_config.json")
+	if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+		return candidate
+	}
+	return ""
+}
+
+// defaultBuildCacheHint names the build cache in --help without failing when the home
+// directory cannot be resolved, which is not a reason to refuse to print usage.
+func defaultBuildCacheHint() string {
+	if dir, err := assetbench.DefaultCacheDir(); err == nil {
+		return dir
+	}
+	return "the fpm build cache"
+}
+
+// frappeReleaseLine matches frappe's release-line branch names, which its apps mirror:
+// erpnext and hrms keep a version-15 and a version-16 branch alongside frappe's.
+var frappeReleaseLine = regexp.MustCompile(`^version-[0-9]+$`)
+
+// frappeRefForApp is the frappe whose esbuild compiles this app's desk bundles.
+//
+// --frappe-ref wins outright. Otherwise, when the checkout is itself on a frappe release
+// line, that is the frappe the app is written against, and compiling it with a different
+// major is a mismatch nobody would catch: the bundles build, install, and then misbehave
+// against a bench of the other major. Anything else — a tag, a feature branch, develop —
+// has no reliable mapping to a frappe ref, so the default stands rather than being
+// guessed at.
+func frappeRefForApp(cmd *cobra.Command, gitRef string) string {
+	if cmd.Flags().Changed("frappe-ref") && packageFrappeRef != "" {
+		return packageFrappeRef
+	}
+	if frappeReleaseLine.MatchString(strings.TrimSpace(gitRef)) {
+		return gitRef
+	}
+	if packageFrappeRef != "" {
+		return packageFrappeRef
+	}
+	return assetbench.DefaultFrappeRef
+}
+
+// hasBundleSources reports whether the app has esbuild entry points on disk.
+func hasBundleSources(root, appName string) bool {
+	sources, err := benchbuild.BundleSources(filepath.Join(root, appName))
+	return err == nil && len(sources) > 0
+}
+
+// enclosingBench is the bench a checkout already lives in, when that bench can compile
+// assets. Empty when the checkout is somewhere else, or when the bench has no frappe.
+func enclosingBench(root string) string {
+	if !frontend.InsideBench(root) {
+		return ""
+	}
+	bench := filepath.Clean(filepath.Join(root, "..", ".."))
+	if _, err := os.Stat(filepath.Join(bench, "apps", "frappe", "esbuild", "esbuild.js")); err != nil {
+		return ""
+	}
+	return bench
+}
+
+// warnAboutSiblings says so when a build reads another bench app off disk and that app
+// is not there.
+//
+// It warns rather than fetches. The one app in the catalogue that needs this — helpdesk,
+// whose desk/package.json declares `"@framework/ui": "link:../../frappe/ui"` — is
+// disabled there precisely because fetching the sibling was tried and did not work:
+// vite resolves frappe/ui's peerDependencies from the vite root, which only holds in a
+// bench-wide hoisted install. Guessing at machinery that is known not to work would
+// replace a clear failure with a confusing one, so the build proceeds and this explains
+// the error it is about to produce.
+func warnAboutSiblings(cmd *cobra.Command, root, appName string) {
+	siblings, err := frontend.SiblingApps(root, appName)
+	if err != nil || len(siblings) == 0 {
+		return
+	}
+	apps := filepath.Dir(root)
+	var missing []string
+	for _, ref := range siblings {
+		if _, statErr := os.Stat(filepath.Join(apps, filepath.FromSlash(ref))); statErr != nil {
+			missing = append(missing, ref)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(),
+		"Note: '%s' builds against %s, which it reads off disk as a sibling app, and %s not at %s. "+
+			"The build will fail there. Package from a bench that has %s checked out beside '%s' "+
+			"(--bench-path <bench>, or a checkout already at <bench>/apps/%s).\n",
+		appName, strings.Join(missing, ", "), pluralAre(len(missing)), apps,
+		strings.Join(missing, ", "), appName, appName)
+}
+
+func pluralAre(n int) string {
+	if n == 1 {
+		return "it is"
+	}
+	return "they are"
+}
+
+// ensureAssetBench materialises the bench to compile in, or returns "" after saying why
+// it could not.
+//
+// Failure is deliberately not fatal. It only means the bundles are not compiled here,
+// which is the state fpm was always in before this existed, and checkAssetsBuilt already
+// decides what that is worth: a prod package is refused, a dev one warns. Failing
+// outright would break packaging on a host that is offline and never needed this.
+func ensureAssetBench(cmd *cobra.Command, appName, frappeRef string) string {
+	fmt.Fprintf(cmd.OutOrStdout(), "Compiling '%s' desk assets with frappe %s\n", appName, frappeRef)
+	bench, err := assetbench.Ensure(assetbench.Options{
+		FrappeRef: frappeRef,
+		Stdout:    cmd.OutOrStdout(),
+	})
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", err)
+		return ""
+	}
+	return bench
 }
