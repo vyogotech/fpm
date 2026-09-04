@@ -1,6 +1,7 @@
 package mirror
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -80,22 +81,38 @@ func (c InstallCheck) Verify(artifact, appName, version string) error {
 		c.Image, "bash", "-c",
 		"sed -i '/^watch:/d' "+bench+"/Procfile; exec /usr/libexec/s2i/run")
 	if out, err := run.CombinedOutput(); err != nil {
+		_ = exec.Command("podman", "rm", "-f", name).Run()
+		// podman separates its own failures from the runtime's by exit code: 125 is
+		// podman itself (an image that does not exist, a bad flag) and 126 is the OCI
+		// runtime unable to invoke the container. The first is the operator's problem
+		// and must fail the build; the second is the host's, and is the same class of
+		// thing as a bench that never comes up — rootless podman on a shared runner
+		// intermittently cannot map the user namespace (`crun: writing file
+		// /proc/N/gid_map: Invalid argument`). Counting that against the package
+		// withheld four of twelve apps in one run.
+		if isHostContainerFailure(err) {
+			c.log("  install check skipped: %s could not be started by the container runtime: %v\n%s",
+				c.Image, err, tail(string(out), 400))
+			return nil
+		}
 		return fmt.Errorf("could not start %s: %v\n%s", c.Image, err, tail(string(out), 400))
 	}
 	defer func() {
 		_ = exec.Command("podman", "rm", "-f", name).Run()
 	}()
 
-	if err := c.configureRepos(name); err != nil {
-		return err
-	}
-
+	// After the bench is confirmed up, so that a host that cannot run containers is
+	// classified as such rather than as a repository misconfiguration.
 	if err := c.waitForBench(name); err != nil {
 		// The bench not starting says nothing about the package. Refusing to publish
 		// over it would block the catalogue on a flaky runner, so this is reported and
 		// the package goes on — the check is a gate on the artifact, not on the host.
 		c.log("  install check skipped: %v", err)
 		return nil
+	}
+
+	if err := c.configureRepos(name); err != nil {
+		return err
 	}
 
 	// The install a user runs, onto a real site. fpm's own site install verifies the
@@ -174,6 +191,13 @@ func (c InstallCheck) repoEnv() []string {
 // container runs. Repository names and URLs come from configuration, not from a package.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
+}
+
+// isHostContainerFailure reports whether podman failed because the host could not run
+// the container, rather than because of anything about the image or the package.
+func isHostContainerFailure(err error) bool {
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() == 126
 }
 
 func (c InstallCheck) waitForBench(container string) error {
