@@ -255,9 +255,16 @@ jobs:
           # frappe's checkout is excluded: every shard builds its app's desk assets
           # against the same frappe, so it is cached once for all of them by the step
           # below instead of ~20 times here.
+          #
+          # package-bench is excluded too. That is the bench `fpm package` fetches for
+          # itself when handed a checkout that is not already in one; a mirror checkout
+          # always is, so it should never appear here. Excluding it means that if it ever
+          # does — a workflow change, a hand-run command — it costs nothing instead of
+          # adding ~350 MB of frappe and node_modules to every per-app cache entry.
           path: |
             ~/.fpm/build-cache
             !~/.fpm/build-cache/bench/apps/frappe
+            !~/.fpm/build-cache/package-bench
           key: fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-${{ github.run_id }}
           restore-keys: |
             fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-
@@ -398,6 +405,7 @@ jobs:
           path: |
             ~/.fpm/build-cache
             !~/.fpm/build-cache/bench/apps/frappe
+            !~/.fpm/build-cache/package-bench
           key: fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-${{ github.run_id }}
 
       # Only the shard that had to fetch and install it writes it back; the rest
@@ -497,9 +505,16 @@ jobs:
           # frappe's checkout is excluded: every shard builds its app's desk assets
           # against the same frappe, so it is cached once for all of them by the step
           # below instead of ~20 times here.
+          #
+          # package-bench is excluded too. That is the bench `fpm package` fetches for
+          # itself when handed a checkout that is not already in one; a mirror checkout
+          # always is, so it should never appear here. Excluding it means that if it ever
+          # does — a workflow change, a hand-run command — it costs nothing instead of
+          # adding ~350 MB of frappe and node_modules to every per-app cache entry.
           path: |
             ~/.fpm/build-cache
             !~/.fpm/build-cache/bench/apps/frappe
+            !~/.fpm/build-cache/package-bench
           key: fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-${{ github.run_id }}
           restore-keys: |
             fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-
@@ -640,6 +655,7 @@ jobs:
           path: |
             ~/.fpm/build-cache
             !~/.fpm/build-cache/bench/apps/frappe
+            !~/.fpm/build-cache/package-bench
           key: fpm-mirror-buildcache-v2-${{ runner.os }}-${{ matrix.slug }}-${{ github.run_id }}
 
       # Only the shard that had to fetch and install it writes it back; the rest
