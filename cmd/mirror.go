@@ -238,7 +238,11 @@ func runMirror() error {
 		Platforms:     platforms,
 		FrappeRef:     mirrorFrappeRef,
 		InstallCheck: mirror.InstallCheck{
-			Image:  mirrorVerifyInstallImage,
+			Image: mirrorVerifyInstallImage,
+			// The same repositories the run publishes to, so the check can fetch an
+			// app's required_apps. Dependencies are built and published before their
+			// dependents, so by the time an app is checked its requirements are there.
+			Repos:  repos,
 			FPMBin: fpmBin,
 			Log:    func(format string, args ...any) { fmt.Printf(format+"\n", args...) },
 		},

@@ -2,10 +2,14 @@ package mirror
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"fpm/internal/config"
+	"fpm/internal/repository"
 )
 
 // Publishing proves an artifact exists. It does not prove it works: the catalogue
@@ -29,6 +33,16 @@ type InstallCheck struct {
 	Site string
 	// FPMBin is the binary to drive the install with, mounted into the container.
 	FPMBin string
+	// Repos are the repositories to configure inside the container, so that an app's
+	// required_apps can be fetched the way they would be on a real bench.
+	//
+	// Without them the check can only verify an app whose dependencies are already
+	// baked into the image. `fpm install` resolves transitively and will fetch what is
+	// missing, but only when a repository is configured — a bare container has none, so
+	// an app like lms, which requires payments, failed its check and was never
+	// published. Dependencies build before their dependents, so by the time an app is
+	// checked its requirements are in the registries this run publishes to.
+	Repos []config.RepositoryConfig
 	// Log receives progress.
 	Log func(format string, args ...any)
 }
@@ -72,6 +86,10 @@ func (c InstallCheck) Verify(artifact, appName, version string) error {
 		_ = exec.Command("podman", "rm", "-f", name).Run()
 	}()
 
+	if err := c.configureRepos(name); err != nil {
+		return err
+	}
+
 	if err := c.waitForBench(name); err != nil {
 		// The bench not starting says nothing about the package. Refusing to publish
 		// over it would block the catalogue on a flaky runner, so this is reported and
@@ -104,6 +122,60 @@ func (c InstallCheck) Verify(artifact, appName, version string) error {
 	return nil
 }
 
+// configureRepos points the container's fpm at the same repositories the run publishes
+// to, so an install can fetch an app's required_apps instead of refusing.
+//
+// A repository whose password is not in this process's environment is still added: reads
+// are frequently anonymous, and failing the check over a credential that may not be
+// needed would withhold a package that installs perfectly well.
+func (c InstallCheck) configureRepos(container string) error {
+	for _, r := range c.Repos {
+		add := fmt.Sprintf("fpm repo add %s %s", shellQuote(r.Name), shellQuote(r.URL))
+		if r.Type != "" {
+			add += " --type " + shellQuote(r.Type)
+		}
+		if r.Username != "" {
+			add += " --username " + shellQuote(r.Username)
+		}
+		if r.PlainHTTP {
+			add += " --plain-http"
+		}
+		if r.Insecure {
+			add += " --insecure"
+		}
+		if out, err := c.exec(container, add, 2*time.Minute); err != nil {
+			return fmt.Errorf("could not configure repository %s in the check container: %v\n%s",
+				r.Name, err, tail(out, 400))
+		}
+	}
+	if len(c.Repos) > 0 {
+		c.log("  install check: configured %d repository(ies) so required_apps can be fetched", len(c.Repos))
+	}
+	return nil
+}
+
+// repoEnv passes each configured repository's password into the container, under the
+// name that repository reads it from.
+func (c InstallCheck) repoEnv() []string {
+	var env []string
+	for _, r := range c.Repos {
+		name := repository.PasswordEnvVar(r.Name)
+		if v := os.Getenv(name); v != "" {
+			env = append(env, "-e", name+"="+v)
+		}
+	}
+	if v := os.Getenv(repository.PasswordEnvFallback); v != "" {
+		env = append(env, "-e", repository.PasswordEnvFallback+"="+v)
+	}
+	return env
+}
+
+// shellQuote makes a configured value safe to interpolate into the bash -c script the
+// container runs. Repository names and URLs come from configuration, not from a package.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
+}
+
 func (c InstallCheck) waitForBench(container string) error {
 	deadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(deadline) {
@@ -119,8 +191,10 @@ func (c InstallCheck) waitForBench(container string) error {
 }
 
 func (c InstallCheck) exec(container, script string, timeout time.Duration) (string, error) {
-	cmd := exec.Command("podman", "exec", "-i", "-e", "HOME=/home/frappe", container, "bash", "-c",
+	args := append([]string{"exec", "-i", "-e", "HOME=/home/frappe"}, c.repoEnv()...)
+	args = append(args, container, "bash", "-c",
 		"export PATH=/opt/fpm:/home/frappe/frappe-bench/env/bin:/home/frappe/.local/bin:$PATH; cd /home/frappe/frappe-bench; "+script)
+	cmd := exec.Command("podman", args...)
 	done := make(chan struct{})
 	var out []byte
 	var err error
