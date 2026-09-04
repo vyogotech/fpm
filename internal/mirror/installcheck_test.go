@@ -241,3 +241,65 @@ func writeFakeBin(t *testing.T) string {
 	}
 	return p
 }
+
+// TestInstallCheckSkipsAKilledInstall: SIGKILL arrives with no diagnostic — the log
+// stops mid-install — and it is the runner running out of memory installing a large app
+// beside a live bench, not a statement about the package. builder died this way in one
+// catalogue run and installed cleanly in the next without changing. A check that cannot
+// reach a verdict must say so rather than invent one.
+func TestInstallCheckSkipsAKilledInstall(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"case \"$*\" in\n" +
+		"  *'fpm install'*) exit 137 ;;\n" +
+		"  run*) echo container-id; exit 0 ;;\n" +
+		"  exec*) echo wiki; exit 0 ;;\n" +
+		"esac\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "podman"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	artifact := filepath.Join(t.TempDir(), "wiki-3.1.0.fpm")
+	if err := os.WriteFile(artifact, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logged []string
+	c := InstallCheck{
+		Image: "example/bench:latest", Site: "dev.localhost", FPMBin: writeFakeBin(t),
+		Log: func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) },
+	}
+	if err := c.Verify(artifact, "wiki", "3.1.0"); err != nil {
+		t.Fatalf("a killed install is the host's doing and must not fail the package: %v", err)
+	}
+	if !strings.Contains(strings.Join(logged, "\n"), "killed by the host") {
+		t.Fatalf("the kill has to be reported, got: %v", logged)
+	}
+}
+
+// TestInstallCheckStillFailsARealRefusal keeps the gate meaningful: an install that
+// exits with an ordinary error is the package's problem and must stop it publishing.
+func TestInstallCheckStillFailsARealRefusal(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"case \"$*\" in\n" +
+		"  *'fpm install'*) echo 'Error: required app missing' >&2; exit 1 ;;\n" +
+		"  run*) echo container-id; exit 0 ;;\n" +
+		"  exec*) echo wiki; exit 0 ;;\n" +
+		"esac\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "podman"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	artifact := filepath.Join(t.TempDir(), "wiki-3.1.0.fpm")
+	if err := os.WriteFile(artifact, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := InstallCheck{Image: "example/bench:latest", Site: "dev.localhost",
+		FPMBin: writeFakeBin(t), Log: func(string, ...any) {}}
+	if err := c.Verify(artifact, "wiki", "3.1.0"); err == nil {
+		t.Fatal("an install that refuses must still fail the check")
+	}
+}
