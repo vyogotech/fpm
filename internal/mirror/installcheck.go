@@ -96,9 +96,9 @@ func (c InstallCheck) Verify(artifact, appName, version string) error {
 	}
 
 	out, err := start(true)
-	if err != nil && isHostContainerFailure(err) {
+	if err != nil {
 		_ = exec.Command("podman", "rm", "-f", name).Run()
-		c.log("  install check: the container runtime refused --userns=keep-id; retrying in the default namespace")
+		c.log("  install check: could not start %s with --userns=keep-id (%v); retrying in the default namespace", c.Image, err)
 		// keep-id is what made the mounts readable: it maps the host user onto the
 		// image's frappe user, so a directory only its owner can enter is still
 		// enterable inside. Without it the host user maps to container root and frappe
@@ -119,18 +119,21 @@ func (c InstallCheck) Verify(artifact, appName, version string) error {
 	}
 	if err != nil {
 		_ = exec.Command("podman", "rm", "-f", name).Run()
-		// podman separates its own failures from the runtime's by exit code: 125 is
-		// podman itself (an image that does not exist, a bad flag) and 126 is the OCI
-		// runtime unable to invoke the container. The first is the operator's problem
-		// and must fail the build; the second is the host's, and is the same class of
-		// thing as a bench that never comes up. Counting it against the package withheld
-		// good artifacts.
-		if isHostContainerFailure(err) {
-			c.log("  install check skipped: %s could not be started by the container runtime: %v\n%s",
-				c.Image, err, tail(out, 400))
-			return nil
-		}
-		return fmt.Errorf("could not start %s: %v\n%s", c.Image, err, tail(out, 400))
+		// Never fail a package because the container would not start. Three runs
+		// produced three different reasons — the runtime refusing keep-id (126), a
+		// 0700 mount it could not read, and Docker Hub answering the image pull with
+		// 502 (125) — and none of them says anything about the artifact. Splitting
+		// them by exit code only invited the next one, so the rule is the one the rest
+		// of this function already follows: the check reports a verdict when it reaches
+		// one, and skips when it cannot.
+		//
+		// The cost is that an image that genuinely does not exist skips every check
+		// rather than failing loudly. That is visible — every app in the run reports the
+		// same skip — and is the cheaper mistake: the alternative withholds working
+		// packages whenever a registry has a bad minute.
+		c.log("  install check skipped: %s could not be started: %v\n%s",
+			c.Image, err, tail(out, 400))
+		return nil
 	}
 	defer func() {
 		_ = exec.Command("podman", "rm", "-f", name).Run()
@@ -263,13 +266,6 @@ func makeReadableInContainer(dir, file string) error {
 func isKilled(err error) bool {
 	var exit *exec.ExitError
 	return errors.As(err, &exit) && exit.ExitCode() == 137
-}
-
-// isHostContainerFailure reports whether podman failed because the host could not run
-// the container, rather than because of anything about the image or the package.
-func isHostContainerFailure(err error) bool {
-	var exit *exec.ExitError
-	return errors.As(err, &exit) && exit.ExitCode() == 126
 }
 
 func (c InstallCheck) waitForBench(container string) error {
