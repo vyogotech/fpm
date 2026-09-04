@@ -271,6 +271,12 @@ exit 4
 	if !strings.Contains(retry, "--allow-unbuilt-assets") {
 		t.Fatalf("the retry must permit a package without compiled assets: %s", retry)
 	}
+	// And it must switch the asset build off outright. Dropping --bench-path is not
+	// enough: `fpm package` also compiles in a bench the checkout already lives in, and
+	// every mirror checkout does, so the retry would run the build that just failed.
+	if !strings.Contains(retry, "--build-assets=false") {
+		t.Fatalf("the retry must turn the asset build off, not just drop the bench: %s", retry)
+	}
 }
 
 func TestWithoutFlag(t *testing.T) {

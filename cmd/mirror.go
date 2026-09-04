@@ -44,9 +44,9 @@ var (
 	mirrorPlatforms          []string
 )
 
-// Exit codes: 0 clean, 1 one or more apps failed, 2 configuration/catalog
-// error. Distinct codes so automation can tell "fix the catalog" from
-// "look at the report".
+// Exit codes: 0 clean, 1 one or more apps failed or were withheld from the
+// repositories, 2 configuration/catalog error. Distinct codes so automation can
+// tell "fix the catalog" from "look at the report".
 var mirrorCmd = &cobra.Command{
 	Use:   "mirror",
 	Short: "Bulk-build and publish official Frappe apps from the catalog",
@@ -279,7 +279,7 @@ func init() {
 	mirrorCmd.Flags().BoolVar(&mirrorAllowThirdParty, "allow-third-party", false, "Also build catalog entries whose repository is outside the frappe GitHub organisation. Off by default: the mirror publishes the frappe org's own apps, and a third-party entry is reported as disabled rather than silently skipped")
 	mirrorCmd.Flags().StringVar(&mirrorVerifyInstallImage, "verify-install", "", "Install every built package into this bench image (e.g. docker.io/vyogo/erpnext:sne-develop) before publishing it, and refuse to publish one that does not install. Needs podman")
 	mirrorCmd.Flags().StringVar(&mirrorFrappeRef, "frappe-ref", mirror.DefaultFrappeRef, "The frappe branch or tag whose esbuild compiles the catalogue's desk assets. The catalog's build_deps column overrides it per app")
-	mirrorCmd.Flags().BoolVar(&mirrorAllowUnbuiltAssets, "allow-unbuilt-assets", false, "Publish an app whose desk bundles could not be compiled. The package installs and its desk UI does not render until the destination bench runs its own build")
+	mirrorCmd.Flags().BoolVar(&mirrorAllowUnbuiltAssets, "allow-unbuilt-assets", false, "Publish an app whose desk bundles could not be compiled. Off by default such an app is still built and kept, but withheld from every repository and reported as withheld-noassets (a nonzero exit), because it installs and its desk UI renders nothing until the destination bench runs its own build")
 	mirrorCmd.Flags().StringVar(&mirrorPythonVersion, "python-version", "", "Target Python version for vendored wheels (e.g. 3.11, 3.12; defaults to host python version)")
 	mirrorCmd.Flags().StringArrayVar(&mirrorPlatforms, "platform", nil, "Target wheel platform tags (defaults to "+wheels.DefaultProdPlatform+")")
 	mirrorCmd.Flags().BoolVar(&mirrorListSlugs, "list-slugs", false, "Print the enabled catalog slugs as a JSON array and exit, for sharding a run across machines. Needs no repository and no network")
