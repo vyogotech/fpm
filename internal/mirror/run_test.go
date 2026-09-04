@@ -3,7 +3,6 @@ package mirror
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -405,9 +404,6 @@ func TestInstallCheckDisabledByDefault(t *testing.T) {
 // install must not reach the registry. The stub fpm rejects the install, so the run
 // must fail at the check and never call publish.
 func TestInstallCheckBlocksPublishing(t *testing.T) {
-	if _, err := exec.LookPath("podman"); err != nil {
-		t.Skip("podman is required to exercise the install check")
-	}
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "args.log")
 	fpmBin := filepath.Join(dir, "fpm")
@@ -428,11 +424,23 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	// An image that cannot start is enough: the check must fail the build either way,
-	// and must do so before publishing.
+	// A container that starts, a bench that answers, and an install that refuses — the
+	// shape this test is about. A container that cannot start is deliberately not it:
+	// that is the host's problem and is skipped, so using it here would have passed
+	// without ever exercising the refusal.
+	stub := t.TempDir()
+	podman := "#!/bin/sh\ncase \"$*\" in\n" +
+		"  *'fpm install'*) echo 'Error: the package does not install' >&2; exit 1 ;;\n" +
+		"  run*) echo container-id; exit 0 ;;\n" +
+		"  exec*) echo wiki; exit 0 ;;\nesac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(stub, "podman"), []byte(podman), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+
 	runner := &Runner{
 		FPMBin: fpmBin, Workspace: ws, OutputPath: t.TempDir(), Log: func(string, ...any) {},
-		InstallCheck: InstallCheck{Image: "localhost/fpm-nonexistent-image:verify", FPMBin: fpmBin},
+		InstallCheck: InstallCheck{Image: "example/bench:latest", Site: "dev.localhost", FPMBin: fpmBin},
 	}
 	err = runner.InstallCheck.Verify(filepath.Join(dir, "wiki-3.1.0.fpm"), "wiki", "3.1.0")
 	if err == nil {

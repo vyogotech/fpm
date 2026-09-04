@@ -99,10 +99,10 @@ func TestInstallCheckQuotesConfiguredValues(t *testing.T) {
 	}
 }
 
-// TestInstallCheckSkipsWhenTheContainerWillNotStart: rootless podman on a shared runner
-// intermittently fails to map the user namespace (crun, exit 126). That says nothing
-// about the package, and treating it as a failure withheld four of twelve apps in one
-// run — the same reasoning the bench-never-came-up path already applies.
+// TestInstallCheckSkipsWhenTheContainerWillNotStart: three catalogue runs produced three
+// different reasons a container would not start — the runtime refusing keep-id, a mount
+// it could not read, and Docker Hub answering the image pull with 502 — and none of them
+// says anything about the artifact. The check skips whenever it cannot reach a verdict.
 func TestInstallCheckSkipsWhenTheContainerWillNotStart(t *testing.T) {
 	dir := t.TempDir()
 	script := "#!/bin/sh\n" +
