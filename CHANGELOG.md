@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.0] - 2026-09-04
+
+### Added
+
+- **Desk bundles compile without a bench.** An app's UI can be a Vite SPA, frappe's
+  classic `*.bundle.*` entry points, or both — wiki, lms, webshop, drive and hrms ship
+  both — and only the SPA half was ever built. The classic half compiled only when the
+  caller passed `--bench-path`; without one the package shipped its entry points as
+  source, installed cleanly and rendered nothing. `fpm package` now materialises what
+  frappe's esbuild actually needs (a sparse checkout of `esbuild/` and `frappe/public`
+  plus its npm tree — no virtualenv, site or database) and caches it. `--bench-path`
+  still wins, a checkout already inside a bench uses that one, and a fetch that fails
+  only warns, since the existing guard already decides what an uncompiled package is
+  worth.
+
+- **`--frappe-ref`, and the frappe that compiled a package is recorded in it**
+  (`asset_build_frappe_ref` / `asset_build_frappe_commit`). When the checkout sits on a
+  frappe release line that line is used, because an app on version-15 built with
+  version-16's esbuild installs cleanly and misbehaves later, and nothing said which
+  frappe had been used.
+
+- **`--build-assets=false`**, the counterpart to `--build-frontend=false`, for a caller
+  that already knows the asset build fails for this version and has accepted that with
+  `--allow-unbuilt-assets`.
+
+### Fixed
+
+- **The asset build ran before the app's own build.** An entry point the app generates —
+  wiki writes `wiki-highlight.bundle.js` from its own `yarn build` and gitignores it —
+  did not exist when esbuild globbed for it, and the guard then told the user to package
+  against a bench, which is what they had just done.
+
+- **A build that reads a sibling app off disk is detected.** helpdesk declares
+  `"@framework/ui": "link:../../frappe/ui"`, which yarn resolves relative to the
+  package.json declaring it; `SiblingApps` scanned only scripts and missed that shape
+  entirely. Both builds now run at `<bench>/apps/<app>`.
+
+- **The mirror withholds a package whose desk assets did not compile instead of
+  publishing it.** Such a package installs and renders nothing, and the report saying so
+  is read after the run while an install is not — which is how the catalogue came to
+  hold artifacts that served nothing. It is still built and kept, so a wave does not die
+  over one ancient tag; it just does not reach a registry, and the run exits non-zero.
+  `--allow-unbuilt-assets` publishes them anyway, and now that is all it means.
+
+- **The install check can resolve an app's `required_apps`.** `fpm install` fetches what
+  is missing, but only when a repository is configured, and the check container had
+  none — so it could verify only an app whose dependencies were baked into the image.
+  lms requires frappe/payments, failed its check every run, and had never been
+  published.
+
+### Changed
+
+- **The catalogue builds one line per app.** wiki, insights and lms named no majors, so
+  every tagged line was built and each older one failed differently — wiki v1 cannot
+  compile against version-16 at all (`Undefined mixin`), and wiki v2 pins a `redisearch`
+  that drags in a pre-4.x `redis` importing `distutils`, which pip downgrades the bench's
+  own copy to satisfy, breaking `rq` and taking the bench down with it. 12 builds
+  instead of 19.
+
+- **`fpm mirror --verify-install` defaults to the bench the catalogue is built for**
+  (`sne-version-16`). It installed into a v17 bench while the run pins erpnext to the
+  line it built against, so every dependent package was rejected by the bench testing
+  it.
+
+
 ## [4.2.0] - 2026-09-03
 
 ### Added
