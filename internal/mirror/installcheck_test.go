@@ -120,7 +120,7 @@ func TestInstallCheckSkipsWhenTheContainerWillNotStart(t *testing.T) {
 	var logged []string
 	c := InstallCheck{
 		Image:  "example/bench:latest",
-		FPMBin: filepath.Join(t.TempDir(), "fpm"),
+		FPMBin: writeFakeBin(t),
 		Log:    func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) },
 	}
 	if err := c.Verify(artifact, "wiki", "3.1.0"); err != nil {
@@ -164,7 +164,7 @@ func TestInstallCheckFallsBackWhenKeepIdIsRefused(t *testing.T) {
 	var logged []string
 	c := InstallCheck{
 		Image: "example/bench:latest", Site: "dev.localhost",
-		FPMBin: filepath.Join(t.TempDir(), "fpm"),
+		FPMBin: writeFakeBin(t),
 		Log:    func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) },
 	}
 	// The stub answers every later exec successfully, so a clean return means the
@@ -188,4 +188,56 @@ func TestInstallCheckFallsBackWhenKeepIdIsRefused(t *testing.T) {
 	if strings.Contains(strings.Join(logged, "\n"), "install check skipped") {
 		t.Fatalf("the fallback succeeded, so nothing should have been skipped: %v", logged)
 	}
+}
+
+// TestMakeReadableInContainer: packageApp puts the artifact in an os.MkdirTemp
+// directory, and those are 0700. keep-id hid that by mapping the host user onto the
+// image's frappe user; without it frappe is a different uid and the install dies on
+// `stat: permission denied` before it starts. This is what the fallback has to fix, and
+// it is what a real run failed on.
+func TestMakeReadableInContainer(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	artifact := filepath.Join(dir, "wiki-3.1.0.fpm")
+	if err := os.WriteFile(artifact, []byte("pkg"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := makeReadableInContainer(dir, artifact); err != nil {
+		t.Fatalf("makeReadableInContainer: %v", err)
+	}
+
+	di, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Read alone is not enough: without execute the directory cannot be entered.
+	if di.Mode().Perm()&0o055 != 0o055 {
+		t.Fatalf("directory must be readable and traversable by other uids, got %o", di.Mode().Perm())
+	}
+	fi, err := os.Stat(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm()&0o044 != 0o044 {
+		t.Fatalf("artifact must be readable by other uids, got %o", fi.Mode().Perm())
+	}
+	// The owner keeps what it had; this only ever adds.
+	if di.Mode().Perm()&0o700 != 0o700 {
+		t.Fatalf("owner permissions must be preserved, got %o", di.Mode().Perm())
+	}
+}
+
+// writeFakeBin is the fpm binary the check mounts into the container. It has to exist
+// on disk: the keep-id fallback opens the binary and its directory to other uids, and
+// cannot do that to a path that is not there.
+func writeFakeBin(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "fpm")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
