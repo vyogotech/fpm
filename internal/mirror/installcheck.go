@@ -99,6 +99,22 @@ func (c InstallCheck) Verify(artifact, appName, version string) error {
 	if err != nil && isHostContainerFailure(err) {
 		_ = exec.Command("podman", "rm", "-f", name).Run()
 		c.log("  install check: the container runtime refused --userns=keep-id; retrying in the default namespace")
+		// keep-id is what made the mounts readable: it maps the host user onto the
+		// image's frappe user, so a directory only its owner can enter is still
+		// enterable inside. Without it the host user maps to container root and frappe
+		// is a different uid, so the artifact — which packageApp puts in an
+		// os.MkdirTemp directory, and those are 0700 — becomes unreadable and the
+		// install dies on `stat: permission denied` before it starts. Both mounts are
+		// read-only, and the artifact is a package about to be published, so opening
+		// them to be readable is the cost of the fallback.
+		if err := makeReadableInContainer(artifactDir, artifact); err != nil {
+			c.log("  install check skipped: could not make %s readable without keep-id: %v", artifactDir, err)
+			return nil
+		}
+		if err := makeReadableInContainer(filepath.Dir(c.FPMBin), c.FPMBin); err != nil {
+			c.log("  install check skipped: could not make %s readable without keep-id: %v", filepath.Dir(c.FPMBin), err)
+			return nil
+		}
 		out, err = start(false)
 	}
 	if err != nil {
@@ -210,6 +226,24 @@ func (c InstallCheck) repoEnv() []string {
 // container runs. Repository names and URLs come from configuration, not from a package.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
+}
+
+// makeReadableInContainer opens a directory and the file in it to any uid, so a
+// container that is not running as the owning user can still read what is mounted.
+// The directory needs execute as well as read, or its contents cannot be reached.
+func makeReadableInContainer(dir, file string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, info.Mode().Perm()|0o055); err != nil {
+		return err
+	}
+	fi, err := os.Stat(file)
+	if err != nil {
+		return err
+	}
+	return os.Chmod(file, fi.Mode().Perm()|0o044)
 }
 
 // isHostContainerFailure reports whether podman failed because the host could not run
