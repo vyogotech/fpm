@@ -6,7 +6,7 @@ payments,https://github.com/frappe/payments,,branch,develop,0,,,,,,,no release t
 builder,https://github.com/frappe/builder,,,,,,,,,,,
 gameplan,https://github.com/frappe/gameplan,,branch,develop,0,,,,,,,no release tags upstream; tracked from develop
 insights,https://github.com/frappe/insights,,,,,,,,,,,
-wiki,https://github.com/frappe/wiki,,,,,,,,,,,
+wiki,https://github.com/frappe/wiki,,,,,3,,,,,,"v3 only, and both exclusions are verified rather than assumed. v1 cannot compile: its SCSS calls a mixin frappe has since removed, so esbuild fails with 'Undefined mixin' and the package would carry no desk assets. v2 compiles but must not be published: it pins redisearch>=2.1.0,<3.0.0, which drags in a pre-4.x redis that imports distutils, and pip downgrades the bench's own redis to satisfy it — breaking rq, and with it the job queue of any bench that installs it (caught by --verify-install). v0.30 predates the current app. v3.1.0 installs clean, registers wiki-highlight.bundle.js and serves its SPA."
 helpdesk,https://github.com/frappe/helpdesk,,,,,1,,false,,frappe@develop,,"disabled: its desk build compiles frappe/ui's source in place, and that source imports frappe/ui's peerDependencies (@vueuse/core). Vite resolves those from the vite root (helpdesk/desk), not from the imported file, so they must be in the consumer's tree - which only happens inside a real bench where the whole apps/ directory is one hoisted install. Fetching frappe, pinning it to develop and installing frappe/ui's deps and peers all failed for this reason"
 crm,https://github.com/frappe/crm,,,,,,,,,,,
 lms,https://github.com/frappe/lms,lms,,,,,,,,,,
