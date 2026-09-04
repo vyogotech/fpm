@@ -1,6 +1,7 @@
 package mirror
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,5 +96,41 @@ func TestInstallCheckQuotesConfiguredValues(t *testing.T) {
 	logged, _ := os.ReadFile(logPath)
 	if !strings.Contains(string(logged), "'https://x/;touch /tmp/pwned'") {
 		t.Fatalf("the URL must be quoted whole, got:\n%s", logged)
+	}
+}
+
+// TestInstallCheckSkipsWhenTheContainerWillNotStart: rootless podman on a shared runner
+// intermittently fails to map the user namespace (crun, exit 126). That says nothing
+// about the package, and treating it as a failure withheld four of twelve apps in one
+// run — the same reasoning the bench-never-came-up path already applies.
+func TestInstallCheckSkipsWhenTheContainerWillNotStart(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"case \"$1\" in run) echo 'crun: writing file `/proc/9/gid_map`: Invalid argument' >&2; exit 126 ;; esac\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "podman"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	artifact := filepath.Join(t.TempDir(), "wiki-3.1.0.fpm")
+	if err := os.WriteFile(artifact, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logged []string
+	c := InstallCheck{
+		Image:  "example/bench:latest",
+		FPMBin: filepath.Join(t.TempDir(), "fpm"),
+		Log:    func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) },
+	}
+	if err := c.Verify(artifact, "wiki", "3.1.0"); err != nil {
+		t.Fatalf("a host that cannot start containers must not fail the package: %v", err)
+	}
+	joined := strings.Join(logged, "\n")
+	if !strings.Contains(joined, "install check skipped") {
+		t.Fatalf("the skip has to be reported, got: %s", joined)
+	}
+	if !strings.Contains(joined, "gid_map") {
+		t.Fatalf("the reason has to survive into the log, got: %s", joined)
 	}
 }
