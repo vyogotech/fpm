@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.2] - 2026-09-04
+
+### Fixed
+
+- **The install check runs where `--userns=keep-id` is refused.** Eight of twelve checks
+  in a catalogue run were skipped because rootless podman on a shared runner cannot
+  honour keep-id (`crun: writing file /proc/N/gid_map: Invalid argument`). Skipping beats
+  failing a good package over it, but a gate that does not run is not a gate. keep-id is
+  a preference — both mounts are read-only and the image runs as frappe either way — so a
+  refusal now retries in the default namespace, and only a second failure skips.
+
 ## [4.3.1] - 2026-09-04
 
 ### Fixed
