@@ -9,9 +9,14 @@ import (
 )
 
 // AnyFailed reports whether the run needs a nonzero exit.
+//
+// A withheld package counts. The run's contract is that every configured repository
+// holds each planned version afterwards, and an app built but kept out of the registry
+// because its desk bundles would not compile does not meet it — exiting clean would
+// make that a green run whose registry is quietly missing an app.
 func AnyFailed(results []Result) bool {
 	for _, result := range results {
-		if result.Action == ActionFailed {
+		if result.Action == ActionFailed || result.Action == ActionWithheldNoAssets {
 			return true
 		}
 	}

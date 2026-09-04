@@ -25,8 +25,13 @@ const (
 	ActionBuilt             = "built"              // --skip-publish
 	ActionBuiltNoDeps       = "built-nodeps"
 	ActionBuiltNoAssets     = "built-noassets"
-	ActionSkippedExists     = "skipped-exists" // registry already had it (publish-time race)
-	ActionFailed            = "failed"
+	// ActionWithheldNoAssets is built, kept, and deliberately not published: its desk
+	// bundles never compiled, so installing it would render nothing. Distinct from
+	// ActionBuiltNoAssets, which is that same package under --skip-publish, where not
+	// publishing is what was asked for and the run is still clean.
+	ActionWithheldNoAssets = "withheld-noassets"
+	ActionSkippedExists    = "skipped-exists" // registry already had it (publish-time race)
+	ActionFailed           = "failed"
 )
 
 // Result is the outcome of one planned build.
@@ -192,6 +197,19 @@ func (r *Runner) runOne(item BuildItem) Result {
 			result.Action = ActionBuiltNoAssets
 		}
 		result.Detail = final
+		return result
+	}
+
+	// A package whose desk bundles never compiled installs and then renders nothing.
+	// The run still built it — a catalogue wave should not die because one ancient tag's
+	// stylesheets no longer compile against the frappe this run builds with — and the
+	// artifact stays on disk to be looked at. It just does not go to a registry, because
+	// the report that says so is read after the run and an install is not. Publishing it
+	// anyway is what --allow-unbuilt-assets is for, and now that is all it means.
+	if noAssets && !r.AllowUnbuiltAssets {
+		result.Action = ActionWithheldNoAssets
+		result.Detail = fmt.Sprintf("%s: desk assets did not compile, so it was not published "+
+			"(pass --allow-unbuilt-assets to publish it anyway)", final)
 		return result
 	}
 
@@ -592,7 +610,11 @@ func (r *Runner) packageApp(item BuildItem, checkout, assetBench string) (artifa
 		// The bench has to go with it: --allow-unbuilt-assets permits a package that
 		// carries no compiled bundles, but --bench-path is what runs the build in the
 		// first place, so keeping it would just fail the same way again.
-		out, err = r.fpm(append(withoutFlag(args, "--bench-path"), "--allow-unbuilt-assets")...)
+		// --build-assets=false goes with it, and dropping --bench-path is not enough on
+		// its own: `fpm package` also compiles in a bench the checkout already lives in,
+		// which every mirror checkout does. Without this the retry runs the very build
+		// that just failed and the app fails twice instead of degrading.
+		out, err = r.fpm(append(withoutFlag(args, "--bench-path"), "--allow-unbuilt-assets", "--build-assets=false")...)
 		noAssets = err == nil
 	}
 	if err != nil {
