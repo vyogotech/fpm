@@ -7,51 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [4.3.3] - 2026-09-04
-
-### Fixed
-
-- **The install check fails a package only when it reaches a verdict about it.** Three
-  catalogue runs produced three different reasons a container would not start — the
-  runtime refusing `--userns=keep-id`, a 0700 mount it could not read, and Docker Hub
-  answering the image pull with 502 — and each was handled by exit code as it appeared,
-  which only invited the next. An install that refuses, or an app missing from the site
-  afterwards, still fails the build; everything before that point is the host's business
-  and is reported as a skip.
-
-## [4.3.2] - 2026-09-04
-
 ### Fixed
 
 - **The install check runs where `--userns=keep-id` is refused.** Eight of twelve checks
   in a catalogue run were skipped because rootless podman on a shared runner cannot
-  honour keep-id (`crun: writing file /proc/N/gid_map: Invalid argument`). Skipping beats
-  failing a good package over it, but a gate that does not run is not a gate. keep-id is
-  a preference — both mounts are read-only and the image runs as frappe either way — so a
-  refusal now retries in the default namespace, and only a second failure skips.
+  honour keep-id (`crun: writing file /proc/N/gid_map: Invalid argument`), and a gate
+  that does not run is not a gate. keep-id is a preference — both mounts are read-only
+  and the image runs as frappe either way — so a refusal retries in the default
+  namespace. That retry also opens the mounts keep-id was making readable: the artifact
+  lives in an `os.MkdirTemp` directory, which is 0700, so without it the install died on
+  `stat: permission denied` before it began. Coverage went from four of twelve checks
+  actually running to eleven.
 
-  The fallback also opens the mounts it needs: keep-id was making them readable as well
-  as mapping the user, and the artifact lives in an `os.MkdirTemp` directory, which is
-  0700 — so without it the install died on `stat: permission denied` before it began.
+- **The install check fails a package only when it reaches a verdict about it.** Three
+  catalogue runs produced three different reasons a container would not start — the
+  runtime refusing keep-id, a mount it could not read, and Docker Hub answering the
+  image pull with 502 — and a killed install (SIGKILL, exit 137) is the runner running
+  out of memory rather than a statement about the package. An install that refuses, or
+  an app missing from the site afterwards, still fails the build; everything before that
+  point is the host's business and is reported as a skip.
 
-- **A killed install no longer fails the package.** SIGKILL (exit 137) arrives with no
-  diagnostic and is the runner running out of memory installing a large app beside a
-  live bench — builder was killed in one catalogue run and installed cleanly in the next
-  without changing. The check reports that it could not reach a verdict rather than
-  inventing one. An install that exits with an ordinary error still fails the build.
-
-## [4.3.1] - 2026-09-04
-
-### Fixed
-
-- **A container the install check cannot start no longer fails the package.** The check
-  already treated a bench that never comes up as the host's problem and skipped it; a
-  container that cannot be started at all is the same class of thing and was counted
-  against the package. Rootless podman on a shared runner intermittently fails to map
-  the user namespace, and one catalogue run withheld three good packages that way.
-  podman's exit codes separate the cases: 125 is podman itself — a nonexistent image is
-  still the operator's problem and still fails — and 126 is the runtime unable to invoke
-  the container, which is now skipped.
+- **An origin URL that ends in a slash parses.** `https://github.com/frappe/wiki/` is a
+  URL git accepts, and the pattern reading the organisation out of it anchors on the end
+  of the string — so the slash alone made it unparseable and such a checkout had to be
+  packaged with `--org` passed by hand.
 
 ## [4.3.0] - 2026-09-04
 
