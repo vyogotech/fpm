@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.1] - 2026-09-04
+
 ### Fixed
 
 - **The install check runs where `--userns=keep-id` is refused.** Eight of twelve checks
@@ -26,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   out of memory rather than a statement about the package. An install that refuses, or
   an app missing from the site afterwards, still fails the build; everything before that
   point is the host's business and is reported as a skip.
+
+- **A stray `package.json` no longer hijacks the yarn install.** yarn 1.22's corepack
+  probe walks from the install directory to the filesystem root and stops at the first
+  manifest carrying a `packageManager` field, so one unrelated file in `$HOME` failed
+  every build beneath it — and fpm's build cache lives under `~/.fpm`. The probe is
+  switched off, which is what this code wants either way: it invokes yarn explicitly, so
+  the probe could only override that choice, never implement it.
 
 - **An origin URL that ends in a slash parses.** `https://github.com/frappe/wiki/` is a
   URL git accepts, and the pattern reading the organisation out of it anchors on the end
