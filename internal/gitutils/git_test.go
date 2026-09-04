@@ -37,6 +37,26 @@ func TestGetGitRemoteOriginInfo(t *testing.T) {
 		assert.Equal(t, "testrepo", repo)
 	})
 
+	// A remote recorded with a trailing slash is accepted by git, and the pattern that
+	// reads it anchors on the end of the string — so the slash alone made the
+	// organisation unparseable and every such checkout had to be packaged with --org
+	// passed by hand.
+	t.Run("trailing slash", func(t *testing.T) {
+		for _, url := range []string{
+			"https://github.com/frappe/wiki/",
+			"https://github.com/frappe/wiki.git/",
+			"git@github.com:frappe/wiki.git/",
+			"https://github.com/frappe/wiki//",
+		} {
+			tmpDir := t.TempDir()
+			createMockGitConfig(t, tmpDir, "[remote \"origin\"]\n\turl = "+url+"\n")
+			org, repo, err := GetGitRemoteOriginInfo(tmpDir)
+			assert.NoError(t, err, url)
+			assert.Equal(t, "frappe", org, url)
+			assert.Equal(t, "wiki", repo, url)
+		}
+	})
+
 	t.Run("valid ssh url", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configContent := `[remote "origin"]
