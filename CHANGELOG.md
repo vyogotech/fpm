@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.1] - 2026-09-04
+
+### Fixed
+
+- **A container the install check cannot start no longer fails the package.** The check
+  already treated a bench that never comes up as the host's problem and skipped it; a
+  container that cannot be started at all is the same class of thing and was counted
+  against the package. Rootless podman on a shared runner intermittently fails to map
+  the user namespace, and one catalogue run withheld three good packages that way.
+  podman's exit codes separate the cases: 125 is podman itself — a nonexistent image is
+  still the operator's problem and still fails — and 126 is the runtime unable to invoke
+  the container, which is now skipped.
+
 ## [4.3.0] - 2026-09-04
 
 ### Added
