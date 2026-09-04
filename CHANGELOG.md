@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.3] - 2026-09-04
+
+### Fixed
+
+- **The install check fails a package only when it reaches a verdict about it.** Three
+  catalogue runs produced three different reasons a container would not start — the
+  runtime refusing `--userns=keep-id`, a 0700 mount it could not read, and Docker Hub
+  answering the image pull with 502 — and each was handled by exit code as it appeared,
+  which only invited the next. An install that refuses, or an app missing from the site
+  afterwards, still fails the build; everything before that point is the host's business
+  and is reported as a skip.
+
 ## [4.3.2] - 2026-09-04
 
 ### Fixed
