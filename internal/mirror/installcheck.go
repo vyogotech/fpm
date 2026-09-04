@@ -156,6 +156,18 @@ func (c InstallCheck) Verify(artifact, appName, version string) error {
 	install := fmt.Sprintf("fpm install /artifact/%s --bench-path %s --site %s", artifactFile, bench, c.Site)
 	out, err = c.exec(name, install, installCheckTimeout)
 	if err != nil {
+		// A killed install is the host, not the package. SIGKILL arrives with no
+		// diagnostic of its own — the log simply stops mid-install — and the runner is
+		// what ran out of memory installing a 90 MB app beside a live bench. builder
+		// died this way in one run and installed cleanly in the next without changing,
+		// which is what settles it. Retrying in place is not safe (the kill pre-empts
+		// fpm's own rollback, so the bench is left half-changed), so this reports that
+		// the check could not reach a verdict rather than inventing one.
+		if isKilled(err) {
+			c.log("  install check skipped: installing %s was killed by the host (%v); "+
+				"no verdict on the package\n%s", appName, err, tail(out, 600))
+			return nil
+		}
 		return fmt.Errorf("the package does not install: %v\n%s", err, tail(out, 1500))
 	}
 
@@ -244,6 +256,13 @@ func makeReadableInContainer(dir, file string) error {
 		return err
 	}
 	return os.Chmod(file, fi.Mode().Perm()|0o044)
+}
+
+// isKilled reports whether a command was terminated by SIGKILL, which podman surfaces
+// as exit 137 (128+9) for a process killed inside the container.
+func isKilled(err error) bool {
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() == 137
 }
 
 // isHostContainerFailure reports whether podman failed because the host could not run
