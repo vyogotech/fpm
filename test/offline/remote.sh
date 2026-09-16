@@ -160,6 +160,27 @@ ls -la /out
 	log "Packages built:"; ls -la "$OUT"/*.fpm
 }
 
+# Why a service died is in ITS OWN log inside the container, not in `podman logs`
+# — s2i/run only relays its own progress lines, which is how a run ends up saying
+# "Redis process started but died immediately. Check /var/log/redis.log" while
+# nothing ever captures that file. `podman cp` works on a stopped container, which
+# is precisely the case worth debugging, so copy the logs out before teardown.
+dump_container_diagnostics() {
+	podman logs "$NAME" > "$OUT/container-startup.log" 2>&1 || true
+	for f in /var/log/redis.log /var/log/mariadb.log /var/log/mysqld.log /var/log/mysql.log; do
+		podman cp "$NAME:$f" "$OUT/$(basename "$f")" 2>/dev/null || true
+	done
+	echo "--- container state ---"
+	podman inspect -f 'running={{.State.Running}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} err={{.State.Error}}' "$NAME" 2>&1 || true
+	echo "--- podman logs (tail 50) ---"
+	podman logs --tail 50 "$NAME" 2>&1 || true
+	for f in "$OUT"/redis.log "$OUT"/mariadb.log "$OUT"/mysqld.log "$OUT"/mysql.log; do
+		[ -f "$f" ] || continue
+		echo "--- $(basename "$f") (tail 40) ---"
+		tail -40 "$f" 2>/dev/null || true
+	done
+}
+
 container_up() {
 	# Anything joined to the old container's network namespace (the tunnel relay) must
 	# go first, or podman refuses to remove the container.
@@ -193,8 +214,16 @@ EOS
 	log "Waiting for MariaDB and Redis inside the container"
 	for i in $(seq 1 90); do
 		if cexec "(mariadb-admin ping || mysqladmin ping) >/dev/null 2>&1 && redis-cli ping >/dev/null 2>&1"; then break; fi
+		# A container that has already exited will never answer. Without this the
+		# loop spends its full 180s issuing execs against a dead container, and the
+		# actual reason ends up buried under 90 copies of
+		#   Error: can only create exec sessions on running containers
+		if [ "$(podman inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" != "true" ]; then
+			dump_container_diagnostics
+			fail "container exited before MariaDB and Redis were ready"
+		fi
 		sleep 2
-		if [ "$i" -eq 90 ]; then podman logs --tail 50 "$NAME"; fail "services did not come up"; fi
+		if [ "$i" -eq 90 ]; then dump_container_diagnostics; fail "services did not come up"; fi
 	done
 	sleep 3
 	podman logs "$NAME" > "$OUT/container-startup.log" 2>&1 || true
