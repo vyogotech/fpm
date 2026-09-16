@@ -183,35 +183,44 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
-      # Rootless podman needs a subuid AND a subgid range for the runner user to
-      # build the user namespace that `--userns=keep-id` asks for. When the subgid
-      # entry is missing or too small the uid map writes fine and the gid map does
-      # not, which surfaces from crun as:
+      # DIAGNOSTIC (temporary): identify which user-namespace mapping this runner
+      # will accept. The suite dies in its package phase — the first podman call
+      # that passes --userns — with:
       #   OCI runtime error: crun: writing file `/proc/<pid>/gid_map`: Invalid argument
       #
-      # Plain `podman run` is unaffected, which is exactly the observed shape: the
-      # suite's image phase succeeds and it dies in the package phase, the first
-      # call that passes --userns (remote.sh sets
-      # USERNS=(--userns=keep-id:uid=1001,gid=0) so bind mounts stay writable for
-      # the bench image's uid 1001).
+      # Already ruled out: missing subid ranges. The runner ships
+      # runner:165536:65536 in BOTH /etc/subuid and /etc/subgid, and adding a
+      # second range changed nothing.
       #
-      # This job last passed 2026-09-04 with no change to remote.sh since, so the
-      # runner image moved under it rather than the test breaking.
-      - name: Ensure rootless podman can map user namespaces
+      # Every probe is non-fatal so one run reports all of them instead of
+      # stopping at the first failure.
+      - name: Probe user-namespace mappings
         run: |
-          set -euxo pipefail
+          set -x
           id
-          podman version
-          grep -E "^$(id -un):" /etc/subuid /etc/subgid || echo "no existing subid ranges"
-          # Idempotent: usermod refuses an overlapping range, which is fine — the
-          # point is only that SOME range exists for both uid and gid.
-          sudo usermod --add-subuids 500000-565535 --add-subgids 500000-565535 "$(id -un)" || true
-          grep -E "^$(id -un):" /etc/subuid /etc/subgid
-          # Storage was initialised under the old (possibly absent) mapping.
-          podman system migrate
-          # Prove the exact mapping remote.sh uses before spending 20 minutes to
-          # rediscover it: a failure here is a one-line diagnosis.
-          podman run --rm --userns=keep-id:uid=1001,gid=0 docker.io/library/alpine:3 id
+          podman version --format '{{.Client.Version}}'
+          grep -E "^$(id -un):" /etc/subuid /etc/subgid || true
+          podman info --format 'rootless={{.Host.Security.Rootless}} idmaps={{.Host.IDMappings}}' || true
+          ls -l /usr/bin/newuidmap /usr/bin/newgidmap || true
+          sysctl kernel.apparmor_restrict_unprivileged_userns || true
+          podman unshare cat /proc/self/uid_map /proc/self/gid_map || true
+
+          probe() {
+            echo "=== PROBE: $* ==="
+            if podman run --rm "$@" docker.io/library/alpine:3 id; then
+              echo "RESULT ok: $*"
+            else
+              echo "RESULT FAIL: $*"
+            fi
+          }
+          probe --userns=keep-id
+          probe --userns=keep-id:uid=1001,gid=0
+          probe --userns=keep-id:uid=1001
+          probe --userns=keep-id:gid=0
+          probe --user 1001:0
+          probe --userns=host --user 1001:0
+          echo "=== probe summary ==="
+          true
 
       - name: Run SNE Integration Test Suite
         run: |
