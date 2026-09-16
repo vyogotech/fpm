@@ -119,6 +119,18 @@ left in that half-installed state (--no-site-repair to report it instead, exit c
 		if isBundleDir(args[0]) {
 			return installBundle(cmd, args[0], benchPath, siteName, cfg)
 		}
+
+		// The same coordinate can hold a single package or a whole stack, and only
+		// the registry knows which. If it is a bundle, pull the closure and install
+		// it through the identical path a local bundle directory takes; otherwise
+		// fall through untouched.
+		if bundleDir, ok, berr := tryRemoteBundle(cmd, cfg, args[0], installRepo); berr != nil {
+			return berr
+		} else if ok {
+			defer os.RemoveAll(bundleDir)
+			return installBundle(cmd, bundleDir, benchPath, siteName, cfg)
+		}
+
 		return installCascade(cmd, args[0], benchPath, siteName, cfg)
 	},
 }
