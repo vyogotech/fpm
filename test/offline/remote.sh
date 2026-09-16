@@ -39,7 +39,19 @@ OUT="$WORK/out"
 APPS=(fpm_demo_base fpm_demo_child fpm_demo_plain)
 # The image runs as uid 1001 (frappe, gid 0); map this host user onto it so bind
 # mounts are writable from inside and image files stay owned by their user.
-USERNS=(--userns=keep-id:uid=1001,gid=0)
+#
+# No `gid=0` here, deliberately. Rootless podman ALREADY maps container gid 0 to
+# the invoking user's gid — `podman info` on a runner reports
+# idmaps={[{0 1001 1} {1 165536 65536}] ...}, i.e. container 0 -> host 1001 for
+# one id, then the subgid range. Asking for gid=0 on top of that makes podman
+# emit a second mapping for container gid 0, and the kernel rejects the
+# overlapping gid_map with EINVAL, which crun surfaces as:
+#   OCI runtime error: crun: writing file `/proc/<pid>/gid_map`: Invalid argument
+# Probed directly on ubuntu-latest (podman 4.9.3): keep-id, keep-id:uid=1001,
+# --user 1001:0 all succeed; keep-id:gid=0 and keep-id:uid=1001,gid=0 both fail.
+# uid=1001 alone still lands the host user on frappe with container gid 0, which
+# is the whole point of the mapping.
+USERNS=(--userns=keep-id:uid=1001)
 # Prepended to the image's own PATH (which is where frappista keeps node, yarn and bench).
 PATH_PREFIX="/opt/fpm:$BENCH/env/bin:/home/frappe/.local/bin"
 

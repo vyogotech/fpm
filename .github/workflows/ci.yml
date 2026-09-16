@@ -183,45 +183,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
-      # DIAGNOSTIC (temporary): identify which user-namespace mapping this runner
-      # will accept. The suite dies in its package phase — the first podman call
-      # that passes --userns — with:
-      #   OCI runtime error: crun: writing file `/proc/<pid>/gid_map`: Invalid argument
-      #
-      # Already ruled out: missing subid ranges. The runner ships
-      # runner:165536:65536 in BOTH /etc/subuid and /etc/subgid, and adding a
-      # second range changed nothing.
-      #
-      # Every probe is non-fatal so one run reports all of them instead of
-      # stopping at the first failure.
-      - name: Probe user-namespace mappings
-        run: |
-          set -x
-          id
-          podman version --format '{{.Client.Version}}'
-          grep -E "^$(id -un):" /etc/subuid /etc/subgid || true
-          podman info --format 'rootless={{.Host.Security.Rootless}} idmaps={{.Host.IDMappings}}' || true
-          ls -l /usr/bin/newuidmap /usr/bin/newgidmap || true
-          sysctl kernel.apparmor_restrict_unprivileged_userns || true
-          podman unshare cat /proc/self/uid_map /proc/self/gid_map || true
-
-          probe() {
-            echo "=== PROBE: $* ==="
-            if podman run --rm "$@" docker.io/library/alpine:3 id; then
-              echo "RESULT ok: $*"
-            else
-              echo "RESULT FAIL: $*"
-            fi
-          }
-          probe --userns=keep-id
-          probe --userns=keep-id:uid=1001,gid=0
-          probe --userns=keep-id:uid=1001
-          probe --userns=keep-id:gid=0
-          probe --user 1001:0
-          probe --userns=host --user 1001:0
-          echo "=== probe summary ==="
-          true
-
       - name: Run SNE Integration Test Suite
         run: |
           FPM_OFFLINE_LOCAL=1 ./test/offline/run.sh all
