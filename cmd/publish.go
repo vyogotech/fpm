@@ -24,9 +24,12 @@ import (
 )
 
 var (
-	publishRepoName string
-	publishFromFile string
-	publishForce    bool
+	publishRepoName   string
+	publishFromBundle string
+	publishBundleAs   string
+	publishBundleVer  string
+	publishFromFile   string
+	publishForce      bool
 )
 
 // publishCmd represents the publish command
@@ -45,6 +48,19 @@ to publish from the local FPM app store.`,
 		cfg, err := config.InitConfig()
 		if err != nil {
 			return fmt.Errorf("failed to initialize FPM configuration: %w", err)
+		}
+
+		// A bundle is a whole dependency closure in one artifact, so it takes the
+		// entire publish path rather than threading through the single-package
+		// flow below (which is built around one .fpm and its app metadata).
+		if publishFromBundle != "" {
+			if len(args) > 0 {
+				return fmt.Errorf("cannot use a package identifier argument with --from-bundle")
+			}
+			if publishFromFile != "" {
+				return fmt.Errorf("--from-file and --from-bundle are mutually exclusive")
+			}
+			return publishBundle(cmd, cfg, publishFromBundle, publishBundleAs, publishRepoName, publishBundleVer, publishForce)
 		}
 
 		if publishFromFile != "" { // Case 1: --from-file is provided
@@ -434,6 +450,9 @@ func publishMetadataWithRetry(repo config.RepositoryConfig, org, appName string,
 func init() {
 	publishCmd.Flags().StringVar(&publishRepoName, "repo", "", "Name of the repository to publish to (must be configured in FPM)")
 	publishCmd.Flags().StringVar(&publishFromFile, "from-file", "", "Path to the .fpm package file to publish directly")
+	publishCmd.Flags().StringVar(&publishFromBundle, "from-bundle", "", "Path to a dependency-closure bundle directory (one produced by 'fpm bundle' or 'fpm package --with-deps'). Publishes the whole closure as ONE OCI artifact, installable with 'fpm install <org>/<name>==<version>'. OCI repositories only")
+	publishCmd.Flags().StringVar(&publishBundleAs, "as", "", "With --from-bundle: publish the bundle under this <org>/<name> instead of its root package's coordinate, e.g. vyogotech/fcloud-stack")
+	publishCmd.Flags().StringVar(&publishBundleVer, "bundle-version", "", "With --from-bundle: version to publish the bundle as (default: the root package's version)")
 	publishCmd.Flags().BoolVar(&publishForce, "force", false, "Overwrite existing package version in repository")
 
 	rootCmd.AddCommand(publishCmd)

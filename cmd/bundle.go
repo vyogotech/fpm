@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"fpm/internal/appstore"
+	"fpm/internal/bundle"
 	"fpm/internal/config"
 	"fpm/internal/metadata"
 	"fpm/internal/repository"
@@ -18,35 +19,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// The bundle format lives in internal/bundle so the OCI layer can pack and
+// unpack a bundle without importing this package (which would be a cycle).
+// These aliases keep every existing reference here working unchanged.
+
 // BundleManifestName is the file that marks a directory as a dependency-closure
 // bundle and lists its packages in install order.
-const BundleManifestName = "fpm-bundle.json"
+const BundleManifestName = bundle.ManifestName
 
 // BundleEntry is one package in a bundle.
-type BundleEntry struct {
-	Org     string `json:"org"`
-	App     string `json:"app"`
-	Version string `json:"version"`
-	// File is the package's filename inside the bundle directory.
-	File       string `json:"file"`
-	RequiredBy string `json:"required_by,omitempty"`
-	CommitSHA  string `json:"commit_sha,omitempty"`
-	// ProvidedBy is "bench" for a requirement satisfied by an app already in the
-	// bench the bundle was made against: it is listed for completeness but no
-	// package file is shipped, and the target bench must have it too.
-	ProvidedBy string `json:"provided_by,omitempty"`
-}
-
-// Identifier renders org/app==version.
-func (e BundleEntry) Identifier() string { return e.Org + "/" + e.App + "==" + e.Version }
+type BundleEntry = bundle.Entry
 
 // BundleManifest describes a bundle: the package it was made for and every package
 // an offline bench needs, each exactly once, deepest dependency first.
-type BundleManifest struct {
-	Root         BundleEntry   `json:"root"`
-	InstallOrder []BundleEntry `json:"install_order"`
-	CreatedBy    string        `json:"created_by"`
-}
+type BundleManifest = bundle.Manifest
 
 var (
 	bundleOutput    string

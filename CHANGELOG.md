@@ -5,6 +5,33 @@ All notable changes to the Frappe Package Manager (FPM) project will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **A dependency closure can be published as ONE OCI artifact.** `fpm publish
+  --from-bundle <dir>` pushes a bundle — a root app plus every Frappe app it
+  transitively requires — as a single manifest whose layers are the member
+  packages and whose config is `fpm-bundle.json`, so install order travels with
+  it. `fpm install <org>/<name>==<version>` recognises such an artifact and
+  installs the whole closure in order; anything that is not a bundle falls
+  through to the single-package path unchanged. `--as <org>/<name>` publishes the
+  stack under a name of its own rather than its root package's.
+
+  Bundles existed before this but only as a local directory: they could be built
+  and installed by hand, never shared through a registry. This is the "fat
+  package" for a stack whose apps are always installed together — the Vyogo Cloud
+  Center control plane (frappe_cloud_manager + saas_platform) is one such.
+
+  An app the target bench already provides (`provided_by: "bench"`, which is how
+  a base-image app such as erpnext is recorded) carries no layer and is never
+  fetched; it stays in the manifest so the installer can still check the bench
+  has it.
+
+  OCI repositories only. The HTTP registry stores one file per package version,
+  so carrying a bundle there would mean flattening it back into individual
+  packages, which is the thing a bundle exists to avoid.
+
 ## [4.4.0] - 2026-09-16
 
 ### Changed
