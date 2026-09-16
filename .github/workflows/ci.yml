@@ -183,6 +183,36 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
+      # Rootless podman needs a subuid AND a subgid range for the runner user to
+      # build the user namespace that `--userns=keep-id` asks for. When the subgid
+      # entry is missing or too small the uid map writes fine and the gid map does
+      # not, which surfaces from crun as:
+      #   OCI runtime error: crun: writing file `/proc/<pid>/gid_map`: Invalid argument
+      #
+      # Plain `podman run` is unaffected, which is exactly the observed shape: the
+      # suite's image phase succeeds and it dies in the package phase, the first
+      # call that passes --userns (remote.sh sets
+      # USERNS=(--userns=keep-id:uid=1001,gid=0) so bind mounts stay writable for
+      # the bench image's uid 1001).
+      #
+      # This job last passed 2026-09-04 with no change to remote.sh since, so the
+      # runner image moved under it rather than the test breaking.
+      - name: Ensure rootless podman can map user namespaces
+        run: |
+          set -euxo pipefail
+          id
+          podman version
+          grep -E "^$(id -un):" /etc/subuid /etc/subgid || echo "no existing subid ranges"
+          # Idempotent: usermod refuses an overlapping range, which is fine — the
+          # point is only that SOME range exists for both uid and gid.
+          sudo usermod --add-subuids 500000-565535 --add-subgids 500000-565535 "$(id -un)" || true
+          grep -E "^$(id -un):" /etc/subuid /etc/subgid
+          # Storage was initialised under the old (possibly absent) mapping.
+          podman system migrate
+          # Prove the exact mapping remote.sh uses before spending 20 minutes to
+          # rediscover it: a failure here is a one-line diagnosis.
+          podman run --rm --userns=keep-id:uid=1001,gid=0 docker.io/library/alpine:3 id
+
       - name: Run SNE Integration Test Suite
         run: |
           FPM_OFFLINE_LOCAL=1 ./test/offline/run.sh all
