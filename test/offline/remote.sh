@@ -39,7 +39,19 @@ OUT="$WORK/out"
 APPS=(fpm_demo_base fpm_demo_child fpm_demo_plain)
 # The image runs as uid 1001 (frappe, gid 0); map this host user onto it so bind
 # mounts are writable from inside and image files stay owned by their user.
-USERNS=(--userns=keep-id:uid=1001,gid=0)
+#
+# No `gid=0` here, deliberately. Rootless podman ALREADY maps container gid 0 to
+# the invoking user's gid — `podman info` on a runner reports
+# idmaps={[{0 1001 1} {1 165536 65536}] ...}, i.e. container 0 -> host 1001 for
+# one id, then the subgid range. Asking for gid=0 on top of that makes podman
+# emit a second mapping for container gid 0, and the kernel rejects the
+# overlapping gid_map with EINVAL, which crun surfaces as:
+#   OCI runtime error: crun: writing file `/proc/<pid>/gid_map`: Invalid argument
+# Probed directly on ubuntu-latest (podman 4.9.3): keep-id, keep-id:uid=1001,
+# --user 1001:0 all succeed; keep-id:gid=0 and keep-id:uid=1001,gid=0 both fail.
+# uid=1001 alone still lands the host user on frappe with container gid 0, which
+# is the whole point of the mapping.
+USERNS=(--userns=keep-id:uid=1001)
 # Prepended to the image's own PATH (which is where frappista keeps node, yarn and bench).
 PATH_PREFIX="/opt/fpm:$BENCH/env/bin:/home/frappe/.local/bin"
 
@@ -148,6 +160,27 @@ ls -la /out
 	log "Packages built:"; ls -la "$OUT"/*.fpm
 }
 
+# Why a service died is in ITS OWN log inside the container, not in `podman logs`
+# — s2i/run only relays its own progress lines, which is how a run ends up saying
+# "Redis process started but died immediately. Check /var/log/redis.log" while
+# nothing ever captures that file. `podman cp` works on a stopped container, which
+# is precisely the case worth debugging, so copy the logs out before teardown.
+dump_container_diagnostics() {
+	podman logs "$NAME" > "$OUT/container-startup.log" 2>&1 || true
+	for f in /var/log/redis.log /var/log/mariadb.log /var/log/mysqld.log /var/log/mysql.log; do
+		podman cp "$NAME:$f" "$OUT/$(basename "$f")" 2>/dev/null || true
+	done
+	echo "--- container state ---"
+	podman inspect -f 'running={{.State.Running}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} err={{.State.Error}}' "$NAME" 2>&1 || true
+	echo "--- podman logs (tail 50) ---"
+	podman logs --tail 50 "$NAME" 2>&1 || true
+	for f in "$OUT"/redis.log "$OUT"/mariadb.log "$OUT"/mysqld.log "$OUT"/mysql.log; do
+		[ -f "$f" ] || continue
+		echo "--- $(basename "$f") (tail 40) ---"
+		tail -40 "$f" 2>/dev/null || true
+	done
+}
+
 container_up() {
 	# Anything joined to the old container's network namespace (the tunnel relay) must
 	# go first, or podman refuses to remove the container.
@@ -181,8 +214,16 @@ EOS
 	log "Waiting for MariaDB and Redis inside the container"
 	for i in $(seq 1 90); do
 		if cexec "(mariadb-admin ping || mysqladmin ping) >/dev/null 2>&1 && redis-cli ping >/dev/null 2>&1"; then break; fi
+		# A container that has already exited will never answer. Without this the
+		# loop spends its full 180s issuing execs against a dead container, and the
+		# actual reason ends up buried under 90 copies of
+		#   Error: can only create exec sessions on running containers
+		if [ "$(podman inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" != "true" ]; then
+			dump_container_diagnostics
+			fail "container exited before MariaDB and Redis were ready"
+		fi
 		sleep 2
-		if [ "$i" -eq 90 ]; then podman logs --tail 50 "$NAME"; fail "services did not come up"; fi
+		if [ "$i" -eq 90 ]; then dump_container_diagnostics; fail "services did not come up"; fi
 	done
 	sleep 3
 	podman logs "$NAME" > "$OUT/container-startup.log" 2>&1 || true
