@@ -378,21 +378,52 @@ func TestRepublishReusesThePublishedPseudoVersion(t *testing.T) {
 	}
 }
 
-// planBranchFor exercises planBranch without reaching the network for the head commit.
+// planBranchFor exercises the real selection without reaching the network for the head
+// commit. It used to reimplement planBranch instead of calling it, which is why a
+// version picked by map iteration order went unnoticed: the copy and the original
+// disagreed and only the copy was under test.
 func planBranchFor(app App, published map[string]struct{}, now string, republish bool, sha string) (BuildItem, *SkipItem, error) {
-	existing := ""
-	for version := range published {
-		if strings.Contains(version, "-git.") && strings.HasSuffix(version, "."+ShortSHA(sha)) {
-			existing = version
-			break
+	item, skip := planBranchAt(app, published, now, republish, sha)
+	return item, skip, nil
+}
+
+// TestBranchPicksTheHighestOfDuplicatePseudoVersions is the frappe/drive case. Before
+// republish reused the version it found, each rebuild of an unchanged branch minted a
+// fresh date, so one commit ended up with four pseudo-versions in the registry. The
+// selection then ranged over a map and took the first match, so which one the plan
+// skipped against — and which one --republish would overwrite — was a coin flip: the
+// nightly logs showed a different "already published as" value on consecutive days.
+//
+// It must always be the highest, because that is the one semver.Latest resolves to and
+// therefore the only one a consumer installs.
+func TestBranchPicksTheHighestOfDuplicatePseudoVersions(t *testing.T) {
+	const sha = "cd3438d1ab0b0fc1b8c10e282639ec0bd2ee7d82"
+	short := ShortSHA(sha)
+	published := map[string]struct{}{
+		"0.0.0-git.20260827." + short: {},
+		"0.0.0-git.20260828." + short: {},
+		"0.0.0-git.20260902." + short: {},
+		"0.0.0-git.20260903." + short: {},
+	}
+	want := "0.0.0-git.20260903." + short
+	app := App{Slug: "drive", Repo: "https://github.com/frappe/drive", Track: TrackBranch, Branch: "develop"}
+
+	// Repeated because the defect was map iteration order: one pass could pass by luck.
+	for i := 0; i < 50; i++ {
+		_, skip := planBranchAt(app, published, "20260916", false, sha)
+		if skip == nil {
+			t.Fatal("an unchanged branch head must be skipped")
+		}
+		if !strings.Contains(skip.Detail, want) {
+			t.Fatalf("skip must name the highest published version %q, got %q", want, skip.Detail)
+		}
+
+		item, skip := planBranchAt(app, published, "20260916", true, sha)
+		if skip != nil {
+			t.Fatalf("republishing must build, not skip: %+v", skip)
+		}
+		if item.Version != want {
+			t.Fatalf("republish must overwrite the highest version %q, got %q", want, item.Version)
 		}
 	}
-	if existing != "" && !republish {
-		return BuildItem{}, &SkipItem{Slug: app.Slug, Detail: "already published as " + existing}, nil
-	}
-	version := existing
-	if version == "" {
-		version = BranchPseudoVersion(app.BranchMajor, now, sha)
-	}
-	return BuildItem{Slug: app.Slug, Version: version, Reason: branchReason(app.Branch, existing != "")}, nil, nil
 }

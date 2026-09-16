@@ -30,8 +30,12 @@ const (
 	// ActionBuiltNoAssets, which is that same package under --skip-publish, where not
 	// publishing is what was asked for and the run is still clean.
 	ActionWithheldNoAssets = "withheld-noassets"
-	ActionSkippedExists    = "skipped-exists" // registry already had it (publish-time race)
-	ActionFailed           = "failed"
+	// ActionWithheldNoDeps is built, kept, and deliberately not published: its wheels
+	// never vendored, so it carries no dependencies. Distinct from ActionBuiltNoDeps,
+	// which is that same package under --skip-publish.
+	ActionWithheldNoDeps = "withheld-nodeps"
+	ActionSkippedExists  = "skipped-exists" // registry already had it (publish-time race)
+	ActionFailed         = "failed"
 )
 
 // Result is the outcome of one planned build.
@@ -79,7 +83,11 @@ type Runner struct {
 	// as the mirror did before it built them at all. The package installs and its
 	// desk UI does not render until the destination bench runs its own build.
 	AllowUnbuiltAssets bool
-	Log                func(format string, args ...any)
+	// AllowUnvendoredDeps publishes an app whose wheels could not be vendored. Off by
+	// default: such a package resolves its dependencies at install time, which a bench
+	// that pip-installs can do and a pooled one cannot — see the gate in runOne.
+	AllowUnvendoredDeps bool
+	Log                 func(format string, args ...any)
 }
 
 // Run executes every planned item, isolating failures per app.
@@ -210,6 +218,21 @@ func (r *Runner) runOne(item BuildItem) Result {
 		result.Action = ActionWithheldNoAssets
 		result.Detail = fmt.Sprintf("%s: desk assets did not compile, so it was not published "+
 			"(pass --allow-unbuilt-assets to publish it anyway)", final)
+		return result
+	}
+
+	// A package whose wheels never vendored carries no dependencies, and the retry that
+	// produced it (see packageApp) succeeds for exactly the reason that makes it
+	// dangerous: pip can still resolve at install time. A bench that pip-installs is
+	// fine. A pooled bench is not — its serving pods never install anything, so the
+	// app's imports fail and the missing dependency takes down the whole desk with a
+	// 500, not just that app. The mirror cannot tell which kind of bench will consume
+	// the package, so it withholds rather than guesses, the same way it does for assets.
+	// --allow-unvendored-deps is for a caller who knows the destination pip-installs.
+	if noDeps && !r.AllowUnvendoredDeps {
+		result.Action = ActionWithheldNoDeps
+		result.Detail = fmt.Sprintf("%s: wheels did not vendor, so it was not published "+
+			"(pass --allow-unvendored-deps to publish it anyway)", final)
 		return result
 	}
 

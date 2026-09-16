@@ -454,14 +454,22 @@ format, branch-tracked apps, and per-app asset-build scripts.
 **Flags:** `--apps` (slug filter), `--dry-run` (+ `--json`), `--skip-publish`,
 `--output-path` (default `dist`), `--report <file.json>`, `--cache-dir`,
 `--no-clean`, `--frappe-ref` (the frappe branch whose esbuild compiles desk assets,
-default `version-16`), `--allow-unbuilt-assets`. Exit codes: 0 clean, 1 when any app
-failed, 2 on configuration/catalog errors.
+default `version-16`), `--allow-unbuilt-assets`, `--allow-unvendored-deps`. Exit codes:
+0 clean, 1 when any app failed or was withheld, 2 on configuration/catalog errors.
 
 Every app with esbuild entry points is packaged with its desk bundles **compiled**: the
 workspace is already bench-shaped, so the mirror materialises frappe's checkout beside the
 app and packages against it (see [Assets](#assets)). An app whose bundles cannot be
 compiled fails rather than publishing a package that installs and renders nothing;
 `--allow-unbuilt-assets` restores the older, quieter behaviour.
+
+An app whose **wheels** cannot be vendored is withheld the same way, and reported as
+`withheld-nodeps`. Such a package installs on a bench that pip-installs and breaks one
+that does not: a pooled bench's serving pods never install anything, so the app's
+imports fail and the missing dependency 500s the whole desk rather than just that app.
+The mirror cannot tell which kind of bench will consume the package, so it withholds
+rather than guesses. `--allow-unvendored-deps` publishes it anyway, as
+`published-nodeps`, for a caller who knows the destination pip-installs.
 
 ## 🏢 Deploy Your Own Repository
 
@@ -792,7 +800,9 @@ re-resolves the same requirements against nothing but the wheels it just wrote �
 `--no-index --find-links wheels/`, which is exactly what the bench runs — so a dependency
 of a dependency that never got downloaded fails the build, naming what is missing, instead
 of shipping a package whose offline install breaks on the target. `fpm mirror` falls back
-to publishing that app without bundled wheels and records it as `published-nodeps`.
+to building that app without bundled wheels, but does **not** publish it: it is kept on
+disk, reported as `withheld-nodeps`, and fails the run. `--allow-unvendored-deps`
+publishes it as `published-nodeps` instead.
 
 Installing a package that bundles `wheels/` pins pip to that directory
 (`--no-index --find-links wheels/`), so **no network access is required**. Packages

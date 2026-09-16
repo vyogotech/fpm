@@ -18,30 +18,31 @@ import (
 )
 
 var (
-	mirrorCatalogPath        string
-	mirrorRepoNames          []string
-	mirrorListSlugs          bool
-	mirrorTier               int
-	mirrorListTiers          bool
-	mirrorRepublish          bool
-	mirrorGitURL             string
-	mirrorGitRef             string
-	mirrorSlug               string
-	mirrorAppName            string
-	mirrorApps               string
-	mirrorDryRun             bool
-	mirrorJSON               bool
-	mirrorSkipPublish        bool
-	mirrorOutputPath         string
-	mirrorReportPath         string
-	mirrorCacheDir           string
-	mirrorNoClean            bool
-	mirrorAllowThirdParty    bool
-	mirrorPythonVersion      string
-	mirrorFrappeRef          string
-	mirrorVerifyInstallImage string
-	mirrorAllowUnbuiltAssets bool
-	mirrorPlatforms          []string
+	mirrorCatalogPath         string
+	mirrorRepoNames           []string
+	mirrorListSlugs           bool
+	mirrorTier                int
+	mirrorListTiers           bool
+	mirrorRepublish           bool
+	mirrorGitURL              string
+	mirrorGitRef              string
+	mirrorSlug                string
+	mirrorAppName             string
+	mirrorApps                string
+	mirrorDryRun              bool
+	mirrorJSON                bool
+	mirrorSkipPublish         bool
+	mirrorOutputPath          string
+	mirrorReportPath          string
+	mirrorCacheDir            string
+	mirrorNoClean             bool
+	mirrorAllowThirdParty     bool
+	mirrorPythonVersion       string
+	mirrorFrappeRef           string
+	mirrorVerifyInstallImage  string
+	mirrorAllowUnbuiltAssets  bool
+	mirrorAllowUnvendoredDeps bool
+	mirrorPlatforms           []string
 )
 
 // Exit codes: 0 clean, 1 one or more apps failed or were withheld from the
@@ -246,7 +247,8 @@ func runMirror() error {
 			FPMBin: fpmBin,
 			Log:    func(format string, args ...any) { fmt.Printf(format+"\n", args...) },
 		},
-		AllowUnbuiltAssets: mirrorAllowUnbuiltAssets,
+		AllowUnbuiltAssets:  mirrorAllowUnbuiltAssets,
+		AllowUnvendoredDeps: mirrorAllowUnvendoredDeps,
 	}
 	results := runner.Run(plan)
 
@@ -284,6 +286,7 @@ func init() {
 	mirrorCmd.Flags().StringVar(&mirrorVerifyInstallImage, "verify-install", "", "Install every built package into this bench image (e.g. docker.io/vyogo/erpnext:sne-develop) before publishing it, and refuse to publish one that does not install. Needs podman")
 	mirrorCmd.Flags().StringVar(&mirrorFrappeRef, "frappe-ref", mirror.DefaultFrappeRef, "The frappe branch or tag whose esbuild compiles the catalogue's desk assets. The catalog's build_deps column overrides it per app")
 	mirrorCmd.Flags().BoolVar(&mirrorAllowUnbuiltAssets, "allow-unbuilt-assets", false, "Publish an app whose desk bundles could not be compiled. Off by default such an app is still built and kept, but withheld from every repository and reported as withheld-noassets (a nonzero exit), because it installs and its desk UI renders nothing until the destination bench runs its own build")
+	mirrorCmd.Flags().BoolVar(&mirrorAllowUnvendoredDeps, "allow-unvendored-deps", false, "Publish an app whose wheels could not be vendored. Off by default such an app is still built and kept, but withheld from every repository and reported as withheld-nodeps (a nonzero exit), because it carries no dependencies: a bench that pip-installs resolves them, and a pooled bench whose serving pods do not takes a 500 across the whole desk. Pass it only when the destination is known to pip-install")
 	mirrorCmd.Flags().StringVar(&mirrorPythonVersion, "python-version", "", "Target Python version for vendored wheels (e.g. 3.11, 3.12; defaults to host python version)")
 	mirrorCmd.Flags().StringArrayVar(&mirrorPlatforms, "platform", nil, "Target wheel platform tags (defaults to "+wheels.DefaultProdPlatform+")")
 	mirrorCmd.Flags().BoolVar(&mirrorListSlugs, "list-slugs", false, "Print the enabled catalog slugs as a JSON array and exit, for sharding a run across machines. Needs no repository and no network")

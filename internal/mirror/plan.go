@@ -7,6 +7,7 @@ import (
 
 	"fpm/internal/config"
 	"fpm/internal/repository"
+	"fpm/internal/semver"
 )
 
 // BuildItem is one (app, version) the registry is missing.
@@ -153,22 +154,38 @@ func planBranch(app App, published map[string]struct{}, now string, republish bo
 	if err != nil {
 		return BuildItem{}, nil, err
 	}
+	item, skip := planBranchAt(app, published, now, republish, sha)
+	return item, skip, nil
+}
 
+// planBranchAt is planBranch once the head commit is known: everything the decision
+// actually turns on, with no network in it. Split out so a test drives the real
+// selection rather than a copy of it — the copy is what let a version chosen by map
+// iteration order sit here undetected.
+func planBranchAt(app App, published map[string]struct{}, now string, republish bool, sha string) (BuildItem, *SkipItem) {
 	// A pseudo-version carries the head commit, so finding one means this exact tree
 	// is already in the registry.
-	existing := ""
+	//
+	// There can be more than one: before republish reused the version it found, every
+	// rebuild of an unchanged branch minted a fresh date, so a commit that was rebuilt
+	// a few times left several pseudo-versions behind (frappe/drive carries four). The
+	// highest of them is the one semver.Latest resolves to, so that is the one to skip
+	// against and the one --republish must overwrite. Picking by map iteration order
+	// instead made both a coin flip — a republish could rebuild into a version nobody
+	// installs while the one they do install stayed stale.
+	matches := make([]string, 0, 2)
 	for version := range published {
 		if strings.Contains(version, "-git.") && strings.HasSuffix(version, "."+ShortSHA(sha)) {
-			existing = version
-			break
+			matches = append(matches, version)
 		}
 	}
+	existing := semver.Latest(matches)
 	if existing != "" && !republish {
 		// An unchanged branch republishes nothing, which is what makes a nightly cheap.
 		return BuildItem{}, &SkipItem{
 			Slug:   app.Slug,
 			Detail: fmt.Sprintf("branch %s head %s already published as %s", app.Branch, ShortSHA(sha), existing),
-		}, nil
+		}
 	}
 
 	// Republishing rebuilds this tree because the packaging changed, not because the
@@ -190,7 +207,7 @@ func planBranch(app App, published map[string]struct{}, now string, republish bo
 		Reason:       branchReason(app.Branch, existing != ""),
 		buildScript:  app.BuildScript,
 		isBranch:     true,
-	}, nil, nil
+	}, nil
 }
 
 // branchReason distinguishes a new commit from a rebuild of one already published.

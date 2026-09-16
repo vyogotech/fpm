@@ -3,6 +3,7 @@ package mirror
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -449,5 +450,148 @@ exit 0
 	logged, _ := os.ReadFile(logPath)
 	if strings.Contains(string(logged), "publish") {
 		t.Fatalf("publishing must not happen once the check has failed: %s", logged)
+	}
+}
+
+// newStubRepo makes a local git repo with one tagged commit. Workspace.Checkout clones
+// by URL, and a path is a URL git accepts, so this drives runOne end to end without
+// reaching the network.
+func newStubRepo(t *testing.T, appName string) string {
+	t.Helper()
+	repo := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(repo, appName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(appName, "hooks.py"), "app_name = \""+appName+"\"\n")
+	write("README.md", "stub\n")
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "user.name", "t"},
+		{"add", "-A"},
+		{"commit", "-qm", "initial"},
+		{"tag", "v1.0.0"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return repo
+}
+
+// stubFPMWheelFailure writes an `fpm` whose `package` fails unless wheel bundling is
+// switched off — the shape of a dependency that publishes no wheel for the target — and
+// whose `publish` records that it was called.
+func stubFPMWheelFailure(t *testing.T, dir, appName, version, logPath string) string {
+	t.Helper()
+	fpmBin := filepath.Join(dir, "fpm")
+	script := `#!/bin/sh
+echo "$@" >> ` + logPath + `
+case "$1" in
+  package)
+    for a in "$@"; do case "$a" in /*fpm-mirror*) d="$a";; esac; done
+    case "$*" in
+      *--bundle-deps=false*)
+        python3 - "$d/` + appName + `-` + version + `.fpm" <<'PY'
+import json, sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("app_metadata.json", json.dumps(
+        {"package_name": "` + appName + `", "package_version": "` + version + `", "app_name": "` + appName + `"}))
+PY
+        exit 0
+        ;;
+    esac
+    echo "Error: could not vendor wheels: no matching distribution for the target platform" >&2
+    exit 1
+    ;;
+  publish) echo "PUBLISHED"; exit 0;;
+esac
+exit 0
+`
+	if err := os.WriteFile(fpmBin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return fpmBin
+}
+
+// TestWheelVendoringFailureIsWithheld is the frappe/drive regression. When wheels could
+// not be vendored, packageApp retried with --bundle-deps=false and the run published
+// the result anyway as published-nodeps. That retry succeeds for exactly the reason
+// that makes the artifact dangerous — pip can still resolve at install time — so a
+// pooled bench, whose serving pods never pip-install, took a 500 across the whole desk.
+// Assets already had this gate; wheels did not, and that is how a 25 MB dependency-less
+// drive package reached the registry beside the 97 MB good one.
+func TestWheelVendoringFailureIsWithheld(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "args.log")
+	fpmBin := stubFPMWheelFailure(t, dir, "drive", "1.0.0", logPath)
+	ws, err := NewWorkspace(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{
+		FPMBin: fpmBin, Workspace: ws, OutputPath: t.TempDir(),
+		RepoNames: []string{"ghcr"}, Log: func(string, ...any) {},
+	}
+	item := BuildItem{
+		Slug: "drive", AppName: "drive", Repo: newStubRepo(t, "drive"),
+		Ref: "v1.0.0", Version: "1.0.0", BundleDeps: true,
+	}
+
+	results := runner.Run(&Plan{Items: []BuildItem{item}})
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+	if results[0].Action != ActionWithheldNoDeps {
+		t.Fatalf("a package whose wheels did not vendor must be withheld, got %q (%s)",
+			results[0].Action, results[0].Detail)
+	}
+	logged, _ := os.ReadFile(logPath)
+	if strings.Contains(string(logged), "publish") {
+		t.Fatalf("a withheld package must never be published:\n%s", logged)
+	}
+	if !AnyFailed(results) {
+		t.Fatal("withholding must fail the run: a green run whose registry is missing the app is how this went unnoticed")
+	}
+}
+
+// TestWheelVendoringFailurePublishesWhenAllowed: the gate is a default, not a wall. A
+// caller who knows the destination bench pip-installs can still ship the package, and
+// it is reported distinctly so the run says what went out.
+func TestWheelVendoringFailurePublishesWhenAllowed(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "args.log")
+	fpmBin := stubFPMWheelFailure(t, dir, "drive", "1.0.0", logPath)
+	ws, err := NewWorkspace(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{
+		FPMBin: fpmBin, Workspace: ws, OutputPath: t.TempDir(),
+		RepoNames: []string{"ghcr"}, AllowUnvendoredDeps: true, Log: func(string, ...any) {},
+	}
+	item := BuildItem{
+		Slug: "drive", AppName: "drive", Repo: newStubRepo(t, "drive"),
+		Ref: "v1.0.0", Version: "1.0.0", BundleDeps: true,
+	}
+
+	results := runner.Run(&Plan{Items: []BuildItem{item}})
+	if results[0].Action != ActionPublishedNoDeps {
+		t.Fatalf("--allow-unvendored-deps must publish, reported as published-nodeps; got %q (%s)",
+			results[0].Action, results[0].Detail)
+	}
+	logged, _ := os.ReadFile(logPath)
+	if !strings.Contains(string(logged), "publish") {
+		t.Fatalf("it must actually reach the registry:\n%s", logged)
+	}
+	if AnyFailed(results) {
+		t.Fatal("publishing what was asked for is not a failed run")
 	}
 }

@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The nightly mirror schedule is off.** `.github/workflows/mirror.yml` ran daily at
+  02:00 UTC. Runs are on demand until a scheduled one has somebody reading its report:
+  the cron block is commented in place, and restoring it means landing it on the default
+  branch, since that is the only branch GitHub registers a schedule from.
+
+### Fixed
+
+- **A package whose wheels did not vendor is no longer published.** When wheel vendoring
+  failed, `fpm mirror` retried with `--bundle-deps=false` and published the result as
+  `published-nodeps` — and that retry succeeds for exactly the reason that makes the
+  artifact dangerous: pip can still resolve at install time. A bench that pip-installs is
+  fine; a pooled bench is not, because its serving pods never install anything, so the
+  app's imports fail and the missing dependency 500s the whole desk rather than just that
+  app. Unbuilt assets already had this gate and wheels did not, which is how a 25 MB
+  dependency-less frappe/drive package came to sit in the registry beside the 97 MB good
+  one. Such a package is now built, kept on disk and withheld, reported as
+  `withheld-nodeps`, and it fails the run — a green run whose registry is quietly missing
+  an app is what let this go unnoticed. `--allow-unvendored-deps` publishes it anyway,
+  for a caller who knows the destination pip-installs.
+
+- **A branch-tracked app with several pseudo-versions picks the same one every time.**
+  Before `--republish` reused the version it found, each rebuild of an unchanged branch
+  minted a fresh date, so one commit could leave several pseudo-versions behind
+  (frappe/drive carries four for `cd3438d1ab`). The selection then ranged over a map and
+  took the first match, so which version the plan skipped against — and which one
+  `--republish` would overwrite — was decided by map iteration order: consecutive nightly
+  runs logged a different "already published as" value for the same unchanged commit, and
+  a republish could rebuild into a version nobody installs while the one they do install
+  stayed stale. It is now the highest of them, which is the one `semver.Latest` resolves
+  to. The test helper that covered this had reimplemented the logic instead of calling it,
+  which is why the defect survived; it now drives the real code.
+
 ## [4.3.1] - 2026-09-04
 
 ### Fixed

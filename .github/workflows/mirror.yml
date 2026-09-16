@@ -43,6 +43,10 @@ on:
         description: 'Publish an app even when its desk bundles could not be compiled (its UI will not render until the destination bench builds them)'
         type: boolean
         default: false
+      allow_unvendored_deps:
+        description: 'Publish an app even when its wheels could not be vendored (it carries no dependencies: a pooled bench, whose serving pods never pip-install, 500s across the whole desk)'
+        type: boolean
+        default: false
       verify_install:
         description: 'Install every built package into this bench image before publishing it, and refuse to publish one that does not install. Match it to frappe_ref: the catalogue pins erpnext to the line it is built against, and a v17 bench rejects a package pinning erpnext 16.x. Empty disables the check'
         required: false
@@ -55,15 +59,19 @@ on:
         description: 'Branch or tag whose catalog and scripts the run uses. Defaults to release: publishing to the registries is a release activity, and main may carry catalog changes that are not released yet'
         required: false
         default: 'release'
-  schedule:
-    # Daily at 02:00 UTC. Re-runs are idempotent — the plan queries the registries and
-    # skips versions they already have — so most days a shard only fetches tags and exits.
-    #
-    # Note: GitHub only schedules workflows from the DEFAULT branch. Changes to this file
-    # have no effect on the cron until they are on that branch — which is why the
-    # schedule is registered from main even though the run itself checks out release.
-    # A catalog change reaches the nightly when it lands on release, not on main.
-    - cron: '0 2 * * *'
+
+# The nightly cron is deliberately off. It ran daily at 02:00 UTC and was idempotent —
+# the plan queries the registries and skips versions they already have — but a mirror
+# that publishes on its own schedule is not something a cloud launch can hold still,
+# and an unattended run had nobody reading the report that says an app was withheld.
+# Runs are on demand until that changes: `gh workflow run mirror.yml -f apps=<slug>`.
+#
+# When restoring it, note that GitHub registers a schedule only from the DEFAULT branch,
+# so re-adding the block below has no effect until it lands there — which is why the
+# trigger lives on main even though the run itself checks out release.
+#
+#  schedule:
+#    - cron: '0 2 * * *'
 
 # GITHUB_TOKEN is the pipeline's own credential: `packages: write` lets it push to
 # ghcr.io/<owner>/<repo>, with no PAT to provision or rotate.
@@ -347,6 +355,9 @@ jobs:
 
           if [ "${{ inputs.allow_unbuilt_assets }}" = "true" ]; then
             ARGS="$ARGS --allow-unbuilt-assets"
+          fi
+          if [ "${{ inputs.allow_unvendored_deps }}" = "true" ]; then
+            ARGS="$ARGS --allow-unvendored-deps"
           fi
 
           if [ "${{ inputs.dry_run }}" = "true" ]; then
