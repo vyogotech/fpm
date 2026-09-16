@@ -1,0 +1,51 @@
+name: Registry Cleanup
+
+# Removes published versions from the HTTP registry. Manual only, and narrow by
+# construction: it takes an explicit list, it dry-runs unless told otherwise, and it
+# refuses to touch a version that is currently an app's latest_version.
+#
+# It lives here rather than in a shell on someone's laptop because the credential it
+# needs is already here. `secrets.FPM_REGISTRY_PASSWORD` is the registry's publisher
+# token — the same one the mirror publishes with — so this adds no new secret and puts
+# no registry credential on a workstation.
+#
+# Why a version can need removing: a package whose wheels never vendored carries no
+# dependencies. A bench that pip-installs resolves them; a pooled bench, whose serving
+# pods never install anything, fails the app's imports and 500s the whole desk. Since
+# 'withhold a package whose wheels did not vendor' such a package is never published,
+# but the ones that went out before that are still being served.
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: 'Comma-separated <app>==<version> to remove, e.g. drive==0.0.0-git.20260828.cd3438d1ab,wiki==2.0.1'
+        required: true
+      dry_run:
+        description: 'Report what would be removed without deleting anything'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Never two of these at once, and never one while a mirror run is publishing: both
+# read-modify-write package-metadata.json, and the registry has no compare-and-set.
+concurrency:
+  group: fpm-registry-write
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Remove published versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Remove them
+        env:
+          REGISTRY_URL: ${{ vars.FPM_REGISTRY_URL }}
+          # The registry reads a bearer token, so only the password half is needed;
+          # FPM_REGISTRY_USERNAME exists for the CLI's basic auth and is not used here.
+          REGISTRY_TOKEN: ${{ secrets.FPM_REGISTRY_PASSWORD }}
+          VERSIONS: ${{ inputs.versions }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: python3 .github/scripts/registry_cleanup.py
