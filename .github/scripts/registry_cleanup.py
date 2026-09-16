@@ -24,22 +24,54 @@ import urllib.request
 AGENT = "fpm-registry-cleanup"
 
 
-def request(method, url, token=None, user=None, body=None):
+def request(method, url, token=None, body=None, if_match=None):
     req = urllib.request.Request(url, method=method, data=body)
     req.add_header("User-Agent", AGENT)
     if token:
         req.add_header("Authorization", "Bearer " + token)
     if body is not None:
         req.add_header("Content-Type", "application/json; charset=utf-8")
+    if if_match:
+        req.add_header("If-Match", if_match)
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
-            return response.status, response.read()
+            return response.status, response.read(), response.headers.get("ETag")
     except urllib.error.HTTPError as err:
-        return err.code, err.read()
+        return err.code, err.read(), err.headers.get("ETag")
 
 
 def metadata_url(base, app):
     return f"{base}/metadata/frappe/{app}/package-metadata.json"
+
+
+def rewrite_index(base, app, version, token, attempts=4):
+    """Drop a version from package-metadata.json, conditional on it not having moved."""
+    for attempt in range(attempts):
+        status, raw_meta, etag = request("GET", metadata_url(base, app))
+        if status != 200:
+            print(f"  could not re-read metadata: HTTP {status}")
+            return False
+        meta = json.loads(raw_meta)
+        if meta.get("latest_version") == version:
+            print(f"  latest_version now names {version}; refusing to rewrite the index")
+            return False
+        if version not in meta.get("versions", {}):
+            return True  # someone else already removed it
+        meta["versions"].pop(version, None)
+
+        payload = json.dumps(meta, indent=2).encode()
+        status, body, _ = request(
+            "PUT", metadata_url(base, app), token=token, body=payload, if_match=etag
+        )
+        if status == 200:
+            return True
+        if status == 412:
+            print(f"  index changed under us, retrying ({attempt + 1}/{attempts})")
+            continue
+        print(f"  index rewrite failed: HTTP {status} {body[:200]!r}")
+        return False
+    print(f"  index kept changing; gave up after {attempts} attempts")
+    return False
 
 
 def main():
@@ -69,7 +101,7 @@ def main():
     # list cannot leave the registry half-cleaned.
     plan = []
     for app, version in targets:
-        status, raw_meta = request("GET", metadata_url(base, app))
+        status, raw_meta, _ = request("GET", metadata_url(base, app))
         if status != 200:
             sys.exit(f"{app}: metadata returned HTTP {status}; is the app published?")
         meta = json.loads(raw_meta)
@@ -109,31 +141,19 @@ def main():
         app, version = item["app"], item["version"]
         print(f"--- {app}=={version}")
 
-        status, body = request("DELETE", f"{base}/{item['path']}", token=token)
+        status, body, _ = request("DELETE", f"{base}/{item['path']}", token=token)
         if status != 200:
             print(f"  delete failed: HTTP {status} {body[:200]!r}")
             failed = True
             continue
         print(f"  object deleted")
 
-        # Re-read rather than reusing the copy from the planning pass: a mirror run
-        # between the two would otherwise be silently reverted by this write.
-        status, raw_meta = request("GET", metadata_url(base, app))
-        if status != 200:
-            print(f"  could not re-read metadata: HTTP {status}")
-            failed = True
-            continue
-        meta = json.loads(raw_meta)
-        if meta.get("latest_version") == version:
-            print(f"  latest_version now names {version}; refusing to rewrite the index")
-            failed = True
-            continue
-        meta.get("versions", {}).pop(version, None)
-
-        payload = json.dumps(meta, indent=2).encode()
-        status, body = request("PUT", metadata_url(base, app), token=token, body=payload)
-        if status != 200:
-            print(f"  index rewrite failed: HTTP {status} {body[:200]!r}")
+        # The index is read-modify-written, so it is re-read here rather than reused
+        # from the planning pass, and written back conditionally on the ETag that read
+        # returned. A mirror publish landing in between changes the ETag, the registry
+        # answers 412, and this retries against the document that publish left --
+        # rather than overwriting it and erasing the version it had just added.
+        if not rewrite_index(base, app, version, token):
             failed = True
             continue
         print(f"  index rewritten")
@@ -141,9 +161,9 @@ def main():
     print("\nVerifying...")
     for item in plan:
         app, version = item["app"], item["version"]
-        status, _ = request("GET", f"{base}/{item['path']}")
+        status, _, _ = request("GET", f"{base}/{item['path']}")
         object_gone = status == 404
-        status, raw_meta = request("GET", metadata_url(base, app))
+        status, raw_meta, _ = request("GET", metadata_url(base, app))
         listed = status == 200 and version in json.loads(raw_meta).get("versions", {})
         ok = object_gone and not listed
         print(
