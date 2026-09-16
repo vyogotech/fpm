@@ -5,7 +5,7 @@ All notable changes to the Frappe Package Manager (FPM) project will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.4.0] - 2026-09-16
 
 ### Changed
 
@@ -40,6 +40,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stayed stale. It is now the highest of them, which is the one `semver.Latest` resolves
   to. The test helper that covered this had reimplemented the logic instead of calling it,
   which is why the defect survived; it now drives the real code.
+
+- **The SNE offline integration suite runs again.** It had failed every run since
+  2026-09-04 with `crun: writing file /proc/<pid>/gid_map: Invalid argument`, which
+  stopped the suite in its package phase. `keep-id:gid=0` asked podman to map
+  container gid 0 a second time when the rootless default already maps it
+  (`idmaps={[{0 1001 1} ...]}`), and the kernel rejects the overlapping `gid_map`
+  with EINVAL; the flag had always been redundant, and a runner-image change stopped
+  tolerating it. Probed against the runner rather than inferred: every mapping
+  without `gid=0` works and every one with it fails. The failure path now also copies
+  the container's own service logs out with `podman cp` and stops waiting as soon as
+  the container dies, instead of spending 180s emitting
+  `can only create exec sessions on running containers` over the actual cause.
 
 ## [4.3.1] - 2026-09-04
 
