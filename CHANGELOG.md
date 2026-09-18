@@ -5,6 +5,24 @@ All notable changes to the Frappe Package Manager (FPM) project will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **`fpm install` never replaces an app the bench already has.** A bench holds one
+  copy of an app, shared by every site on it: getting the app is bench-level,
+  installing it onto a site is site-level. When the bench already has the app,
+  `fpm install` fetches nothing, links nothing and leaves `sites/apps.txt` alone;
+  with `--site` it runs install-app against the bench's copy and nothing more. A
+  different requested version is reported, not installed over the copy the other
+  sites run. `--overwrite` replaces it on purpose, as with `bench get-app`.
+- **A bench's apps are found wherever the bench keeps them.** An app counts as the
+  bench's when it is in `apps/<app>`, or when `sites/apps.txt` lists it and the
+  bench's own python imports it — frappe's own test, which also holds for a bench
+  whose apps live on a volume shared by several pods. This applies to the install
+  target, to required apps (one the bench has is not reinstalled beside it), and
+  to the DocType check after a site install.
+
 ## [4.5.0] - 2026-09-16
 
 ### Added

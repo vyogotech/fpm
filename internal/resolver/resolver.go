@@ -10,10 +10,12 @@
 package resolver
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -184,10 +186,11 @@ func resolveOne(name, org string, opts Options) (metadata.RequiredApp, error) {
 	}
 
 	if opts.BenchPath != "" && !exclusiveRepo {
-		if version, present := BenchAppVersion(opts.BenchPath, name); present {
+		if dir, present := BenchAppDir(opts.BenchPath, name); present {
+			version := moduleVersion(filepath.Join(dir, name))
 			benchOrg := org
 			if benchOrg == "" {
-				if gitOrg, _, err := gitutils.GetGitRemoteOriginInfo(filepath.Join(opts.BenchPath, "apps", name)); err == nil {
+				if gitOrg, _, err := gitutils.GetGitRemoteOriginInfo(dir); err == nil {
 					benchOrg = gitOrg
 				}
 			}
@@ -256,22 +259,106 @@ func (o Options) sourcesConsulted() []string {
 	return sources
 }
 
-// BenchAppVersion reports whether a bench has an app (apps/<name>/<name>/hooks.py)
-// and the version its module declares (__version__ in apps/<name>/<name>/__init__.py,
-// "" when absent).
+// BenchAppVersion reports whether a bench has an app and the version its module
+// declares (__version__ in <app dir>/<name>/__init__.py, "" when absent). See
+// BenchAppDir for what "has" means.
 func BenchAppVersion(benchPath, name string) (version string, present bool) {
-	module := filepath.Join(benchPath, "apps", name, name)
-	if _, err := os.Stat(filepath.Join(module, "hooks.py")); err != nil {
+	dir, present := BenchAppDir(benchPath, name)
+	if !present {
 		return "", false
 	}
+	return moduleVersion(filepath.Join(dir, name)), true
+}
+
+// BenchAppDir returns the directory a bench keeps an app in — the one holding the
+// app's <name>/hooks.py — and whether the bench has the app at all.
+//
+// A bench has an app when it is in apps/<name>, which is where `bench get-app`
+// puts it, or when sites/apps.txt lists it and the bench's own python imports it.
+// The second is frappe's own definition, and it holds wherever a bench keeps its
+// apps: one whose apps live on a volume shared by several pods keeps them outside
+// apps/ and puts them on the python path instead. The bench's python is asked, so
+// no location is assumed.
+func BenchAppDir(benchPath, name string) (string, bool) {
+	dir := filepath.Join(benchPath, "apps", name)
+	if isFile(filepath.Join(dir, name, "hooks.py")) {
+		return dir, true
+	}
+	if !listedInAppsTxt(benchPath, name) {
+		return "", false
+	}
+	module, ok := importableModuleDir(benchPath, name)
+	if !ok {
+		return "", false
+	}
+	return filepath.Dir(module), true
+}
+
+// importModuleProbe prints the directory of a top-level frappe app package as the
+// interpreter would import it, without importing it. A directory that only
+// resolves as a namespace package (an app's outer repo dir on the path, not its
+// module) has no origin and prints nothing, as does a package with no hooks.py.
+const importModuleProbe = `import importlib.util, os, sys
+spec = importlib.util.find_spec(sys.argv[1])
+origin = spec.origin if spec else None
+if origin and os.path.basename(origin) == "__init__.py":
+    d = os.path.dirname(origin)
+    if os.path.isfile(os.path.join(d, "hooks.py")):
+        print(d)
+`
+
+// importableModuleDir asks the bench's python where it imports app from. It runs
+// from <bench>/sites with the caller's environment, as frappe commands do, so the
+// answer is what `bench --site <site> install-app` would see.
+func importableModuleDir(benchPath, app string) (string, bool) {
+	python := filepath.Join(benchPath, "env", "bin", "python")
+	if !isFile(python) {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, python, "-c", importModuleProbe, app)
+	cmd.Dir = filepath.Join(benchPath, "sites")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	dir := strings.TrimSpace(string(out))
+	if dir == "" || !filepath.IsAbs(dir) || !isFile(filepath.Join(dir, "hooks.py")) {
+		return "", false
+	}
+	return dir, true
+}
+
+// listedInAppsTxt reports whether sites/apps.txt names app.
+func listedInAppsTxt(benchPath, app string) bool {
+	data, err := os.ReadFile(filepath.Join(benchPath, "sites", "apps.txt"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == app {
+			return true
+		}
+	}
+	return false
+}
+
+func isFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// moduleVersion reads __version__ from a package's __init__.py, "" when absent.
+func moduleVersion(module string) string {
 	data, err := os.ReadFile(filepath.Join(module, "__init__.py"))
 	if err != nil {
-		return "", true
+		return ""
 	}
 	if m := versionAssignment.FindSubmatch(data); m != nil {
-		return strings.TrimSpace(string(m[1])), true
+		return strings.TrimSpace(string(m[1]))
 	}
-	return "", true
+	return ""
 }
 
 var versionAssignment = regexp.MustCompile(`(?m)^\s*__version__\s*=\s*["']([^"']+)["']`)
@@ -478,6 +565,7 @@ func CheckClosure(appsBasePath, benchPath string, apps []metadata.RequiredApp, r
 			if app.Name == FrappeAppName {
 				continue
 			}
+
 			org := app.Org
 			if org == "" {
 				orgs := StoreOrgs(appsBasePath, app.Name)
@@ -516,11 +604,12 @@ func CheckClosure(appsBasePath, benchPath string, apps []metadata.RequiredApp, r
 			storePath := filepath.Join(appsBasePath, org, app.Name, version)
 
 			if !present && benchPath != "" {
-				if benchVersion, inBench := BenchAppVersion(benchPath, app.Name); inBench {
+				if dir, inBench := BenchAppDir(benchPath, app.Name); inBench {
+					benchVersion := moduleVersion(filepath.Join(dir, app.Name))
 					if app.Accepts(benchVersion) {
 						resolved.Version = benchVersion
 						closure = append(closure, ClosureEntry{App: resolved, RequiredBy: by, Present: true,
-							StorePath: filepath.Join(benchPath, "apps", app.Name), ProvidedByBench: true})
+							StorePath: dir, ProvidedByBench: true})
 						continue
 					}
 					unsatisfied := app.Version

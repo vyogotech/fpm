@@ -39,6 +39,7 @@ var (
 	installSkipRequiredAppsCheck  bool
 	installIgnorePlatformMismatch bool
 	installNoSiteRepair           bool
+	installOverwrite              bool
 )
 
 // copyDirContents recursively copies contents from src to dst.
@@ -92,6 +93,11 @@ By default, transitive dependencies (hooks.py required_apps) are resolved across
 repositories, downloaded into the local store, and installed in dependency order. Use --no-deps
 to install only the target package.
 
+A bench holds one copy of an app, shared by every site on it: getting an app into the bench is
+bench-level, installing it onto a site is site-level. So when the bench already has the app, fpm
+fetches nothing and replaces nothing, whatever version was asked for; with --site it only installs
+the bench's copy onto that site. --overwrite replaces the bench's copy on purpose.
+
 With --site, the app is also installed onto that site. fpm clears the site cache first, because
 it has just changed sites/apps.txt from the outside and frappe reads its app-to-modules map from
 a cache; a stale one makes frappe sync none of the app's DocTypes and then fail in after_install.
@@ -118,6 +124,11 @@ left in that half-installed state (--no-site-repair to report it instead, exit c
 		// in dependency order, so the required-apps check passes at each step.
 		if isBundleDir(args[0]) {
 			return installBundle(cmd, args[0], benchPath, siteName, cfg)
+		}
+
+		// Decided before anything is fetched — the bundle probe below already pulls.
+		if done, err := installIfAlreadyInBench(cmd, args[0], benchPath, siteName); done {
+			return err
 		}
 
 		// The same coordinate can hold a single package or a whole stack, and only
@@ -401,10 +412,21 @@ func installCascade(cmd *cobra.Command, packagePathArg, benchPath, siteName stri
 		return fmt.Errorf("failed to capture pre-install snapshot of bench '%s': %w", absBenchPath, err)
 	}
 
-	// 4. Version Conflict Check (for dependencies)
+	// 4. Version Conflict Check (for dependencies). What the bench already has is
+	// read the way frappe reads it, not only from apps/, so a dependency the bench
+	// keeps elsewhere (on a volume shared by several pods, say) is never installed
+	// over the copy its sites are running.
+	benchHas := map[string]string{}
 	for _, item := range queue {
-		if item.RequiredBy != "" && snap.WasPresentInBench(item.AppName) {
-			preVer := snap.PreExistingVersion(item.AppName)
+		if item.RequiredBy == "" || item.ProvidedByBench {
+			continue
+		}
+		if ver, present := resolver.BenchAppVersion(absBenchPath, item.AppName); present {
+			benchHas[item.AppName] = ver
+		}
+	}
+	for _, item := range queue {
+		if preVer, present := benchHas[item.AppName]; present {
 			if item.Version != "" && preVer != "" && preVer != item.Version {
 				return fmt.Errorf("%w: bench %s has %s version %q, but %s requires version %q",
 					ErrVersionConflict, absBenchPath, item.AppName, preVer, item.RequiredByOrTarget(), item.Version)
@@ -420,7 +442,7 @@ func installCascade(cmd *cobra.Command, packagePathArg, benchPath, siteName stri
 			fmt.Printf("[%d/%d] %s — provided by the bench, skipping bench install\n", i+1, len(queue), item.Identifier())
 			continue
 		}
-		if item.RequiredBy != "" && snap.WasPresentInBench(item.AppName) {
+		if _, present := benchHas[item.AppName]; present {
 			fmt.Printf("[%d/%d] %s — already present in bench (%s), skipping bench install\n", i+1, len(queue), item.Identifier(), item.BaseVersionPathInStore)
 			continue
 		}
@@ -563,12 +585,88 @@ func appendToAppsTxt(appsTxtPath, appName string) error {
 	return os.WriteFile(appsTxtPath, []byte(newContent), 0o644)
 }
 
+// targetApp names the app a package argument installs and the version it asks for
+// ("" when it names none): from the identifier for a remote coordinate, from the
+// package's own metadata for a local .fpm file. ok is false for anything else,
+// which is then left to the install path to accept or reject.
+func targetApp(packagePathArg string) (app, version string, ok bool) {
+	if info, err := os.Stat(packagePathArg); err == nil {
+		if info.IsDir() {
+			return "", "", false
+		}
+		meta, err := readMetadataFromFPMFile(packagePathArg)
+		if err != nil {
+			return "", "", false
+		}
+		app = meta.AppName
+		if app == "" {
+			app = meta.PackageName
+		}
+		return app, meta.PackageVersion, app != ""
+	}
+	if _, app, version, ok := parseRemoteIdentifier(packagePathArg); ok {
+		return app, version, true
+	}
+	return "", "", false
+}
+
+// installIfAlreadyInBench is `fpm install` for an app the bench already has: the
+// site-level half only, against the copy that is there. done reports whether the
+// bench had it; when it did not, the caller carries on with a full install.
+//
+// Nothing is fetched and the bench's copy is kept even when another version was
+// asked for, because replacing it changes the app under every other site on the
+// bench. That is what --overwrite is for, the way it is for `bench get-app`.
+func installIfAlreadyInBench(cmd *cobra.Command, packagePathArg, benchPath, siteName string) (done bool, err error) {
+	if installOverwrite {
+		return false, nil
+	}
+	app, want, ok := targetApp(packagePathArg)
+	if !ok {
+		return false, nil
+	}
+	absBenchPath, err := filepath.Abs(benchPath)
+	if err != nil {
+		return true, fmt.Errorf("failed to get absolute path for bench directory '%s': %w", benchPath, err)
+	}
+	have, present := resolver.BenchAppVersion(absBenchPath, app)
+	if !present {
+		return false, nil
+	}
+
+	out := cmd.OutOrStdout()
+	haveDesc := "version " + have
+	if have == "" {
+		haveDesc = "no declared version"
+	}
+	fmt.Fprintf(out, "App '%s' is already in bench %s (%s); fetching nothing and keeping the bench's copy.\n",
+		app, absBenchPath, haveDesc)
+	if want != "" && want != "latest" && have != "" && strings.TrimPrefix(want, "v") != strings.TrimPrefix(have, "v") {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s %s was asked for, but bench %s has %s %s. A bench holds one copy of an app, "+
+			"shared by all of its sites, so %s is what gets installed. Pass --overwrite to replace the bench's copy.\n",
+			app, want, absBenchPath, app, have, have)
+	}
+
+	switch {
+	case siteName == "":
+		fmt.Fprintf(out, "Pass --site <site> to install it onto a site.\n")
+		return true, nil
+	case installDryRun:
+		fmt.Fprintf(out, "Dry-run mode: would install '%s' onto site '%s' from the bench's copy.\n", app, siteName)
+		return true, nil
+	}
+	return true, installAppOnSite(absBenchPath, siteName, app)
+}
+
 // installOne installs a single package without transitive dependency resolution.
 // Used directly by installBundle.
 func installOne(cmd *cobra.Command, packagePathArg, benchPath, siteName string, cfg *config.FPMConfig) error {
 	absBenchPath, err := filepath.Abs(benchPath)
 	if err != nil {
 		return fmt.Errorf("failed to get absolute path for bench directory '%s': %w", benchPath, err)
+	}
+	if done, err := installIfAlreadyInBench(cmd, packagePathArg, absBenchPath, siteName); done {
+		return err
 	}
 	item, err := resolvePackageToLocalStore(packagePathArg, cfg, installRepo)
 	if err != nil {
@@ -726,10 +824,18 @@ func ensureAppDocTypesSynced(benchPath, siteName, appName string, installErr err
 const doctypeVerificationLimit = 100
 
 // appDocTypeNames lists the DocTypes an app ships, read from the doctype JSON
-// files in the bench's copy of it (<bench>/apps/<app>, which fpm has just linked
-// into the store). Names are sorted, so the sample is the same on every run.
+// files in the bench's copy of it — wherever the bench keeps it, see
+// resolver.BenchAppDir. Names are sorted, so the sample is the same on every run.
 func appDocTypeNames(benchPath, appName string, limit int) []string {
-	matches, err := filepath.Glob(filepath.Join(benchPath, "apps", appName, appName, "*", "doctype", "*", "*.json"))
+	appDir := filepath.Join(benchPath, "apps", appName)
+	if _, err := os.Stat(appDir); err != nil {
+		dir, ok := resolver.BenchAppDir(benchPath, appName)
+		if !ok {
+			return nil
+		}
+		appDir = dir
+	}
+	matches, err := filepath.Glob(filepath.Join(appDir, appName, "*", "doctype", "*", "*.json"))
 	if err != nil {
 		return nil
 	}
@@ -1099,6 +1205,7 @@ func init() {
 	installCmd.Flags().BoolVarP(&installVerbose, "verbose", "v", false, "Show detailed output during installation and rollback")
 	installCmd.Flags().BoolVar(&installSkipRequiredAppsCheck, "skip-required-apps-check", false, "Do not fail when a required app (hooks.py required_apps) is missing from the local FPM store or bench; for benches whose required apps were installed outside fpm")
 	installCmd.Flags().BoolVar(&installNoSiteRepair, "no-site-repair", false, "Do not re-run 'install-app --force' when a site install leaves the app registered but its DocTypes unsynced; fail and leave the site as it is")
+	installCmd.Flags().BoolVar(&installOverwrite, "overwrite", false, "Replace the app when the bench already has it (by default an app already in the bench is kept, and only installed onto --site); this changes the app under every site on the bench")
 	installCmd.Flags().BoolVar(&installIgnorePlatformMismatch, "ignore-platform-mismatch", false, "Do not fail when the package's vendored wheels were built for another platform or Python version; pip then decides")
 	rootCmd.AddCommand(installCmd)
 }

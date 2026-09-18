@@ -591,7 +591,15 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 	_, err = SharedExecuteCommand(rootCmd, "repo", "add", "mockremoterepo", mockRepoServer.URL)
 	require.NoError(t, err)
 
+	// Each subtest is about which copy gets resolved, so each starts from a bench
+	// without the app: one that already has it keeps it and fetches nothing.
+	withoutApp := func(t *testing.T) {
+		t.Helper()
+		require.NoError(t, os.RemoveAll(filepath.Join(mockBenchPath, "apps", "myapp")))
+	}
+
 	t.Run("InstallsFromLocalStoreIfVersionExists", func(t *testing.T) {
+		withoutApp(t)
 		populateAppInLocalStore(t, mockAppsBasePath, "myorg", "myapp", "1.0.0", "local_store_version_1.0.0")
 
 		installArgs := []string{"install", "myorg/myapp==1.0.0", "--bench-path", mockBenchPath}
@@ -607,6 +615,7 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 	})
 
 	t.Run("FallsBackToRemoteIfVersionNotLocal", func(t *testing.T) {
+		withoutApp(t)
 		// Ensure 1.2.0 is NOT in local store initially for this subtest
 		os.RemoveAll(filepath.Join(mockAppsBasePath, "myorg", "myapp", "1.2.0"))
 
@@ -627,6 +636,7 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 	})
 
 	t.Run("InstallsLatestFromLocalStore", func(t *testing.T) {
+		withoutApp(t)
 		populateAppInLocalStore(t, mockAppsBasePath, "myorg", "myapp", "1.0.0", "local_v1.0.0")
 		populateAppInLocalStore(t, mockAppsBasePath, "myorg", "myapp", "1.3.0", "local_v1.3.0_latest") // Higher than remote 1.2.0
 
@@ -643,6 +653,7 @@ func TestInstallCommand_PrioritizationAndLatestResolution(t *testing.T) {
 	})
 
 	t.Run("FallsBackToRemoteForLatestIfNotLocal", func(t *testing.T) {
+		withoutApp(t)
 		// Ensure no versions of myorg/myapp exist locally for this test
 		os.RemoveAll(filepath.Join(mockAppsBasePath, "myorg", "myapp"))
 
