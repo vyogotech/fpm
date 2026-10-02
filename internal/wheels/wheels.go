@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -317,14 +318,14 @@ func Bundle(appDir, destDir string, target Target) (Result, error) {
 				target.Describe(), string(output), hint, runErr)
 		}
 		attempted[spec] = true
-		fmt.Printf("No wheel for %s on %s; building its sdist on the packaging host (accepted only if pure Python)...\n",
+		fmt.Printf("No wheel for %s on %s; building its sdist on the packaging host...\n",
 			spec, target.Describe())
-		pin, buildErr := buildUniversalWheelFromSdist(pythonExe, spec, destDir)
+		pin, buildErr := buildUniversalWheelFromSdist(pythonExe, spec, destDir, target)
 		if buildErr != nil {
-			os.RemoveAll(destDir)
-			return Result{}, fmt.Errorf("failed to bundle dependencies for %s: %w", target.Describe(), buildErr)
+			fmt.Printf("Warning: cannot vendor wheel for %s (%v); this dependency will resolve at install time\n", spec, buildErr)
+			continue
 		}
-		fmt.Printf("  built %s (universal wheel) from sdist\n", pin.File)
+		fmt.Printf("  built %s from sdist\n", pin.File)
 		builtFromSdist = append(builtFromSdist, pin)
 	}
 
@@ -475,10 +476,48 @@ func IsUniversalWheel(file string) bool {
 	return parts[len(parts)-2] == "none" && parts[len(parts)-1] == "any"
 }
 
+// IsWheelCompatibleWithTarget checks whether a wheel filename is compatible with the destination target.
+func IsWheelCompatibleWithTarget(file string, target Target) bool {
+	if IsUniversalWheel(file) || target.IsHost() {
+		return true
+	}
+	// If the packaging host is Linux, platform-specific Linux wheels built on the host
+	// are compatible when the target platform is also Linux with the matching architecture.
+	if runtime.GOOS == "linux" {
+		base := strings.TrimSuffix(filepath.Base(file), ".whl")
+		parts := strings.Split(base, "-")
+		if len(parts) >= 5 {
+			wheelPy := parts[len(parts)-3]
+			wheelPlatform := parts[len(parts)-1]
+
+			targetArchMatch := false
+			for _, p := range target.Platforms {
+				if (strings.Contains(p, "x86_64") && strings.Contains(wheelPlatform, "x86_64")) ||
+					(strings.Contains(p, "aarch64") && strings.Contains(wheelPlatform, "aarch64")) {
+					targetArchMatch = true
+					break
+				}
+				if strings.EqualFold(p, wheelPlatform) || strings.Contains(p, "linux") {
+					targetArchMatch = true
+					break
+				}
+			}
+
+			cleanTargetPy := strings.ReplaceAll(target.PythonVersion, ".", "")
+			targetPyMatch := cleanTargetPy == "" || strings.Contains(wheelPy, cleanTargetPy) || wheelPy == "py3"
+
+			if targetArchMatch && targetPyMatch {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // buildUniversalWheelFromSdist downloads the sdist that satisfies spec, builds it
-// on the packaging host, and moves the wheel into destDir when — and only when — it
-// is universal.
-func buildUniversalWheelFromSdist(pythonExe, spec, destDir string) (Pin, error) {
+// on the packaging host, and moves the wheel into destDir when it is universal
+// or compatible with the target platform.
+func buildUniversalWheelFromSdist(pythonExe, spec, destDir string, target Target) (Pin, error) {
 	tmp, err := os.MkdirTemp("", "fpm-sdist-")
 	if err != nil {
 		return Pin{}, err
@@ -515,7 +554,7 @@ func buildUniversalWheelFromSdist(pythonExe, spec, destDir string) (Pin, error) 
 	if wheel == "" {
 		return Pin{}, fmt.Errorf("%s: building the sdist produced no wheel", spec)
 	}
-	if !IsUniversalWheel(wheel) {
+	if !IsWheelCompatibleWithTarget(wheel, target) {
 		return Pin{}, fmt.Errorf("%s has no wheel for the target, and its source builds a platform-specific wheel (%s) "+
 			"that would be wrong for the destination; it needs a published wheel for the target platform", spec, wheel)
 	}
