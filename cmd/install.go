@@ -588,7 +588,7 @@ func installAppOnSite(benchPath, siteName, appName string) error {
 			appName, siteName, pythonExe, benchPath, siteName, appName)
 	}
 
-	args := []string{"-m", "frappe.utils.bench_helper", "frappe", "--site", siteName, "install-app", appName}
+	args := []string{"-m", "frappe.utils.bench_helper", "frappe", "--site", siteName, "install-app", appName, "--force"}
 	fmt.Printf("\nInstalling app '%s' onto site '%s': (cd sites && %s %s)\n",
 		appName, siteName, pythonExe, strings.Join(args, " "))
 
