@@ -176,13 +176,21 @@ func resolvePackageToLocalStore(packagePathArg string, cfg *config.FPMConfig, re
 		parts := strings.Split(packagePathArg, "/")
 		if len(parts) == 2 {
 			parsedOrg = strings.TrimSpace(parts[0])
-			appAndVersionParts := strings.Split(parts[1], "==")
+			sep := "=="
+			if strings.Contains(parts[1], "==") {
+				sep = "=="
+			} else if strings.Contains(parts[1], "@") {
+				sep = "@"
+			} else if strings.Contains(parts[1], ":") {
+				sep = ":"
+			}
+			appAndVersionParts := strings.Split(parts[1], sep)
 			parsedAppName = strings.TrimSpace(appAndVersionParts[0])
 			if len(appAndVersionParts) == 2 {
 				parsedVersion = strings.TrimSpace(appAndVersionParts[1])
 			}
 		} else {
-			return nil, fmt.Errorf("invalid remote package identifier format: '%s'. Expected <org>/<appName> or <org>/<appName>==<version>", packagePathArg)
+			return nil, fmt.Errorf("invalid remote package identifier format: '%s'. Expected <org>/<appName> or <org>/<appName>==<version> (or @version)", packagePathArg)
 		}
 		if parsedOrg == "" || parsedAppName == "" {
 			return nil, fmt.Errorf("invalid remote package identifier: Org ('%s') and AppName ('%s') must be specified in '%s'", parsedOrg, parsedAppName, packagePathArg)
