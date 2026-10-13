@@ -17,9 +17,6 @@ import (
 	"strings"
 )
 
-// Org is the default organization namespace the mirror publishes under.
-const Org = "frappe"
-
 // Track selects how versions are discovered for an app.
 const (
 	TrackTags   = "tags"   // release tags, latest per major line (default)
@@ -30,6 +27,11 @@ var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 // App is one catalog row.
 type App struct {
+	// Org is the organization the app publishes under: the owner segment of its
+	// repository URL (github.com/<org>/<repo>) unless the catalog's org column, or
+	// --org for an on-demand app, names another. The mirror has no organization of
+	// its own.
+	Org         string
 	Slug        string
 	Repo        string
 	AppName     string // overrides hooks.py-derived app name when set
@@ -61,6 +63,23 @@ type App struct {
 	BuildScript string
 }
 
+// OrgFromRepoURL is the owner segment of a repository URL, lowercased: the organization
+// a package built from it is published under. "https://github.com/vyogotech/frappe_ai"
+// and "git@github.com:vyogotech/frappe_ai.git" both give "vyogotech". A URL with no
+// usable owner segment gives "", and the caller decides what that means.
+func OrgFromRepoURL(repoURL string) string {
+	trimmed := strings.TrimSuffix(strings.TrimRight(strings.TrimSpace(repoURL), "/"), ".git")
+	parts := strings.Split(strings.ReplaceAll(trimmed, ":", "/"), "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	owner := strings.ToLower(parts[len(parts)-2])
+	if !slugPattern.MatchString(owner) {
+		return ""
+	}
+	return owner
+}
+
 // MetadataName is the registry key the app's package metadata lives under:
 // the explicit app_name override when present, the slug otherwise.
 func (a App) MetadataName() string {
@@ -86,7 +105,7 @@ var catalogColumns = []string{
 // catalogOptionalColumns may be absent from a catalog. Everything in catalogColumns is
 // still required and an unknown column is still rejected, so a typo fails loudly; this
 // is only so adding a column does not invalidate every existing catalog.
-var catalogOptionalColumns = []string{"build_deps", "pip_overrides"}
+var catalogOptionalColumns = []string{"build_deps", "pip_overrides", "org"}
 
 // CatalogOptions configures catalog validation behavior.
 type CatalogOptions struct {
@@ -145,6 +164,7 @@ func LoadCatalogWithOptions(path string, opts CatalogOptions) (*Catalog, error) 
 		}
 
 		app := App{
+			Org:        get("org"),
 			Slug:       get("slug"),
 			Repo:       get("repo"),
 			AppName:    get("app_name"),
@@ -169,6 +189,12 @@ func LoadCatalogWithOptions(path string, opts CatalogOptions) (*Catalog, error) 
 
 		if !strings.HasPrefix(app.Repo, "https://") && !strings.HasPrefix(app.Repo, "http://") && !strings.HasPrefix(app.Repo, "git@") {
 			return nil, rowErr("repo must be a valid git URL (https://, http://, or git@)")
+		}
+		if app.Org == "" {
+			app.Org = OrgFromRepoURL(app.Repo)
+		}
+		if !slugPattern.MatchString(app.Org) {
+			return nil, rowErr("org cannot be read from repo %q; set the org column (must match %s)", app.Repo, slugPattern)
 		}
 
 		switch app.Track {

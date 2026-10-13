@@ -12,6 +12,7 @@ import (
 
 // BuildItem is one (app, version) the registry is missing.
 type BuildItem struct {
+	Org        string `json:"org"`
 	Slug       string `json:"slug"`
 	AppName    string `json:"app_name,omitempty"` // catalog override, may be empty
 	Repo       string `json:"repo"`
@@ -55,7 +56,14 @@ func BuildPlanForRepo(apps []App, repo config.RepositoryConfig, client *http.Cli
 // PlanOption adjusts how a plan is built.
 type PlanOption func(*planConfig)
 
-type planConfig struct{ republish bool }
+type planConfig struct {
+	republish bool
+	org       string
+}
+
+// WithOrg names the organization an on-demand app publishes under, when it is not the
+// owner segment of its repository URL.
+func WithOrg(org string) PlanOption { return func(c *planConfig) { c.org = strings.TrimSpace(org) } }
 
 // Republish builds every discovered version even when the repositories already have it.
 //
@@ -133,6 +141,7 @@ func BuildPlanForRepos(apps []App, repos []config.RepositoryConfig, client *http
 				continue
 			}
 			plan.Items = append(plan.Items, BuildItem{
+				Org:          app.Org,
 				Slug:         app.Slug,
 				AppName:      app.AppName,
 				Repo:         app.Repo,
@@ -197,6 +206,7 @@ func planBranchAt(app App, published map[string]struct{}, now string, republish 
 		version = BranchPseudoVersion(app.BranchMajor, now, sha)
 	}
 	return BuildItem{
+		Org:          app.Org,
 		Slug:         app.Slug,
 		AppName:      app.AppName,
 		Repo:         app.Repo,
@@ -248,7 +258,7 @@ func publishedInAll(repos []config.RepositoryConfig, app App, client *http.Clien
 }
 
 func publishedVersionsForRepo(repo config.RepositoryConfig, app App, client *http.Client) (map[string]struct{}, error) {
-	meta, found, err := repository.FetchRemotePackageMetadataForRepo(repo, Org, app.MetadataName(), client)
+	meta, found, err := repository.FetchRemotePackageMetadataForRepo(repo, app.Org, app.MetadataName(), client)
 	if err != nil {
 		return nil, fmt.Errorf("checking published versions of %s: %w", app.Slug, err)
 	}
@@ -301,7 +311,15 @@ func PlanAdHoc(repoURL, ref, slug, appName string, repos []config.RepositoryConf
 		return nil, fmt.Errorf("derived slug %q is not usable; pass --slug", slug)
 	}
 
-	app := App{Slug: slug, AppName: appName, Repo: repoURL, BundleDeps: true, Enabled: true}
+	org := cfg.org
+	if org == "" {
+		org = OrgFromRepoURL(repoURL)
+	}
+	if !slugPattern.MatchString(org) {
+		return nil, fmt.Errorf("no organization can be read from %q; pass --org", repoURL)
+	}
+
+	app := App{Org: org, Slug: slug, AppName: appName, Repo: repoURL, BundleDeps: true, Enabled: true}
 	published, err := publishedInAll(repos, app, client)
 	if err != nil {
 		return nil, err
@@ -325,7 +343,7 @@ func PlanAdHoc(repoURL, ref, slug, appName string, repos []config.RepositoryConf
 				return &Plan{Skipped: []SkipItem{{Slug: slug, Detail: version + " already published"}}}, nil
 			}
 			return &Plan{Items: []BuildItem{{
-				Slug: slug, AppName: appName, Repo: repoURL, Ref: tag.Name, Version: version,
+				Org: app.Org, Slug: slug, AppName: appName, Repo: repoURL, Ref: tag.Name, Version: version,
 				BundleDeps: true, Reason: "requested tag " + tag.Name,
 			}}}, nil
 		}

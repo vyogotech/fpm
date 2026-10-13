@@ -27,6 +27,10 @@ on:
         description: 'With git_url: the name to publish under (default: derived from the URL)'
         required: false
         default: ''
+      org:
+        description: 'With git_url: the organization to publish under (default: the owner segment of the URL, e.g. vyogotech for https://github.com/vyogotech/frappe_ai)'
+        required: false
+        default: ''
       republish:
         description: 'Rebuild and push versions the registry already has (use when packaging itself changed)'
         type: boolean
@@ -333,6 +337,7 @@ jobs:
             ARGS="${{ steps.repos.outputs.repo_args }} --git-url ${{ inputs.git_url }}"
             [ -z "${{ inputs.git_ref }}" ] || ARGS="$ARGS --git-ref ${{ inputs.git_ref }}"
             [ -z "${{ inputs.slug }}" ]    || ARGS="$ARGS --slug ${{ inputs.slug }}"
+            [ -z "${{ inputs.org }}" ]     || ARGS="$ARGS --org ${{ inputs.org }}"
           else
             ARGS="${{ steps.repos.outputs.repo_args }} --apps ${{ matrix.slug }}"
           fi
@@ -390,7 +395,7 @@ jobs:
           live = {"published", "published-nodeps", "published-noassets", "skipped-exists"}
           for r in json.load(open(os.environ["REPORT"])):
               if r.get("action") in live:
-                  print(r.get("app_name") or r["slug"], r["version"])
+                  print(r.get("org") or "frappe", r.get("app_name") or r["slug"], r["version"])
           EXTRACT
 
           if [ ! -s /tmp/to-verify ]; then
@@ -399,11 +404,11 @@ jobs:
           fi
 
           rc=0
-          while read -r app version; do
-            if ./bin/fpm exists "frappe/$app==$version" --remote >/dev/null 2>&1; then
-              echo "  ✓ frappe/$app==$version is in the registry"
+          while read -r org app version; do
+            if ./bin/fpm exists "$org/$app==$version" --remote >/dev/null 2>&1; then
+              echo "  ✓ $org/$app==$version is in the registry"
             else
-              echo "  ✗ frappe/$app==$version was reported published but is NOT retrievable" >&2
+              echo "  ✗ $org/$app==$version was reported published but is NOT retrievable" >&2
               rc=1
             fi
           done < /tmp/to-verify
@@ -586,6 +591,7 @@ jobs:
             ARGS="${{ steps.repos.outputs.repo_args }} --git-url ${{ inputs.git_url }}"
             [ -z "${{ inputs.git_ref }}" ] || ARGS="$ARGS --git-ref ${{ inputs.git_ref }}"
             [ -z "${{ inputs.slug }}" ]    || ARGS="$ARGS --slug ${{ inputs.slug }}"
+            [ -z "${{ inputs.org }}" ]     || ARGS="$ARGS --org ${{ inputs.org }}"
           else
             ARGS="${{ steps.repos.outputs.repo_args }} --apps ${{ matrix.slug }}"
           fi
@@ -640,7 +646,7 @@ jobs:
           live = {"published", "published-nodeps", "published-noassets", "skipped-exists"}
           for r in json.load(open(os.environ["REPORT"])):
               if r.get("action") in live:
-                  print(r.get("app_name") or r["slug"], r["version"])
+                  print(r.get("org") or "frappe", r.get("app_name") or r["slug"], r["version"])
           EXTRACT
 
           if [ ! -s /tmp/to-verify ]; then
@@ -649,11 +655,11 @@ jobs:
           fi
 
           rc=0
-          while read -r app version; do
-            if ./bin/fpm exists "frappe/$app==$version" --remote >/dev/null 2>&1; then
-              echo "  ✓ frappe/$app==$version is in the registry"
+          while read -r org app version; do
+            if ./bin/fpm exists "$org/$app==$version" --remote >/dev/null 2>&1; then
+              echo "  ✓ $org/$app==$version is in the registry"
             else
-              echo "  ✗ frappe/$app==$version was reported published but is NOT retrievable" >&2
+              echo "  ✗ $org/$app==$version was reported published but is NOT retrievable" >&2
               rc=1
             fi
           done < /tmp/to-verify

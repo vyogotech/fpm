@@ -40,6 +40,7 @@ const (
 
 // Result is the outcome of one planned build.
 type Result struct {
+	Org       string        `json:"org"`
 	Slug      string        `json:"slug"`
 	AppName   string        `json:"app_name"`
 	Version   string        `json:"version"`
@@ -109,7 +110,7 @@ func (r *Runner) Run(plan *Plan) []Result {
 }
 
 func (r *Runner) runOne(item BuildItem) Result {
-	result := Result{Slug: item.Slug, AppName: item.AppName, Version: item.Version}
+	result := Result{Org: item.Org, Slug: item.Slug, AppName: item.AppName, Version: item.Version}
 	fail := func(stage string, err error) Result {
 		result.Action = ActionFailed
 		result.Detail = fmt.Sprintf("%s: %v", stage, err)
@@ -558,10 +559,14 @@ func (r *Runner) packageApp(item BuildItem, checkout, assetBench string) (artifa
 	args := []string{
 		"package", checkout,
 		"--version", item.Version,
-		"--org", Org,
 		"--output-path", tmpOut,
 		"--overwrite",
 		"--skip-local-install",
+	}
+	// The plan names the organization; without one, fpm package reads it from the
+	// checkout's own git remote, as it does for any other packaging run.
+	if item.Org != "" {
+		args = append(args, "--org", item.Org)
 	}
 	if item.AppName != "" {
 		args = append(args, "--app-name", item.AppName)

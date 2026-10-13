@@ -26,6 +26,7 @@ Empty cells take the default.
 | `slug` | — | unique key; used for `--apps` filtering, workspace directories, and reporting |
 | `repo` | — | must start with `https://github.com/frappe/` |
 | `app_name` | derived | overrides the app name when `hooks.py app_name` differs from the repo name |
+| `org` | the repo URL's owner | the organization the package is published under; `frappe` for every row here, so it is normally left empty |
 | `track` | `tags` | `tags`: latest release tag per major line; `branch`: tip of one branch |
 | `branch` | — | only with `track=branch` |
 | `branch_major` | `0` | major used in the branch pseudo-version `<major>.0.0-git.<date>.<sha>` (a prerelease, so it never becomes `latest_version`) |

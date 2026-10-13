@@ -152,6 +152,13 @@ rather than failing the run.
 fpm mirror --repo ghcr --git-url https://github.com/frappe/education --git-ref v1.2.0
 ```
 
+The package is published under the organization the URL names — its owner segment, so
+`https://github.com/vyogotech/frappe_ai` lands as `vyogotech/frappe_ai` — or under
+`--org` when the owner is not the organization to publish as. The same rule names every
+catalog app: the catalog's rows point at `github.com/frappe/...`, so they publish as
+`frappe/...`, and a row's optional `org` column overrides it. fpm itself has no
+organization of its own.
+
 `--git-ref` takes a tag or a branch, defaulting to the repository's own default branch
 (read with `ls-remote --symref` — guessing `main` is wrong for every frappe app tracked
 from `develop`). A tag is packaged at its version; anything else as a branch

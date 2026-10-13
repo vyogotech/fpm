@@ -42,16 +42,18 @@ func fixtureRepo(t *testing.T, tags ...string) string {
 func registryStub(t *testing.T, appName string, versions ...string) *httptest.Server {
 	t.Helper()
 	meta := repository.PackageMetadata{
-		Org:      Org,
+		Org:      "test",
 		AppName:  appName,
 		Versions: map[string]repository.PackageVersionMetadata{},
 	}
 	for _, v := range versions {
 		meta.Versions[v] = repository.PackageVersionMetadata{}
 	}
-	path := fmt.Sprintf("/metadata/%s/%s/package-metadata.json", Org, appName)
+	// Any organization: the stub answers for the app under whichever org the plan derived
+	// from the fixture repository's path.
+	suffix := fmt.Sprintf("/%s/package-metadata.json", appName)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != path {
+		if !strings.HasPrefix(r.URL.Path, "/metadata/") || !strings.HasSuffix(r.URL.Path, suffix) {
 			http.NotFound(w, r)
 			return
 		}
@@ -425,5 +427,36 @@ func TestBranchPicksTheHighestOfDuplicatePseudoVersions(t *testing.T) {
 		if item.Version != want {
 			t.Fatalf("republish must overwrite the highest version %q, got %q", want, item.Version)
 		}
+	}
+}
+
+func TestOrgFromRepoURL(t *testing.T) {
+	cases := map[string]string{
+		"https://github.com/vyogotech/frappe_ai":      "vyogotech",
+		"https://github.com/vyogotech/frappe_ai.git/": "vyogotech",
+		"git@github.com:vyogotech/frappe_ai.git":      "vyogotech",
+		"https://github.com/Frappe/erpnext":           "frappe",
+		"https://gitlab.example/group/sub/app":        "sub",
+		"https://github.com/erpnext":                  "", // no owner: the host is not one
+		"frappe_ai":                                   "",
+		"":                                            "",
+	}
+	for url, want := range cases {
+		if got := OrgFromRepoURL(url); got != want {
+			t.Errorf("OrgFromRepoURL(%q) = %q, want %q", url, got, want)
+		}
+	}
+}
+
+func TestAnOnDemandAppPublishesUnderItsOwner(t *testing.T) {
+	repo := fixtureRepo(t, "v1.0.0")
+	server := registryStub(t, "wiki")
+
+	plan, err := PlanAdHoc(repo, "v1.0.0", "wiki", "", []config.RepositoryConfig{{URL: server.URL}}, server.Client(), "20260819", WithOrg("vyogotech"))
+	if err != nil {
+		t.Fatalf("PlanAdHoc: %v", err)
+	}
+	if len(plan.Items) != 1 || plan.Items[0].Org != "vyogotech" {
+		t.Fatalf("plan = %+v, want one item under vyogotech", plan)
 	}
 }

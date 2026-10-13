@@ -32,7 +32,7 @@ func RenderResults(results []Result) string {
 	fmt.Fprintln(w, "APP\tVERSION\tACTION\tSIZE\tTIME\tDETAIL")
 	for _, r := range results {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			r.Slug, r.Version, r.Action, humanSize(r.SizeBytes),
+			qualified(r.Org, r.Slug), r.Version, r.Action, humanSize(r.SizeBytes),
 			r.Duration.Round(10_000_000), firstLine(r.Detail))
 	}
 	w.Flush()
@@ -48,7 +48,7 @@ func RenderPlan(plan *Plan) string {
 		w := tabwriter.NewWriter(&b, 2, 4, 2, ' ', 0)
 		fmt.Fprintln(w, "APP\tVERSION\tREF\tREASON")
 		for _, item := range plan.Items {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", item.Slug, item.Version, item.Ref, item.Reason)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", qualified(item.Org, item.Slug), item.Version, item.Ref, item.Reason)
 		}
 		w.Flush()
 	}
@@ -85,8 +85,17 @@ func AppendStepSummary(results []Result) {
 	fmt.Fprintln(f, "|---|---|---|---|---|")
 	for _, r := range results {
 		fmt.Fprintf(f, "| %s | %s | %s | %s | %s |\n",
-			r.Slug, r.Version, r.Action, humanSize(r.SizeBytes), firstLine(r.Detail))
+			qualified(r.Org, r.Slug), r.Version, r.Action, humanSize(r.SizeBytes), firstLine(r.Detail))
 	}
+}
+
+// qualified names a package as the registry does, org/slug, or the slug alone when no
+// organization is known.
+func qualified(org, slug string) string {
+	if org == "" {
+		return slug
+	}
+	return org + "/" + slug
 }
 
 func humanSize(n int64) string {

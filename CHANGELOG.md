@@ -5,6 +5,18 @@ All notable changes to the Frappe Package Manager (FPM) project will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **`fpm mirror` publishes each app under its own organization.** The organization was
+  the constant `frappe`, so a repository packaged on demand with `--git-url` landed as
+  `frappe/<app>` whatever its owner. It is now the owner segment of the repository URL
+  (`https://github.com/vyogotech/frappe_ai` publishes as `vyogotech/frappe_ai`), with
+  `--org` and a catalog `org` column to override it. The catalog's rows all point at
+  `github.com/frappe/...`, so they publish exactly as before. The run report and the
+  tables name packages as `org/app`, and the mirror workflow verifies under that org.
+
 ## [4.6.0] - 2026-09-18
 
 ### Changed

@@ -27,6 +27,7 @@ var (
 	mirrorGitURL              string
 	mirrorGitRef              string
 	mirrorSlug                string
+	mirrorOrg                 string
 	mirrorAppName             string
 	mirrorApps                string
 	mirrorDryRun              bool
@@ -164,6 +165,9 @@ func runMirror() error {
 		// downstream is the same — bench-shaped checkout, frontend build, build-time
 		// dependencies, wheel vendoring, publish to every --repo — so an ad-hoc app
 		// gets exactly the treatment a curated one does.
+		if mirrorOrg != "" {
+			planOpts = append(planOpts, mirror.WithOrg(mirrorOrg))
+		}
 		plan, err = mirror.PlanAdHoc(mirrorGitURL, mirrorGitRef, mirrorSlug, mirrorAppName, repos, nil, now, planOpts...)
 	} else {
 		// A version is built when any repository is missing it, so a run leaves them all
@@ -296,6 +300,7 @@ func init() {
 	mirrorCmd.Flags().StringVar(&mirrorGitRef, "git-ref", "", "With --git-url, the tag or branch to package (default: the repository's default branch). A tag is packaged at its version; anything else as a branch pseudo-version carrying the head commit")
 	mirrorCmd.Flags().StringVar(&mirrorSlug, "slug", "", "With --git-url, the name to publish under (default: derived from the URL's last path segment)")
 	mirrorCmd.Flags().StringVar(&mirrorAppName, "app-name", "", "With --git-url, the Frappe app module name when it differs from the slug")
+	mirrorCmd.Flags().StringVar(&mirrorOrg, "org", "", "With --git-url, the organization to publish under (default: the owner segment of the URL, e.g. vyogotech for https://github.com/vyogotech/frappe_ai)")
 	mirrorCmd.Flags().BoolVar(&mirrorListTiers, "list-tiers", false, "Print the catalog's distinct tiers as a JSON array and exit, so a runner can drive one wave per tier")
 	// --repo is not marked required at the flag level because --list-slugs answers
 	// from the catalog alone; the run path validates it instead.
