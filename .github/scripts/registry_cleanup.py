@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -25,7 +26,14 @@ import urllib.request
 AGENT = "fpm-registry-cleanup"
 
 
-def request(method, url, token=None, body=None, if_match=None):
+def request(method, url, token=None, body=None, if_match=None, attempts=4):
+    """One HTTP call; an HTTP error is an answer, a transport error is retried.
+
+    Every call opens a fresh TLS connection to the edge, and one of those failed mid-
+    handshake in a run that had just deleted an artifact, leaving its metadata still
+    advertising it. A DELETE and a conditional PUT are both safe to repeat, so a
+    connection that fails before an answer arrives is tried again, not reported.
+    """
     req = urllib.request.Request(url, method=method, data=body)
     req.add_header("User-Agent", AGENT)
     if token:
@@ -34,11 +42,17 @@ def request(method, url, token=None, body=None, if_match=None):
         req.add_header("Content-Type", "application/json; charset=utf-8")
     if if_match:
         req.add_header("If-Match", if_match)
-    try:
-        with urllib.request.urlopen(req, timeout=60) as response:
-            return response.status, response.read(), response.headers.get("ETag")
-    except urllib.error.HTTPError as err:
-        return err.code, err.read(), err.headers.get("ETag")
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                return response.status, response.read(), response.headers.get("ETag")
+        except urllib.error.HTTPError as err:
+            return err.code, err.read(), err.headers.get("ETag")
+        except (urllib.error.URLError, OSError) as err:
+            if attempt == attempts:
+                raise
+            print(f"  {method} {url}: {err}; retrying ({attempt}/{attempts - 1})")
+            time.sleep(2 * attempt)
 
 
 INDEX_PATH = "metadata/index.json"
@@ -60,9 +74,8 @@ def parse_target(chunk):
 def artifact_paths(raw_meta):
     """Every object a package-metadata.json names, read without a JSON parser.
 
-    A metadata file the registry serves has been seen with a bare control character
-    inside a string, which json.loads refuses; the keys are what matter here, and they
-    are plain to a regular expression.
+    Only the keys matter here, and reading them this way still works on a metadata
+    file that has been damaged, which is one more thing a cleanup may be clearing up.
     """
     return sorted(set(re.findall(r'"fpm_path"\s*:\s*"([^"]+)"', raw_meta.decode("utf-8", "replace"))))
 
