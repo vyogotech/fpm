@@ -5,6 +5,18 @@ All notable changes to the Frappe Package Manager (FPM) project will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.2] - 2026-10-13
+
+### Fixed
+
+- **A published version that becomes the latest now describes the app.** The
+  registry's app-level title, description and icon were taken from whichever version
+  was published first and never updated, so an app renamed in a later release kept
+  its old name in every listing while each new version's own entry carried the new
+  one. `fpm publish` now refreshes them from the version that is the latest after the
+  publish, in the package metadata and in the repository index; publishing an older
+  version leaves them alone. The index entry also carries the title.
+
 ## [4.6.1] - 2026-10-13
 
 ### Changed
