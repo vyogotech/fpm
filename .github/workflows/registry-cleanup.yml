@@ -1,8 +1,10 @@
 name: Registry Cleanup
 
-# Removes published versions from the HTTP registry. Manual only, and narrow by
-# construction: it takes an explicit list, it dry-runs unless told otherwise, and it
-# refuses to touch a version that is currently an app's latest_version.
+# Removes published versions, or whole apps, from the HTTP registry. Manual only, and
+# narrow by construction: it takes an explicit list, it dry-runs unless told otherwise,
+# and a single version is refused when it is the app's current latest_version. Removing
+# a whole app (every version, its metadata and its index entry) is explicit: an app
+# published under the wrong organization is the case it exists for.
 #
 # It lives here rather than in a shell on someone's laptop because the credential it
 # needs is already here. `secrets.FPM_REGISTRY_PASSWORD` is the registry's publisher
@@ -18,8 +20,13 @@ on:
   workflow_dispatch:
     inputs:
       versions:
-        description: 'Comma-separated <app>==<version> to remove, e.g. drive==0.0.0-git.20260828.cd3438d1ab,wiki==2.0.1'
-        required: true
+        description: 'Comma-separated [<org>/]<app>==<version> to remove (org defaults to frappe), e.g. drive==0.0.0-git.20260828.cd3438d1ab,wiki==2.0.1'
+        required: false
+        default: ''
+      apps:
+        description: 'Comma-separated <org>/<app> to remove ENTIRELY: every version, the package metadata and the index entry, e.g. frappe/frappe_ai'
+        required: false
+        default: ''
       dry_run:
         description: 'Report what would be removed without deleting anything'
         type: boolean
@@ -50,5 +57,6 @@ jobs:
           # FPM_REGISTRY_USERNAME exists for the CLI's basic auth and is not used here.
           REGISTRY_TOKEN: ${{ secrets.FPM_REGISTRY_PASSWORD }}
           VERSIONS: ${{ inputs.versions }}
+          APPS: ${{ inputs.apps }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: python3 .github/scripts/registry_cleanup.py
