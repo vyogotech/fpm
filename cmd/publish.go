@@ -328,6 +328,7 @@ to publish from the local FPM app store.`,
 		// string compare, which ranked "1.9.0" above "1.10.0"; recomputing from
 		// the whole set also repairs metadata that comparison already corrupted.
 		remoteMeta.LatestVersion = semver.LatestOf(remoteMeta.Versions)
+		describeFromLatest(remoteMeta, appVersion, describedBy(currentAppMeta))
 
 		fmt.Printf("Uploading updated metadata for %s/%s...\n", appOrg, appName)
 		// This write is what makes the version visible, and it replaces a document
@@ -335,7 +336,7 @@ to publish from the local FPM app store.`,
 		// sharded mirror does routinely — would otherwise write back a copy that
 		// never saw this version, leaving the artifact uploaded and unreferenced.
 		// The registry refuses such a write; re-reading and re-applying is the fix.
-		if err := publishMetadataWithRetry(targetRepo, appOrg, appName, versionEntry, appVersion, remoteMeta, httpClient); err != nil {
+		if err := publishMetadataWithRetry(targetRepo, appOrg, appName, versionEntry, appVersion, remoteMeta, describedBy(currentAppMeta), httpClient); err != nil {
 			return err
 		}
 
@@ -369,6 +370,7 @@ func updateRepositoryIndex(repo config.RepositoryConfig, meta *repository.Packag
 	idx.Upsert(repository.IndexEntry{
 		Org:           meta.Org,
 		AppName:       meta.AppName,
+		Title:         meta.Title,
 		Description:   meta.Description,
 		LatestVersion: meta.LatestVersion,
 		UpdatedAt:     releaseDate,
@@ -411,7 +413,7 @@ const metadataPublishAttempts = 4
 // this version when another publish got there first.
 func publishMetadataWithRetry(repo config.RepositoryConfig, org, appName string,
 	entry repository.PackageVersionMetadata, version string,
-	meta *repository.PackageMetadata, client *http.Client) error {
+	meta *repository.PackageMetadata, describe appDescription, client *http.Client) error {
 
 	for attempt := 1; ; attempt++ {
 		err := repository.UploadPackageMetadata(repo.URL, org, appName, meta, client)
@@ -443,6 +445,7 @@ func publishMetadataWithRetry(repo config.RepositoryConfig, org, appName string,
 		}
 		fresh.Versions[version] = entry
 		fresh.LatestVersion = semver.LatestOf(fresh.Versions)
+		describeFromLatest(fresh, version, describe)
 		*meta = *fresh
 	}
 }
@@ -456,4 +459,41 @@ func init() {
 	publishCmd.Flags().BoolVar(&publishForce, "force", false, "Overwrite existing package version in repository")
 
 	rootCmd.AddCommand(publishCmd)
+}
+
+// appDescription is what a package says about the app as a whole: the fields the
+// registry's listing shows, as opposed to the facts of one version.
+type appDescription struct {
+	Title, Description, Icon, IconFile string
+}
+
+func describedBy(meta *metadata.AppMetadata) appDescription {
+	if meta == nil {
+		return appDescription{}
+	}
+	return appDescription{Title: meta.Title, Description: meta.Description, Icon: meta.Icon, IconFile: meta.IconFile}
+}
+
+// describeFromLatest keeps the registry's app-level title, description and icon in step
+// with the version that is now the latest. The listing used to take them from whichever
+// version was published first and never again, so an app renamed in a later release
+// ("Frappe AI" to "AI Sidebar") kept its old name in every catalogue while each new
+// version's own entry carried the new one. Publishing an older version leaves them
+// alone: what the newest release says describes the app.
+func describeFromLatest(meta *repository.PackageMetadata, version string, describe appDescription) {
+	if meta.LatestVersion != version {
+		return
+	}
+	if describe.Title != "" {
+		meta.Title = describe.Title
+	}
+	if describe.Description != "" {
+		meta.Description = describe.Description
+	}
+	if describe.Icon != "" {
+		meta.Icon = describe.Icon
+	}
+	if describe.IconFile != "" {
+		meta.IconFile = describe.IconFile
+	}
 }

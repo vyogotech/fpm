@@ -79,7 +79,7 @@ func TestConcurrentPublishKeepsBothVersions(t *testing.T) {
 	require.True(t, found)
 	meta.Versions["2.62.1"] = mine
 
-	err = publishMetadataWithRetry(repo, "frappe", "lms", mine, "2.62.1", meta, srv.Client())
+	err = publishMetadataWithRetry(repo, "frappe", "lms", mine, "2.62.1", meta, appDescription{}, srv.Client())
 	require.NoError(t, err, "losing the race once must be recoverable")
 
 	assert.Equal(t, 1, reg.rejects, "the stale write must have been refused exactly once")
@@ -114,7 +114,7 @@ func TestConcurrentPublishGivesUpEventually(t *testing.T) {
 	meta, _, err := repository.FetchRemotePackageMetadataForRepo(repo, "frappe", "lms", srv.Client())
 	require.NoError(t, err)
 
-	err = publishMetadataWithRetry(repo, "frappe", "lms", repository.PackageVersionMetadata{}, "2.62.1", meta, srv.Client())
+	err = publishMetadataWithRetry(repo, "frappe", "lms", repository.PackageVersionMetadata{}, "2.62.1", meta, appDescription{}, srv.Client())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "another publish keeps updating")
 	assert.Equal(t, metadataPublishAttempts, reg.rejects, "it must stop after a bounded number of attempts")
