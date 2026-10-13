@@ -35,6 +35,10 @@ on:
         description: 'Rebuild and push versions the registry already has (use when packaging itself changed)'
         type: boolean
         default: false
+      repos:
+        description: 'Comma-separated backends to publish to, among ghcr and fpm-http (default: every configured one). An app whose GHCR package belongs to another repository cannot be re-pushed here; name fpm-http alone to republish it to the HTTP registry'
+        required: false
+        default: ''
       python_version:
         description: 'Target Python version for vendored wheels (e.g. 3.14, 3.11)'
         required: false
@@ -306,17 +310,23 @@ jobs:
         env:
           FPM_HTTP_URL: ${{ vars.FPM_REGISTRY_URL }}
           FPM_HTTP_USER: ${{ secrets.FPM_REGISTRY_USERNAME }}
+          REPOS: ${{ inputs.repos }}
         run: |
+          # Every backend is configured; the repos input narrows which ones this run
+          # publishes to (default: all of them).
+          wanted() { [ -z "$REPOS" ] || echo ",$REPOS," | tr -d ' ' | grep -q ",$1,"; }
+          REPO_ARGS=""
           ./bin/fpm repo add ghcr ghcr.io/${{ github.repository }} --type oci --username ${{ github.actor }}
-          REPO_ARGS="--repo ghcr"
+          if wanted ghcr; then REPO_ARGS="--repo ghcr"; fi
 
           if [ -n "$FPM_HTTP_URL" ]; then
             ./bin/fpm repo add fpm-http "$FPM_HTTP_URL" --type http --username "${FPM_HTTP_USER:-fpm}"
-            REPO_ARGS="$REPO_ARGS --repo fpm-http"
-            echo "Mirroring to GHCR (oci) and $FPM_HTTP_URL (http)."
-          else
-            echo "FPM_REGISTRY_URL is not set; mirroring to GHCR (oci) only."
+            if wanted fpm-http; then REPO_ARGS="$REPO_ARGS --repo fpm-http"; fi
+          elif wanted fpm-http && [ -n "$REPOS" ]; then
+            echo "::error::repos names fpm-http but FPM_REGISTRY_URL is not set"; exit 1
           fi
+          [ -n "$REPO_ARGS" ] || { echo "::error::repos '$REPOS' names no configured backend"; exit 1; }
+          echo "Publishing to:$REPO_ARGS"
 
           echo "repo_args=$REPO_ARGS" >> "$GITHUB_OUTPUT"
           ./bin/fpm repo list
@@ -560,17 +570,23 @@ jobs:
         env:
           FPM_HTTP_URL: ${{ vars.FPM_REGISTRY_URL }}
           FPM_HTTP_USER: ${{ secrets.FPM_REGISTRY_USERNAME }}
+          REPOS: ${{ inputs.repos }}
         run: |
+          # Every backend is configured; the repos input narrows which ones this run
+          # publishes to (default: all of them).
+          wanted() { [ -z "$REPOS" ] || echo ",$REPOS," | tr -d ' ' | grep -q ",$1,"; }
+          REPO_ARGS=""
           ./bin/fpm repo add ghcr ghcr.io/${{ github.repository }} --type oci --username ${{ github.actor }}
-          REPO_ARGS="--repo ghcr"
+          if wanted ghcr; then REPO_ARGS="--repo ghcr"; fi
 
           if [ -n "$FPM_HTTP_URL" ]; then
             ./bin/fpm repo add fpm-http "$FPM_HTTP_URL" --type http --username "${FPM_HTTP_USER:-fpm}"
-            REPO_ARGS="$REPO_ARGS --repo fpm-http"
-            echo "Mirroring to GHCR (oci) and $FPM_HTTP_URL (http)."
-          else
-            echo "FPM_REGISTRY_URL is not set; mirroring to GHCR (oci) only."
+            if wanted fpm-http; then REPO_ARGS="$REPO_ARGS --repo fpm-http"; fi
+          elif wanted fpm-http && [ -n "$REPOS" ]; then
+            echo "::error::repos names fpm-http but FPM_REGISTRY_URL is not set"; exit 1
           fi
+          [ -n "$REPO_ARGS" ] || { echo "::error::repos '$REPOS' names no configured backend"; exit 1; }
+          echo "Publishing to:$REPO_ARGS"
 
           echo "repo_args=$REPO_ARGS" >> "$GITHUB_OUTPUT"
           ./bin/fpm repo list
