@@ -5,6 +5,39 @@ All notable changes to the Frappe Package Manager (FPM) project will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.0] - 2026-10-14
+
+### Fixed
+
+- **A TypeScript or JSX desk bundle now loads after `fpm install`.** Frappe's esbuild
+  keys a bundle in `sites/assets/assets.json` by its entry point's file name, so
+  `frappe_ai.bundle.ts` is recorded as `frappe_ai.bundle.ts`, and that is the name an
+  app's `hooks.py` asks for. fpm derived the key from the compiled file instead and
+  always wrote `.js`, so Frappe found no entry for the name, fell back to a literal
+  `/frappe_ai.bundle.ts` URL that 404s, and the app's desk UI never ran. Packaging and
+  install now key script bundles by their `.js`, `.ts` or `.jsx` entry, exactly as a
+  real `bench build` does; stylesheets were already right. Checked against frappe
+  v16's own build for erpnext, hrms, print_designer, webshop, wiki, drive, insights,
+  frappe_ai and a fixture covering every entry type: every key matches.
+
+### Changed
+
+- **A prod package no longer ships its esbuild entry points.** Any bench running
+  `bench start` also runs `bench watch`, which recompiled every app it found, packaged
+  ones included. For an app whose bundles import their own npm packages, which a
+  package does not carry, that rebuild half failed: it deleted the packaged CSS and
+  left `assets.json` pointing at it. A prod package whose bundles were built now
+  leaves the `*.bundle.{js,ts,jsx,css,scss,sass,less,styl}` entry files out of
+  `<app>/public/`, so frappe's build has nothing of the app's to recompile; the
+  compiled output in `public/dist` and every other file are still packaged. A dev
+  package, and a prod package published with `--allow-unbuilt-assets`, keep them,
+  since those are built on the bench. To restore a packaged app's assets, run
+  `fpm install <package> --overwrite`.
+- **`fpm install` records the keys a package was built with.** Where a package
+  carries no entry point for a bundle, the key comes from the package's
+  `asset_bundles`. A shipped entry point still decides, which also repairs packages
+  published before this release that recorded `x.bundle.js` for a `.ts` entry.
+
 ## [4.6.2] - 2026-10-13
 
 ### Fixed
