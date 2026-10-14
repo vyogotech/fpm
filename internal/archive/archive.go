@@ -58,6 +58,10 @@ var productionExclusionPatterns = []string{
 	"test_*",       // Matches files or directories starting with "test_" anywhere
 }
 
+// bundleEntryExts are the esbuild entry-point extensions frappe's esbuild.js globs
+// for (`*.bundle.{js,ts,css,sass,scss,less,styl,jsx}`).
+var bundleEntryExts = []string{"js", "ts", "css", "sass", "scss", "less", "styl", "jsx"}
+
 // Options controls optional packaging behaviour. The zero value packages the app
 // exactly as before wheel vendoring existed.
 type Options struct {
@@ -162,6 +166,18 @@ func CreateFPMArchive(appSourcePath string, outputPath string, meta *metadata.Ap
 			if !alreadyExists {
 				combinedIgnorePatterns = append(combinedIgnorePatterns, prodPattern)
 			}
+		}
+	}
+
+	// A prod package whose desk bundles were compiled leaves out their esbuild entry
+	// points. Frappe serves the compiled output through assets.json and never reads an
+	// entry at runtime, but any `bench watch` or `bench build` on the destination globs
+	// for them and recompiles the app there, without its npm dependencies: the rebuild
+	// half fails, deletes the packaged CSS and leaves assets.json pointing at it.
+	// Compiled files (`x.bundle.HASH.js`) do not match these patterns.
+	if meta.PackageType == "prod" && len(meta.AssetBundles) > 0 && meta.AppName != "" {
+		for _, ext := range bundleEntryExts {
+			combinedIgnorePatterns = append(combinedIgnorePatterns, "/"+meta.AppName+"/public/**/*.bundle."+ext)
 		}
 	}
 

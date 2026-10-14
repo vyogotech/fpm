@@ -201,6 +201,67 @@ func TestPackageAndInstallDeployBuiltAssets(t *testing.T) {
 	assert.Equal(t, "/assets/builtapp/dist/css-rtl/builtapp.bundle.RRRRRRRR.css", v)
 }
 
+// TestPackageAndInstallKeyTypeScriptEntriesBySource: hooks.py names a bundle by its
+// source file (app_include_js = ["tsapp.bundle.ts"]) and frappe's bundled_asset looks
+// that name up in assets.json verbatim; a miss falls through to a literal URL that
+// 404s and the desk UI never loads. Both the package metadata and the manifest fpm
+// install writes must therefore carry the source name, not the compiled .js name.
+func TestPackageAndInstallKeyTypeScriptEntriesBySource(t *testing.T) {
+	src := SharedCreateMinimalAppForPackage(t, t.TempDir(), "tsapp", map[string]string{
+		"tsapp/public/js/tsapp.bundle.ts":                 "const x: number = 1",
+		"tsapp/public/js/widget.bundle.jsx":               "export default () => null",
+		"tsapp/public/scss/tsapp.bundle.scss":             "body{}",
+		"tsapp/public/dist/js/tsapp.bundle.ABCDEFGH.js":   "console.log(1)",
+		"tsapp/public/dist/widget.bundle.JJJJJJJJ.js":     "console.log(2)",
+		"tsapp/public/dist/css/tsapp.bundle.HHHHHHHH.css": "body{}",
+	})
+	resetPackageCmdFlags()
+	args, outDir := packageArgs(t, src, "1.0.0", "--org", "acme")
+	_, err := SharedExecuteCommand(rootCmd, args...)
+	require.NoError(t, err)
+	fpmPath := filepath.Join(outDir, "tsapp-1.0.0.fpm")
+
+	meta, err := metadata.ReadMetadataFromFPMArchive(fpmPath)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"tsapp.bundle.ts":   "/assets/tsapp/dist/js/tsapp.bundle.ABCDEFGH.js",
+		"widget.bundle.jsx": "/assets/tsapp/dist/widget.bundle.JJJJJJJJ.js",
+		"tsapp.bundle.css":  "/assets/tsapp/dist/css/tsapp.bundle.HHHHHHHH.css",
+	}, meta.AssetBundles)
+
+	// A prod package ships the compiled bundles, not the entry points, so a
+	// `bench watch` on the destination has nothing of this app's to rebuild.
+	zr, err := zip.OpenReader(fpmPath)
+	require.NoError(t, err)
+	packaged := map[string]bool{}
+	for _, f := range zr.File {
+		packaged[f.Name] = true
+	}
+	zr.Close()
+	assert.False(t, packaged["tsapp/public/js/tsapp.bundle.ts"], "entry point must not be packaged")
+	assert.False(t, packaged["tsapp/public/scss/tsapp.bundle.scss"], "entry point must not be packaged")
+	assert.True(t, packaged["tsapp/public/dist/js/tsapp.bundle.ABCDEFGH.js"], "compiled bundle must be packaged")
+
+	store := t.TempDir()
+	t.Setenv("FPM_APPS_BASE_PATH", store)
+	t.Setenv("HOME", t.TempDir())
+	bench := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(bench, "env", "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(bench, "env", "bin", "pip"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(bench, "sites", "assets"), 0o755))
+
+	resetInstallCmdFlags()
+	_, err = SharedExecuteCommand(rootCmd, "install", fpmPath, "--bench-path", bench)
+	require.NoError(t, err)
+
+	m, err := assets.ReadManifest(filepath.Join(bench, "sites", "assets", "assets.json"))
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"tsapp.bundle.ts", "widget.bundle.jsx", "tsapp.bundle.css"}, m.Keys())
+	v, _ := m.Get("tsapp.bundle.ts")
+	_, err = os.Stat(filepath.Join(bench, "sites", v[1:]))
+	assert.NoError(t, err, "the path recorded for the hooks.py name must be served")
+}
+
 // TestInstallRefusesMissingRequiredApps covers item 7 at install time: a package whose
 // pinned required app is not in the local store is refused, and nothing is fetched.
 func TestInstallRefusesMissingRequiredApps(t *testing.T) {

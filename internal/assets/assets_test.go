@@ -68,6 +68,82 @@ func TestBundles(t *testing.T) {
 	assert.Empty(t, rtl)
 }
 
+// TestBundlesKeyScriptEntriesBySourceName: a real esbuild run keys a script bundle by
+// its entry point's basename (write_assets_json: path.basename(info.entryPoint)), so a
+// TypeScript or JSX entry keeps its own extension even though the output is .js, and
+// hooks.py asks for it by that name (app_include_js = ["frappe_ai.bundle.ts"]).
+// Stylesheets are compiled to a temporary <name>.css first, so .scss/.less entries
+// are keyed .css. Expected values were taken from frappe v16.33.0's esbuild.
+func TestBundlesKeyScriptEntriesBySourceName(t *testing.T) {
+	module := filepath.Join(t.TempDir(), "myapp")
+	writeFiles(t, module,
+		"public/js/typed.bundle.ts",
+		"public/js/nested/deep/my.dotted.bundle.ts", // esbuild flattens entry dirs
+		"public/js/react.bundle.jsx",
+		"public/js/plain.bundle.js",
+		"public/scss/sassy.bundle.scss",
+		"public/less/lessy.bundle.less",
+		"public/dist/js/typed.bundle.DBWEI4ZR.js",
+		"public/dist/js/my.dotted.bundle.AMSTKLF6.js",
+		"public/dist/react.bundle.OOBQO52T.js", // .jsx output lands in dist/, not dist/js/
+		"public/dist/js/plain.bundle.A3KQ2FVU.js",
+		"public/dist/css/sassy.bundle.Y77R3MJT.css",
+		"public/dist/css/lessy.bundle.XG4ATQTA.css",
+		"public/dist/css-rtl/sassy.bundle.XPV4FWHM.css",
+	)
+
+	ltr, rtl, err := Bundles(module, "myapp")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"typed.bundle.ts":     "/assets/myapp/dist/js/typed.bundle.DBWEI4ZR.js",
+		"my.dotted.bundle.ts": "/assets/myapp/dist/js/my.dotted.bundle.AMSTKLF6.js",
+		"react.bundle.jsx":    "/assets/myapp/dist/react.bundle.OOBQO52T.js",
+		"plain.bundle.js":     "/assets/myapp/dist/js/plain.bundle.A3KQ2FVU.js",
+		"sassy.bundle.css":    "/assets/myapp/dist/css/sassy.bundle.Y77R3MJT.css",
+		"lessy.bundle.css":    "/assets/myapp/dist/css/lessy.bundle.XG4ATQTA.css",
+	}, ltr)
+	assert.Equal(t, map[string]string{
+		"rtl_sassy.bundle.css": "/assets/myapp/dist/css-rtl/sassy.bundle.XPV4FWHM.css",
+	}, rtl)
+}
+
+// TestBundlesWithoutSourcesKeepTheBuiltName: a package that ships only compiled
+// output has nothing to recover the entry's extension from, so the key stays the
+// built name, as `bench build --using-cached` would record it. Files under dist/ and
+// node_modules/ are not entry points and must not decide the key.
+func TestBundlesWithoutSourcesKeepTheBuiltName(t *testing.T) {
+	module := filepath.Join(t.TempDir(), "myapp")
+	writeFiles(t, module,
+		"public/dist/js/typed.bundle.DBWEI4ZR.js",
+		"public/dist/js/typed.bundle.ts", // stray copy inside dist
+		"public/node_modules/somelib/typed.bundle.ts",
+	)
+
+	ltr, _, err := Bundles(module, "myapp")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"typed.bundle.js": "/assets/myapp/dist/js/typed.bundle.DBWEI4ZR.js",
+	}, ltr)
+}
+
+// TestBundlesAmbiguousSourceKeepsTheBuiltName: a .js and a .ts entry with the same
+// name compile to the same dist/js output (esbuild.js warns "Duplicate output file"),
+// so the output cannot say which one it came from.
+func TestBundlesAmbiguousSourceKeepsTheBuiltName(t *testing.T) {
+	module := filepath.Join(t.TempDir(), "myapp")
+	writeFiles(t, module,
+		"public/js/dup.bundle.js",
+		"public/ts/dup.bundle.ts",
+		"public/dist/js/dup.bundle.AAAAAAAA.js",
+	)
+
+	ltr, _, err := Bundles(module, "myapp")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"dup.bundle.js": "/assets/myapp/dist/js/dup.bundle.AAAAAAAA.js",
+	}, ltr)
+}
+
 // TestManifestFormat pins the exact bytes JSON.stringify(obj, null, 4) produces.
 func TestManifestFormat(t *testing.T) {
 	m := &Manifest{values: map[string]string{}}
@@ -200,7 +276,7 @@ func TestDeployEndToEnd(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(AssetsDir(bench), ManifestFileName),
 		[]byte("{\n    \"libs.bundle.js\": \"/assets/frappe/dist/js/libs.bundle.WGSJP7XT.js\"\n}"), 0o644))
 
-	d, err := Deploy(bench, "myapp", module)
+	d, err := Deploy(bench, "myapp", module, nil)
 	require.NoError(t, err)
 	assert.True(t, d.Linked)
 	assert.Equal(t, "/assets/myapp/dist/js/myapp.bundle.6SCSPSGQ.js", d.LTR["myapp.bundle.js"])
@@ -304,4 +380,56 @@ func TestUndeploy(t *testing.T) {
 	val, ok := m.Get("app2.bundle.js")
 	assert.True(t, ok)
 	assert.Equal(t, "/assets/app2/dist/js/app2.222.js", val)
+}
+
+// TestBundlesUseRecordedKeysWhenSourcesAreNotShipped: a prod package leaves its
+// entry points out, so the built output alone cannot say that typed.bundle.HASH.js
+// came from typed.bundle.ts. The package recorded that when it was built.
+func TestBundlesUseRecordedKeysWhenSourcesAreNotShipped(t *testing.T) {
+	module := filepath.Join(t.TempDir(), "myapp")
+	writeFiles(t, module,
+		"public/dist/js/typed.bundle.DBWEI4ZR.js",
+		"public/dist/react.bundle.OOBQO52T.js",
+		"public/dist/css/sassy.bundle.Y77R3MJT.css",
+		"public/dist/css-rtl/sassy.bundle.XPV4FWHM.css",
+	)
+	recorded := map[string]string{
+		"typed.bundle.ts":      "/assets/myapp/dist/js/typed.bundle.DBWEI4ZR.js",
+		"react.bundle.jsx":     "/assets/myapp/dist/react.bundle.OOBQO52T.js",
+		"sassy.bundle.css":     "/assets/myapp/dist/css/sassy.bundle.Y77R3MJT.css",
+		"rtl_sassy.bundle.css": "/assets/myapp/dist/css-rtl/sassy.bundle.XPV4FWHM.css",
+		// Recorded for a file the package does not hold: never point assets.json at it.
+		"gone.bundle.ts": "/assets/myapp/dist/js/gone.bundle.AAAAAAAA.js",
+	}
+
+	ltr, rtl, err := BundlesWithRecorded(module, "myapp", recorded)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"typed.bundle.ts":  "/assets/myapp/dist/js/typed.bundle.DBWEI4ZR.js",
+		"react.bundle.jsx": "/assets/myapp/dist/react.bundle.OOBQO52T.js",
+		"sassy.bundle.css": "/assets/myapp/dist/css/sassy.bundle.Y77R3MJT.css",
+	}, ltr)
+	assert.Equal(t, map[string]string{
+		"rtl_sassy.bundle.css": "/assets/myapp/dist/css-rtl/sassy.bundle.XPV4FWHM.css",
+	}, rtl)
+}
+
+// TestBundlesPreferShippedSourcesOverRecordedKeys: packages built before fpm keyed
+// bundles by their source recorded `frappe_ai.bundle.js` for a .ts entry, but they
+// still ship the entry, and the entry is the truth.
+func TestBundlesPreferShippedSourcesOverRecordedKeys(t *testing.T) {
+	module := filepath.Join(t.TempDir(), "frappe_ai")
+	writeFiles(t, module,
+		"public/js/frappe_ai.bundle.ts",
+		"public/dist/js/frappe_ai.bundle.SVDF5L4P.js",
+	)
+	recorded := map[string]string{
+		"frappe_ai.bundle.js": "/assets/frappe_ai/dist/js/frappe_ai.bundle.SVDF5L4P.js",
+	}
+
+	ltr, _, err := BundlesWithRecorded(module, "frappe_ai", recorded)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"frappe_ai.bundle.ts": "/assets/frappe_ai/dist/js/frappe_ai.bundle.SVDF5L4P.js",
+	}, ltr)
 }

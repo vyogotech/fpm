@@ -1081,7 +1081,13 @@ func deployPackagedAssets(benchPath, appName, appModulePath, baseVersionPath str
 		}
 	}
 
-	deployed, err := assets.Deploy(benchPath, appName, appModulePath)
+	// A prod package leaves its esbuild entry points out; the keys it recorded when
+	// its bundles were built say which entry each one came from.
+	var recorded map[string]string
+	if meta, metaErr := metadata.LoadAppMetadata(baseVersionPath); metaErr == nil && meta != nil {
+		recorded = meta.AssetBundles
+	}
+	deployed, err := assets.Deploy(benchPath, appName, appModulePath, recorded)
 	if err != nil {
 		return fmt.Errorf("failed to deploy assets for app '%s': %w", appName, err)
 	}

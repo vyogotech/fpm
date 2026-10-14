@@ -229,3 +229,113 @@ func TestExcludesRepositoryFurniture(t *testing.T) {
 		}
 	}
 }
+
+// packageFiles builds an archive of an app with esbuild entry points and compiled
+// bundles, and returns the paths it contains.
+func packageFiles(t *testing.T, packageType string, built bool) map[string]bool {
+	t.Helper()
+	src := t.TempDir()
+	write := func(rel string) {
+		t.Helper()
+		p := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, rel := range []string{
+		"myapp/hooks.py", "myapp/__init__.py", "myapp/modules.txt",
+		"myapp/public/js/myapp.bundle.ts",
+		"myapp/public/js/widget.bundle.jsx",
+		"myapp/public/js/legacy.bundle.js",
+		"myapp/public/scss/myapp.bundle.scss",
+		"myapp/public/css/plain.bundle.css",
+		"myapp/public/js/myapp/App.vue", // imported by an entry, not an entry
+		"myapp/public/js/standalone.js", // served as-is, not an entry
+		"myapp/public/images/logo.svg",
+		"myapp/public/dist/js/myapp.bundle.ABCDEFGH.js",
+		"myapp/public/dist/css/myapp.bundle.HHHHHHHH.css",
+	} {
+		write(rel)
+	}
+
+	out := t.TempDir()
+	meta := &metadata.AppMetadata{PackageName: "myapp", AppName: "myapp", Org: "acme", PackageVersion: "1.0.0", PackageType: packageType}
+	if built {
+		meta.AssetsBuilt = true
+		meta.AssetBundles = map[string]string{
+			"myapp.bundle.ts":  "/assets/myapp/dist/js/myapp.bundle.ABCDEFGH.js",
+			"myapp.bundle.css": "/assets/myapp/dist/css/myapp.bundle.HHHHHHHH.css",
+		}
+	}
+	if err := CreateFPMArchive(src, out, meta, "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := zip.OpenReader(filepath.Join(out, "myapp-1.0.0.fpm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	got := map[string]bool{}
+	for _, f := range r.File {
+		got[f.Name] = true
+	}
+	return got
+}
+
+var bundleEntrySources = []string{
+	"myapp/public/js/myapp.bundle.ts",
+	"myapp/public/js/widget.bundle.jsx",
+	"myapp/public/js/legacy.bundle.js",
+	"myapp/public/scss/myapp.bundle.scss",
+	"myapp/public/css/plain.bundle.css",
+}
+
+// TestProdPackageOmitsBundleEntrySources: a prod package ships its desk bundles
+// compiled. Leaving the esbuild entry points in would let any `bench watch` or
+// `bench build` on the destination find them and recompile the app there, where its
+// npm dependencies are not installed: the rebuild half fails, deletes the packaged
+// CSS and leaves assets.json pointing at it. Without entry points frappe's build has
+// nothing of this app's to compile.
+func TestProdPackageOmitsBundleEntrySources(t *testing.T) {
+	got := packageFiles(t, "prod", true)
+	for _, src := range bundleEntrySources {
+		if got[src] {
+			t.Errorf("%s is an esbuild entry point and must not be in a prod package", src)
+		}
+	}
+	for _, kept := range []string{
+		"myapp/public/dist/js/myapp.bundle.ABCDEFGH.js",
+		"myapp/public/dist/css/myapp.bundle.HHHHHHHH.css",
+		"myapp/public/js/myapp/App.vue",
+		"myapp/public/js/standalone.js",
+		"myapp/public/images/logo.svg",
+	} {
+		if !got[kept] {
+			t.Errorf("%s must still be packaged", kept)
+		}
+	}
+}
+
+// TestDevPackageKeepsBundleEntrySources: a dev package is built on the bench.
+func TestDevPackageKeepsBundleEntrySources(t *testing.T) {
+	got := packageFiles(t, "dev", true)
+	for _, src := range bundleEntrySources {
+		if !got[src] {
+			t.Errorf("%s must be in a dev package", src)
+		}
+	}
+}
+
+// TestUnbuiltProdPackageKeepsBundleEntrySources: a prod package published with
+// --allow-unbuilt-assets has to be built on the destination, which needs the sources.
+func TestUnbuiltProdPackageKeepsBundleEntrySources(t *testing.T) {
+	got := packageFiles(t, "prod", false)
+	for _, src := range bundleEntrySources {
+		if !got[src] {
+			t.Errorf("%s must be in a prod package that carries no compiled bundles", src)
+		}
+	}
+}

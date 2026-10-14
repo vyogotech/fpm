@@ -59,7 +59,21 @@ func AssetsDir(benchPath string) string {
 // Mirrors esbuild.js update_assets_obj: for `js/x.bundle.HASH.js` the key is
 // `x.bundle.js` and the value `/assets/<app>/dist/js/x.bundle.HASH.js`. Entries are
 // returned in sorted path order so a deployment is deterministic.
+//
+// Unlike update_assets_obj, a script bundle compiled from a TypeScript or JSX entry
+// is keyed by that entry (`x.bundle.ts`), as a real esbuild run keys it; see sourceKey.
 func Bundles(appModuleDir, appName string) (ltr, rtl map[string]string, err error) {
+	return BundlesWithRecorded(appModuleDir, appName, nil)
+}
+
+// BundlesWithRecorded is Bundles for an installed package: recorded is the package's
+// asset_bundles, the manifest entries fpm recorded when it built the bundles. A prod
+// package leaves its entry points out, so where no shipped entry says what a bundle
+// was compiled from, the key recorded for that file is used. A shipped entry still
+// wins, because packages from before fpm keyed bundles by their entry recorded
+// `x.bundle.js` for a .ts entry. Recorded entries for files the package does not
+// hold are ignored: assets.json must never point at a missing file.
+func BundlesWithRecorded(appModuleDir, appName string, recorded map[string]string) (ltr, rtl map[string]string, err error) {
 	ltr, rtl = map[string]string{}, map[string]string{}
 	dist := filepath.Join(appModuleDir, "public", "dist")
 	if info, statErr := os.Stat(dist); statErr != nil || !info.IsDir() {
@@ -89,13 +103,29 @@ func Bundles(appModuleDir, appName string) (ltr, rtl map[string]string, err erro
 	}
 	sort.Strings(files)
 
+	sources, err := scriptEntrySources(filepath.Join(appModuleDir, "public"))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	recordedByValue := make(map[string]string, len(recorded))
+	for k, v := range recorded {
+		recordedByValue[v] = k
+	}
+
 	prefix := path.Join("/", "assets", appName, "dist")
 	for _, file := range files {
 		key, ok := BundleKey(path.Base(file))
 		if !ok {
 			continue
 		}
+		key, fromSource := sourceKey(key, file, sources)
 		value := path.Join(prefix, file)
+		if !fromSource {
+			if recordedKey, ok := recordedByValue[value]; ok {
+				key = strings.TrimPrefix(recordedKey, "rtl_")
+			}
+		}
 		if strings.Contains(file, "-rtl") {
 			rtl["rtl_"+key] = value
 		} else {
@@ -103,6 +133,79 @@ func Bundles(appModuleDir, appName string) (ltr, rtl map[string]string, err erro
 		}
 	}
 	return ltr, rtl, nil
+}
+
+// scriptEntrySources maps each script entry point under public/ to the extensions it
+// exists with: `js/typed.bundle.ts` -> {"typed.bundle": {".ts"}}. These are the
+// entries esbuild.js globs (`**/*.bundle.{js,ts,jsx}`), skipping public/dist and
+// node_modules as it does. Directories are dropped because esbuild flattens them.
+func scriptEntrySources(public string) (map[string]map[string]bool, error) {
+	sources := map[string]map[string]bool{}
+	if info, err := os.Stat(public); err != nil || !info.IsDir() {
+		return sources, nil
+	}
+	err := filepath.WalkDir(public, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if d.Name() == "node_modules" || p == filepath.Join(public, "dist") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		ext := path.Ext(d.Name())
+		if ext != ".js" && ext != ".ts" && ext != ".jsx" {
+			return nil
+		}
+		stem := strings.TrimSuffix(d.Name(), ext)
+		if !strings.HasSuffix(stem, ".bundle") {
+			return nil
+		}
+		if sources[stem] == nil {
+			sources[stem] = map[string]bool{}
+		}
+		sources[stem][ext] = true
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan bundle sources in %s: %w", public, err)
+	}
+	return sources, nil
+}
+
+// sourceKey turns the built name of a script bundle back into the name of the entry
+// it was compiled from, which is what a real esbuild run records
+// (write_assets_json keys by path.basename(info.entryPoint)) and what hooks.py asks
+// for: `typed.bundle.js` built from typed.bundle.ts is keyed `typed.bundle.ts`.
+//
+// esbuild.js writes .js and .ts entries to dist/js/ and .jsx entries to dist/ itself,
+// so the output directory says which source extensions can have produced the file.
+// When no source is shipped, or both a .js and a .ts entry share the name, the built
+// name is kept: that is what `bench build --using-cached` records. The bool reports
+// whether a shipped entry decided the key.
+func sourceKey(key, distRel string, sources map[string]map[string]bool) (string, bool) {
+	if path.Ext(key) != ".js" {
+		return key, false
+	}
+	exts := sources[strings.TrimSuffix(key, ".js")]
+	if len(exts) == 0 {
+		return key, false
+	}
+	candidates := []string{".jsx"}
+	if path.Dir(distRel) == "js" {
+		candidates = []string{".js", ".ts"}
+	}
+	var found []string
+	for _, ext := range candidates {
+		if exts[ext] {
+			found = append(found, ext)
+		}
+	}
+	if len(found) != 1 {
+		return key, false
+	}
+	return strings.TrimSuffix(key, ".js") + found[0], true
 }
 
 // isBundleFile matches the glob `**/*.bundle.*.{js,css}`.
@@ -415,8 +518,10 @@ type Deployed struct {
 // Deploy makes a packaged app's assets servable from benchPath: it links
 // sites/assets/<app> to the app's public directory and records the app's built
 // bundles in both manifests. It does exactly what `bench build --app <app>
-// --using-cached` does with a prebuilt public/dist, and nothing more.
-func Deploy(benchPath, appName, appModuleDir string) (Deployed, error) {
+// --using-cached` does with a prebuilt public/dist, and nothing more, except that
+// bundles are keyed by their entry point; recorded is the package's asset_bundles
+// (see BundlesWithRecorded), nil when it has none.
+func Deploy(benchPath, appName, appModuleDir string, recorded map[string]string) (Deployed, error) {
 	var out Deployed
 	if err := LinkAppAssets(benchPath, appName, appModuleDir); err != nil {
 		return out, err
@@ -424,7 +529,7 @@ func Deploy(benchPath, appName, appModuleDir string) (Deployed, error) {
 	if _, err := os.Lstat(filepath.Join(AssetsDir(benchPath), appName)); err == nil {
 		out.Linked = true
 	}
-	ltr, rtl, err := Bundles(appModuleDir, appName)
+	ltr, rtl, err := BundlesWithRecorded(appModuleDir, appName, recorded)
 	if err != nil {
 		return out, err
 	}
